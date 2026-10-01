@@ -1,0 +1,37 @@
+{
+  "label": "DRY-RUN EXAMPLE. Synthetic workspace and test limits for FakeRobotBackend. NOT approved for live motion; do not copy these values into a live configuration.",
+  "approved_for_live": false,
+  "engagement": {
+    "grip_released_max": 0.2,
+    "grip_pressed_min": 0.8,
+    "grip_hold_min": 0.5,
+    "input_fresh_ms": 250,
+    "feedback_fresh_ms": 100
+  },
+  "mapping": {
+    "label": "EXAMPLE, UNVERIFIED. Arbitrary illustration: LOCAL -z -> backend +x, LOCAL +x -> backend -y, LOCAL +y -> backend +z. Signs and directions must be verified during commissioning.",
+    "verified": false,
+    "scale": 0.2,
+    "R_backend_from_local": [[0, 0, -1], [-1, 0, 0], [0, 1, 0]]
+  },
+  "limits": {
+    "workspace_min_m": [-0.10, -0.10, -0.10],
+    "workspace_max_m": [0.10, 0.10, 0.10],
+    "max_anchor_displacement_m": 0.10,
+    "max_controller_step_m": 0.12,
+    "max_controller_speed_m_s": 2.5,
+    "v_max_m_s": 0.05,
+    "a_max_m_s2": 0.25,
+    "max_target_feedback_error_m": 0.01
+  },
+  "scheduler": {
+    "period_ms": 20,
+    "max_tick_dt_ms": 100,
+    "monitor_period_ms": 25,
+    "stall_ms": 150
+  },
+  "gripper": {
+    "pickup_tolerance_pct": 5,
+    "max_rate_pct_s": 100
+  }
+}

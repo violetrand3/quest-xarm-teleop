@@ -1,0 +1,527 @@
+From 491b3e036995e8f7e9244bf52ac776a28a50b4b5 Mon Sep 17 00:00:00 2001
+From: shezitt <purpleplanetgroup@gmail.com>
+Date: Wed, 30 Sep 2026 19:23:37 -0400
+Subject: [PATCH 1/2] Step 4A: separate diagnostic app org.questxarm.reader
+ with QuestXarmPoseV1 LOCAL-space telemetry
+
+- applicationId org.questxarm.reader, label 'Quest xArm Input Diagnostic'
+- grip + head poses located in LOCAL at one query time with raw XrSpaceLocationFlags
+- action activity, session state/focus, LOCAL reference-space-change events
+- legacy head-relative wE9ryARX output disabled (unchanged if re-enabled)
+- rendering and frame loop unchanged; no robot control
+---
+ app/CMakeLists.txt           |  15 +++
+ app/build.gradle             |   3 +-
+ app/res/values/strings.xml   |   2 +-
+ app/src/QuestXarmTelemetry.h | 203 +++++++++++++++++++++++++++++++++++
+ app/src/main.cpp             | 172 +++++++++++++++++++++++++++++
+ 5 files changed, 393 insertions(+), 2 deletions(-)
+ create mode 100644 app/src/QuestXarmTelemetry.h
+
+diff --git a/app/CMakeLists.txt b/app/CMakeLists.txt
+index c7dccac..7ed1154 100644
+--- a/app/CMakeLists.txt
++++ b/app/CMakeLists.txt
+@@ -62,3 +62,18 @@ endif()
+ 
+ # --- Common Configuration ---
+ target_include_directories(${PROJECT_NAME} PRIVATE src)
++
++# --- Step 4A: embed the source revision in QuestXarmPoseV1 records ---
++execute_process(COMMAND git rev-parse --short=12 HEAD
++                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
++                OUTPUT_VARIABLE QUESTXARM_GIT_REV OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
++execute_process(COMMAND git status --porcelain --untracked-files=no
++                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
++                OUTPUT_VARIABLE QUESTXARM_GIT_DIRTY OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
++if(NOT QUESTXARM_GIT_REV)
++    set(QUESTXARM_GIT_REV "nogit")
++endif()
++if(QUESTXARM_GIT_DIRTY)
++    set(QUESTXARM_GIT_REV "${QUESTXARM_GIT_REV}-dirty")
++endif()
++target_compile_definitions(${PROJECT_NAME} PRIVATE QUESTXARM_BUILD_ID="s4a-${QUESTXARM_GIT_REV}")
+diff --git a/app/build.gradle b/app/build.gradle
+index a82401d..a6e2a7b 100644
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -28,7 +28,8 @@ android {
+     namespace "com.rail.oculus.teleop"
+ 
+     defaultConfig {
+-        applicationId "com.rail.oculus.teleop"
++        // Separate diagnostic app: installs alongside (never replaces) com.rail.oculus.teleop.
++        applicationId "org.questxarm.reader"
+         minSdk 26
+         targetSdk 32
+         versionCode 1
+diff --git a/app/res/values/strings.xml b/app/res/values/strings.xml
+index ed323ce..d5e7011 100644
+--- a/app/res/values/strings.xml
++++ b/app/res/values/strings.xml
+@@ -1,4 +1,4 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="app_name">Xr Controllers</string>
++    <string name="app_name">Quest xArm Input Diagnostic</string>
+ </resources>
+diff --git a/app/src/QuestXarmTelemetry.h b/app/src/QuestXarmTelemetry.h
+new file mode 100644
+index 0000000..df39c55
+--- /dev/null
++++ b/app/src/QuestXarmTelemetry.h
+@@ -0,0 +1,203 @@
++// QuestXarmPoseV1 diagnostic telemetry (Step 4A). DIAGNOSTIC ONLY: no robot control.
++//
++// This header has NO OpenXR dependency so it can be compiled and tested on a host.
++// main.cpp fills the plain structs below from real OpenXR calls and logs the
++// formatted JSON with logcat tag "QuestXarmPoseV1".
++//
++// Conventions (see docs/step04a_openxr_reader.md):
++//  * All poses are XrPosef values located in ONE reference space: XR_REFERENCE_SPACE_TYPE_LOCAL.
++//    "p" = position [x,y,z] in metres, "q" = orientation quaternion [x,y,z,w].
++//    The pose is T_local_from_X: it maps points expressed in frame X (grip or view)
++//    into LOCAL, i.e. p_local = R(q) * p_X + p   (column-vector convention).
++//  * OpenXR axes: right-handed, +X right, +Y up, -Z forward (for view/grip frames).
++//  * "p" is present only if XR_SPACE_LOCATION_POSITION_VALID_BIT is set; "q" only if
++//    ORIENTATION_VALID_BIT is set. The raw flags are always reported. No identity or
++//    previous-pose fallback is ever written.
++//  * t_query_ns is the XrTime passed to xrLocateSpace (the frame's predicted display
++//    time). It is a query/prediction time, NOT a sensor-capture time. Buttons come from
++//    xrSyncActions for the same frame and are not claimed to share that timestamp.
++
++#ifndef QUESTXARM_TELEMETRY_H
++#define QUESTXARM_TELEMETRY_H
++
++#include <cinttypes>
++#include <cmath>
++#include <cstdarg>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++
++namespace questxarm {
++
++constexpr const char* kLogTag = "QuestXarmPoseV1";
++constexpr int kSchemaVersion = 1;
++constexpr size_t kMaxRecordBytes = 2048;  // well below the ~4 KB logcat payload limit
++
++// Bit values copied from the OpenXR specification (XrSpaceLocationFlagBits).
++constexpr uint64_t kOrientationValid = 0x00000001;
++constexpr uint64_t kPositionValid = 0x00000002;
++constexpr uint64_t kOrientationTracked = 0x00000004;
++constexpr uint64_t kPositionTracked = 0x00000008;
++
++struct PoseSample {
++    bool queried = false;      // xrLocateSpace was called
++    int32_t result = 0;        // XrResult of xrLocateSpace
++    int action_active = -1;    // pose-action isActive: 1/0, or -1 for the head (no action)
++    uint64_t flags = 0;        // raw XrSpaceLocationFlags
++    float p[3] = {0, 0, 0};
++    float q[4] = {0, 0, 0, 1};
++};
++
++struct FloatInput { bool active = false; float v = 0; };
++struct BoolInput { bool active = false; bool v = false; };
++struct Vec2Input { bool active = false; float x = 0, y = 0; };
++
++struct HandInputs {
++    FloatInput trigger, squeeze;
++    Vec2Input thumbstick;
++    BoolInput thumbstick_click, thumbstick_touch, trigger_touch, thumbrest_touch;
++    BoolInput button_lower, button_upper;  // right: A/B, left: X/Y
++    BoolInput menu;                         // left only
++};
++
++struct Frame {
++    const char* build = "";
++    const char* session_id = "";
++    uint64_t seq = 0;
++    int64_t t_query_ns = 0;
++    const char* session_state = "UNKNOWN";
++    bool focused = false;
++    uint32_t local_space_epoch = 0;        // number of LOCAL change-pending events received
++    int64_t last_local_change_time_ns = 0; // changeTime of the latest one (0 = none)
++    PoseSample head, grip_l, grip_r;
++    HandInputs in_l, in_r;
++};
++
++// Bounded appender: never writes past cap; remembers overflow.
++struct Out {
++    char* buf;
++    size_t cap;
++    size_t len = 0;
++    bool overflow = false;
++    Out(char* b, size_t c) : buf(b), cap(c) { if (cap) buf[0] = '\0'; }
++    void add(const char* fmt, ...) {
++        if (overflow) return;
++        va_list ap;
++        va_start(ap, fmt);
++        int n = vsnprintf(buf + len, cap - len, fmt, ap);
++        va_end(ap);
++        if (n < 0 || (size_t)n >= cap - len) { overflow = true; return; }
++        len += (size_t)n;
++    }
++};
++
++inline bool finite3(const float* v) { return std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]); }
++inline bool finite4(const float* v) { return finite3(v) && std::isfinite(v[3]); }
++
++inline void add_pose(Out& o, const char* key, const PoseSample& s) {
++    o.add("\"%s\":{", key);
++    o.add("\"queried\":%s,\"result\":%d", s.queried ? "true" : "false", (int)s.result);
++    if (s.action_active >= 0) o.add(",\"active\":%s", s.action_active ? "true" : "false");
++    const bool pv = (s.flags & kPositionValid) != 0, ov = (s.flags & kOrientationValid) != 0;
++    const bool pt = (s.flags & kPositionTracked) != 0, ot = (s.flags & kOrientationTracked) != 0;
++    o.add(",\"flags\":%" PRIu64 ",\"pos_valid\":%s,\"ori_valid\":%s,\"pos_tracked\":%s,\"ori_tracked\":%s",
++          s.flags, pv ? "true" : "false", ov ? "true" : "false", pt ? "true" : "false", ot ? "true" : "false");
++    const bool ok = s.queried && s.result >= 0;
++    // Non-finite values are never emitted as numbers; they are reported explicitly.
++    if (ok && pv && finite3(s.p)) o.add(",\"p\":[%.6f,%.6f,%.6f]", s.p[0], s.p[1], s.p[2]);
++    else o.add(",\"p\":null");
++    if (ok && ov && finite4(s.q)) o.add(",\"q\":[%.7f,%.7f,%.7f,%.7f]", s.q[0], s.q[1], s.q[2], s.q[3]);
++    else o.add(",\"q\":null");
++    if ((pv && !finite3(s.p)) || (ov && !finite4(s.q))) o.add(",\"nonfinite\":true");
++    o.add("}");
++}
++
++inline void add_f(Out& o, const char* k, const FloatInput& f) {
++    if (f.active && std::isfinite(f.v)) o.add("\"%s\":%.4f", k, f.v); else o.add("\"%s\":null", k);
++}
++inline void add_b(Out& o, const char* k, const BoolInput& b) {
++    if (b.active) o.add("\"%s\":%s", k, b.v ? "true" : "false"); else o.add("\"%s\":null", k);
++}
++inline void add_v2(Out& o, const char* k, const Vec2Input& v) {
++    if (v.active && std::isfinite(v.x) && std::isfinite(v.y)) o.add("\"%s\":[%.4f,%.4f]", k, v.x, v.y);
++    else o.add("\"%s\":null", k);
++}
++
++inline void add_hand(Out& o, const char* key, const HandInputs& h, bool right) {
++    o.add("\"%s\":{", key);
++    add_f(o, "trigger", h.trigger); o.add(",");
++    add_f(o, "squeeze", h.squeeze); o.add(",");
++    add_v2(o, "thumbstick", h.thumbstick); o.add(",");
++    add_b(o, "thumbstick_click", h.thumbstick_click); o.add(",");
++    add_b(o, "thumbstick_touch", h.thumbstick_touch); o.add(",");
++    add_b(o, "trigger_touch", h.trigger_touch); o.add(",");
++    add_b(o, "thumbrest_touch", h.thumbrest_touch); o.add(",");
++    add_b(o, right ? "a" : "x", h.button_lower); o.add(",");
++    add_b(o, right ? "b" : "y", h.button_upper);
++    if (!right) { o.add(","); add_b(o, "menu", h.menu); }
++    o.add("}");
++}
++
++// Returns the record length, or writes a small "overflow" record if the full one does not fit.
++inline size_t format_pose_record(const Frame& f, char* buf, size_t cap) {
++    Out o(buf, cap);
++    o.add("{\"v\":%d,\"type\":\"pose\",\"build\":\"%s\",\"sid\":\"%s\",\"seq\":%" PRIu64
++          ",\"space\":\"LOCAL\",\"t_query_ns\":%" PRId64 ",\"t_query_kind\":\"predicted_display_time\""
++          ",\"session_state\":\"%s\",\"focused\":%s,\"local_epoch\":%u,\"local_change_time_ns\":%" PRId64 ",",
++          kSchemaVersion, f.build, f.session_id, f.seq, f.t_query_ns, f.session_state,
++          f.focused ? "true" : "false", f.local_space_epoch, f.last_local_change_time_ns);
++    add_pose(o, "head", f.head); o.add(",");
++    add_pose(o, "grip_l", f.grip_l); o.add(",");
++    add_pose(o, "grip_r", f.grip_r); o.add(",");
++    add_hand(o, "in_l", f.in_l, false); o.add(",");
++    add_hand(o, "in_r", f.in_r, true);
++    o.add("}");
++    if (o.overflow) {
++        Out e(buf, cap);
++        e.add("{\"v\":%d,\"type\":\"overflow\",\"build\":\"%s\",\"sid\":\"%s\",\"seq\":%" PRIu64 "}",
++              kSchemaVersion, f.build, f.session_id, f.seq);
++        return e.len;
++    }
++    return o.len;
++}
++
++// Generic event record (session state changes, LOCAL space changes, session begin/end).
++struct Event {
++    const char* build = "";
++    const char* session_id = "";
++    uint64_t seq = 0;
++    const char* name = "";          // "session_begin", "session_state", "local_space_change_pending", "session_end"
++    const char* session_state = ""; // for session_state
++    int64_t time_ns = 0;            // XrTime from the event (changeTime for space changes); 0 if none
++    uint32_t local_space_epoch = 0;
++    int pose_valid = -1;            // space change: poseValid (1/0), -1 if not applicable
++    PoseSample previous;            // space change: poseInPreviousSpace (only if pose_valid==1)
++};
++
++inline size_t format_event_record(const Event& e, char* buf, size_t cap) {
++    Out o(buf, cap);
++    o.add("{\"v\":%d,\"type\":\"event\",\"build\":\"%s\",\"sid\":\"%s\",\"seq\":%" PRIu64
++          ",\"event\":\"%s\",\"space\":\"LOCAL\",\"local_epoch\":%u",
++          kSchemaVersion, e.build, e.session_id, e.seq, e.name, e.local_space_epoch);
++    if (e.session_state[0]) o.add(",\"session_state\":\"%s\"", e.session_state);
++    o.add(",\"time_ns\":%" PRId64, e.time_ns);
++    if (e.pose_valid >= 0) {
++        o.add(",\"pose_valid\":%s", e.pose_valid ? "true" : "false");
++        if (e.pose_valid && finite3(e.previous.p) && finite4(e.previous.q))
++            o.add(",\"pose_in_previous_space\":{\"p\":[%.6f,%.6f,%.6f],\"q\":[%.7f,%.7f,%.7f,%.7f]}",
++                  e.previous.p[0], e.previous.p[1], e.previous.p[2],
++                  e.previous.q[0], e.previous.q[1], e.previous.q[2], e.previous.q[3]);
++        else o.add(",\"pose_in_previous_space\":null");
++    }
++    o.add("}");
++    if (o.overflow) {
++        Out x(buf, cap);
++        x.add("{\"v\":%d,\"type\":\"overflow\",\"sid\":\"%s\",\"seq\":%" PRIu64 "}", kSchemaVersion, e.session_id, e.seq);
++        return x.len;
++    }
++    return o.len;
++}
++
++}  // namespace questxarm
++
++#endif  // QUESTXARM_TELEMETRY_H
+diff --git a/app/src/main.cpp b/app/src/main.cpp
+index e934c1e..e0f2e98 100755
+--- a/app/src/main.cpp
++++ b/app/src/main.cpp
+@@ -54,6 +54,17 @@ PFN_xrGetDeviceSampleRateFB xrGetDeviceSampleRateFB = nullptr;
+ #include "Input/AxisRenderer.h"
+ #include "Render/SimpleBeamRenderer.h"
+ #include "Remotes.h"
++#include "QuestXarmTelemetry.h"
++#include <random>
++
++#ifndef QUESTXARM_BUILD_ID
++#define QUESTXARM_BUILD_ID "unknown"
++#endif
++// The legacy "wE9ryARX" head-relative payload is NOT emitted by this diagnostic build.
++// Set to 1 only for side-by-side comparison; its meaning is unchanged if enabled.
++#ifndef QUESTXARM_EMIT_LEGACY_WE9RYARX
++#define QUESTXARM_EMIT_LEGACY_WE9RYARX 0
++#endif
+ 
+ class OculusTeleopApp : public OVRFW::XrApp {
+    public:
+@@ -390,6 +401,13 @@ Function to create PCM samples from an array of amplitudes, frequency and durati
+ 
+     // Must return true if the application initializes successfully.
+     virtual bool AppInit(const xrJava* context) override {
++        {
++            std::random_device rd;
++            const uint64_t id = (uint64_t(rd()) << 32) ^ uint64_t(rd());
++            char buf[17];
++            snprintf(buf, sizeof(buf), "%016" PRIx64, id);
++            qxSessionId_ = buf;
++        }
+         if (false == ui_.Init(context, GetFileSys())) {
+             ALOG("TinyUI::Init FAILED.");
+             return false;
+@@ -784,6 +802,7 @@ Function to create PCM samples from an array of amplitudes, frequency and durati
+     virtual bool SessionInit() override {
+         /// Use LocalSpace instead of Stage Space.
+         CurrentSpace = LocalSpace;
++        qxEmitEvent("session_begin", "", 0, -1, nullptr);
+         /// Init session bound objects
+         if (false == controllerRenderL_.Init(true)) {
+             ALOG("AppInit::Init L controller renderer FAILED.");
+@@ -802,6 +821,7 @@ Function to create PCM samples from an array of amplitudes, frequency and durati
+     }
+ 
+     virtual void SessionEnd() override {
++        qxEmitEvent("session_end", "", 0, -1, nullptr);
+         controllerRenderL_.Shutdown();
+         controllerRenderR_.Shutdown();
+         beamRenderer_.Shutdown();
+@@ -1083,6 +1103,10 @@ Function to create PCM samples from an array of amplitudes, frequency and durati
+             squeezeValueRText_->SetText(ss.str().c_str());
+         }
+ 
++        // Step 4A diagnostic telemetry: controller GRIP poses and head pose, all located
++        // in LOCAL space at ONE common query time, with the real XrSpaceLocationFlags.
++        qxEmitPose(in);
++#if QUESTXARM_EMIT_LEGACY_WE9RYARX
+         // oculus_reader
+         const OVR::Matrix4f headPoseMatrix = OVR::Matrix4f(in.HeadPose);
+         OVR::Matrix4f LeftRemoteTransform;
+@@ -1103,6 +1127,7 @@ Function to create PCM samples from an array of amplitudes, frequency and durati
+         auto remotes_str = remotes_to_string(remoteState, in);
+         __android_log_print(ANDROID_LOG_INFO, "wE9ryARX", "%s",
+                             remotes_str.c_str());
++#endif
+         /*
+          */
+ 
+@@ -1115,6 +1140,153 @@ Function to create PCM samples from an array of amplitudes, frequency and durati
+         }
+     }
+ 
++    // ---- Step 4A telemetry helpers -------------------------------------------------
++    static const char* qxStateName(XrSessionState s) {
++        switch (s) {
++            case XR_SESSION_STATE_IDLE: return "IDLE";
++            case XR_SESSION_STATE_READY: return "READY";
++            case XR_SESSION_STATE_SYNCHRONIZED: return "SYNCHRONIZED";
++            case XR_SESSION_STATE_VISIBLE: return "VISIBLE";
++            case XR_SESSION_STATE_FOCUSED: return "FOCUSED";
++            case XR_SESSION_STATE_STOPPING: return "STOPPING";
++            case XR_SESSION_STATE_LOSS_PENDING: return "LOSS_PENDING";
++            case XR_SESSION_STATE_EXITING: return "EXITING";
++            default: return "UNKNOWN";
++        }
++    }
++
++    void qxLog(const char* buf) {
++        __android_log_print(ANDROID_LOG_INFO, questxarm::kLogTag, "%s", buf);
++    }
++
++    void qxEmitEvent(const char* name, const char* state, int64_t timeNs, int poseValid,
++                     const XrPosef* previous) {
++        questxarm::Event e;
++        e.build = QUESTXARM_BUILD_ID;
++        e.session_id = qxSessionId_.c_str();
++        e.seq = ++qxSeq_;
++        e.name = name;
++        e.session_state = state;
++        e.time_ns = timeNs;
++        e.local_space_epoch = qxLocalEpoch_;
++        e.pose_valid = poseValid;
++        if (previous != nullptr) {
++            e.previous.p[0] = previous->position.x; e.previous.p[1] = previous->position.y;
++            e.previous.p[2] = previous->position.z;
++            e.previous.q[0] = previous->orientation.x; e.previous.q[1] = previous->orientation.y;
++            e.previous.q[2] = previous->orientation.z; e.previous.q[3] = previous->orientation.w;
++        }
++        char buf[questxarm::kMaxRecordBytes];
++        questxarm::format_event_record(e, buf, sizeof(buf));
++        qxLog(buf);
++    }
++
++    // Every event is seen here before the framework's own handling (XrApp::HandleXrEvents).
++    virtual void AppHandleEvent(XrEventDataBaseHeader* h) override {
++        switch (h->type) {
++            case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED: {
++                auto* ev = reinterpret_cast<XrEventDataSessionStateChanged*>(h);
++                qxState_ = qxStateName(ev->state);
++                qxEmitEvent("session_state", qxState_, ev->time, -1, nullptr);
++            } break;
++            case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING: {
++                auto* ev = reinterpret_cast<XrEventDataReferenceSpaceChangePending*>(h);
++                if (ev->referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL) {
++                    // LOCAL origin changes at ev->changeTime; later code must not stitch
++                    // poses from different epochs into one trajectory.
++                    ++qxLocalEpoch_;
++                    qxLastLocalChange_ = ev->changeTime;
++                    qxEmitEvent("local_space_change_pending", "", ev->changeTime,
++                                ev->poseValid ? 1 : 0, ev->poseValid ? &ev->poseInPreviousSpace : nullptr);
++                } else {
++                    qxEmitEvent("other_space_change_pending", "", ev->changeTime, -1, nullptr);
++                }
++            } break;
++            case XR_TYPE_EVENT_DATA_EVENTS_LOST:
++                // Lost events may include space changes: consumers must treat this as a reset.
++                qxEmitEvent("events_lost", "", 0, -1, nullptr);
++                break;
++            case XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED:
++                qxEmitEvent("interaction_profile_changed", "", 0, -1, nullptr);
++                break;
++            default:
++                break;
++        }
++    }
++
++    questxarm::PoseSample qxLocate(XrSpace space, XrTime t, int actionActive) {
++        questxarm::PoseSample s;
++        s.action_active = actionActive;
++        XrSpaceLocation loc = {XR_TYPE_SPACE_LOCATION};
++        const XrResult r = xrLocateSpace(space, LocalSpace, t, &loc);  // explicitly LOCAL
++        s.queried = true;
++        s.result = static_cast<int32_t>(r);
++        if (XR_SUCCEEDED(r)) {
++            s.flags = static_cast<uint64_t>(loc.locationFlags);
++            s.p[0] = loc.pose.position.x; s.p[1] = loc.pose.position.y; s.p[2] = loc.pose.position.z;
++            s.q[0] = loc.pose.orientation.x; s.q[1] = loc.pose.orientation.y;
++            s.q[2] = loc.pose.orientation.z; s.q[3] = loc.pose.orientation.w;
++        }
++        return s;
++    }
++
++    questxarm::HandInputs qxInputs(XrPath hand, bool right) {
++        questxarm::HandInputs h;
++        auto f = [&](XrAction a) {
++            const auto st = GetActionStateFloat(a, hand);
++            return questxarm::FloatInput{st.isActive == XR_TRUE, st.currentState};
++        };
++        auto b = [&](XrAction a) {
++            const auto st = GetActionStateBoolean(a, hand);
++            return questxarm::BoolInput{st.isActive == XR_TRUE, st.currentState == XR_TRUE};
++        };
++        h.trigger = f(IndexTriggerAction);
++        h.squeeze = f(GripTriggerAction);
++        {
++            const auto st = GetActionStateVector2(JoystickAction, hand);
++            h.thumbstick = questxarm::Vec2Input{st.isActive == XR_TRUE, st.currentState.x, st.currentState.y};
++        }
++        h.thumbstick_click = b(thumbstickClickAction);
++        h.thumbstick_touch = b(ThumbStickTouchAction);
++        h.trigger_touch = b(TriggerTouchAction);
++        h.thumbrest_touch = b(ThumbRestTouchAction);
++        h.button_lower = b(right ? ButtonAAction : ButtonXAction);
++        h.button_upper = b(right ? ButtonBAction : ButtonYAction);
++        if (!right) {
++            h.menu = b(ButtonMenuAction);
++        }
++        return h;
++    }
++
++    void qxEmitPose(const OVRFW::ovrApplFrameIn& in) {
++        // One common query time for head and both grips: the frame's predicted display time
++        // (as passed through the framework, which stores it as double seconds).
++        const XrTime t = ToXrTime(in.PredictedDisplayTime);
++        questxarm::Frame f;
++        f.build = QUESTXARM_BUILD_ID;
++        f.session_id = qxSessionId_.c_str();
++        f.seq = ++qxSeq_;
++        f.t_query_ns = static_cast<int64_t>(t);
++        f.session_state = qxState_;
++        f.focused = Focused;
++        f.local_space_epoch = qxLocalEpoch_;
++        f.last_local_change_time_ns = qxLastLocalChange_;
++        f.head = qxLocate(HeadSpace, t, -1);
++        f.grip_l = qxLocate(LeftControllerGripSpace, t, ActionPoseIsActive(GripPoseAction, LeftHandPath) ? 1 : 0);
++        f.grip_r = qxLocate(RightControllerGripSpace, t, ActionPoseIsActive(GripPoseAction, RightHandPath) ? 1 : 0);
++        f.in_l = qxInputs(LeftHandPath, false);
++        f.in_r = qxInputs(RightHandPath, true);
++        char buf[questxarm::kMaxRecordBytes];
++        questxarm::format_pose_record(f, buf, sizeof(buf));
++        qxLog(buf);
++    }
++
++    std::string qxSessionId_ = "0000000000000000";
++    uint64_t qxSeq_ = 0;
++    const char* qxState_ = "UNKNOWN";
++    uint32_t qxLocalEpoch_ = 0;
++    int64_t qxLastLocalChange_ = 0;
++
+     // Render eye buffers while running
+     virtual void Render(const OVRFW::ovrApplFrameIn& in, OVRFW::ovrRendererOutput& out) override {
+         /// Render UI
+-- 
+2.47.3
+
+
+From 9e6f1f24dbed552520c3b3714dda8cd70169f0a5 Mon Sep 17 00:00:00 2001
+From: shezitt <purpleplanetgroup@gmail.com>
+Date: Wed, 30 Sep 2026 19:36:48 -0400
+Subject: [PATCH 2/2] Step 4A: pin official SHA-256 of the Gradle 8.5
+ distribution
+
+---
+ app/gradle/wrapper/gradle-wrapper.properties | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/app/gradle/wrapper/gradle-wrapper.properties b/app/gradle/wrapper/gradle-wrapper.properties
+index a595206..550b580 100644
+--- a/app/gradle/wrapper/gradle-wrapper.properties
++++ b/app/gradle/wrapper/gradle-wrapper.properties
+@@ -3,3 +3,4 @@ distributionPath=wrapper/dists
+ distributionUrl=https\://services.gradle.org/distributions/gradle-8.5-bin.zip
+ zipStoreBase=GRADLE_USER_HOME
+ zipStorePath=wrapper/dists
++distributionSha256Sum=9d926787066a081739e8200858338b4a69e837c3a821a33aca9db09dd4a41026
+-- 
+2.47.3
+

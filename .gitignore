@@ -1,0 +1,9 @@
+# recordings, camera frames, logs and backups stay local (large; some frames show the lab)
+data/
+run/
+# other repositories (cloned separately; our Quest app changes are in patches/)
+external/
+__pycache__/
+*.pyc
+*.apk
+*.bak

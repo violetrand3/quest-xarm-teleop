@@ -1,0 +1,250 @@
+From ff0da269250060ab5a2ae0eebf17e2111ad752f7 Mon Sep 17 00:00:00 2001
+From: shezitt <purpleplanetgroup@gmail.com>
+Date: Wed, 30 Sep 2026 21:11:30 -0400
+Subject: [PATCH] Step 4B logging repair: log complete records with
+ __android_log_write
+
+- serialize into std::string (no fixed-size buffers on the record path)
+- single emission gate: records > 3000 UTF-8 bytes are replaced by a small
+  intact overflow record (build, sid, seq, attempted_bytes, cap_bytes)
+- __android_log_write instead of __android_log_print (1024-byte buffer)
+- opt-in, finite NON-POSE probe self-test (debug.questxarm.logprobe=1)
+- schema, fields, precision, pose frames, bindings, flags, query time,
+  rendering and frame rate unchanged
+---
+ app/src/QuestXarmTelemetry.h | 95 +++++++++++++++++++++++++-----------
+ app/src/main.cpp             | 38 ++++++++++++---
+ 2 files changed, 97 insertions(+), 36 deletions(-)
+
+diff --git a/app/src/QuestXarmTelemetry.h b/app/src/QuestXarmTelemetry.h
+index df39c55..9db6e83 100644
+--- a/app/src/QuestXarmTelemetry.h
++++ b/app/src/QuestXarmTelemetry.h
+@@ -26,12 +26,20 @@
+ #include <cstdint>
+ #include <cstdio>
+ #include <cstring>
++#include <string>
+ 
+ namespace questxarm {
+ 
+ constexpr const char* kLogTag = "QuestXarmPoseV1";
+ constexpr int kSchemaVersion = 1;
+-constexpr size_t kMaxRecordBytes = 2048;  // well below the ~4 KB logcat payload limit
++// Application limit for ONE complete serialized JSON message, in UTF-8 bytes, excluding the
++// terminating NUL. This is NOT an asserted Android maximum. The message is passed unformatted
++// to __android_log_write(); logd stores priority (1 B) + tag ("QuestXarmPoseV1", 15 B + NUL)
++// + message + NUL, i.e. at most 3000 + 18 = 3018 bytes per entry, which leaves margin below
++// the commonly documented ~4068-byte logger payload. (Step 4A's 2048-byte cap was wrong in a
++// different way: __android_log_print() formats into a fixed 1024-byte buffer and silently
++// truncated every pose record to 1023 bytes.)
++constexpr size_t kMaxRecordBytes = 3000;
+ 
+ // Bit values copied from the OpenXR specification (XrSpaceLocationFlagBits).
+ constexpr uint64_t kOrientationValid = 0x00000001;
+@@ -73,21 +81,24 @@ struct Frame {
+     HandInputs in_l, in_r;
+ };
+ 
+-// Bounded appender: never writes past cap; remembers overflow.
++// Appender that serializes into a growing std::string: no fixed-size buffer anywhere on the
++// serialization path, so the true byte length is always known before logging.
+ struct Out {
+-    char* buf;
+-    size_t cap;
+-    size_t len = 0;
+-    bool overflow = false;
+-    Out(char* b, size_t c) : buf(b), cap(c) { if (cap) buf[0] = '\0'; }
++    std::string s;
+     void add(const char* fmt, ...) {
+-        if (overflow) return;
+         va_list ap;
+         va_start(ap, fmt);
+-        int n = vsnprintf(buf + len, cap - len, fmt, ap);
++        va_list ap2;
++        va_copy(ap2, ap);
++        const int n = vsnprintf(nullptr, 0, fmt, ap);
+         va_end(ap);
+-        if (n < 0 || (size_t)n >= cap - len) { overflow = true; return; }
+-        len += (size_t)n;
++        if (n > 0) {
++            const size_t old = s.size();
++            s.resize(old + (size_t)n + 1);
++            vsnprintf(&s[old], (size_t)n + 1, fmt, ap2);
++            s.resize(old + (size_t)n);  // drop vsnprintf's NUL
++        }
++        va_end(ap2);
+     }
+ };
+ 
+@@ -138,9 +149,9 @@ inline void add_hand(Out& o, const char* key, const HandInputs& h, bool right) {
+     o.add("}");
+ }
+ 
+-// Returns the record length, or writes a small "overflow" record if the full one does not fit.
+-inline size_t format_pose_record(const Frame& f, char* buf, size_t cap) {
+-    Out o(buf, cap);
++// Complete pose record (uncapped; the cap is enforced only in prepare_log_message()).
++inline std::string format_pose_record(const Frame& f) {
++    Out o;
+     o.add("{\"v\":%d,\"type\":\"pose\",\"build\":\"%s\",\"sid\":\"%s\",\"seq\":%" PRIu64
+           ",\"space\":\"LOCAL\",\"t_query_ns\":%" PRId64 ",\"t_query_kind\":\"predicted_display_time\""
+           ",\"session_state\":\"%s\",\"focused\":%s,\"local_epoch\":%u,\"local_change_time_ns\":%" PRId64 ",",
+@@ -152,13 +163,7 @@ inline size_t format_pose_record(const Frame& f, char* buf, size_t cap) {
+     add_hand(o, "in_l", f.in_l, false); o.add(",");
+     add_hand(o, "in_r", f.in_r, true);
+     o.add("}");
+-    if (o.overflow) {
+-        Out e(buf, cap);
+-        e.add("{\"v\":%d,\"type\":\"overflow\",\"build\":\"%s\",\"sid\":\"%s\",\"seq\":%" PRIu64 "}",
+-              kSchemaVersion, f.build, f.session_id, f.seq);
+-        return e.len;
+-    }
+-    return o.len;
++    return o.s;
+ }
+ 
+ // Generic event record (session state changes, LOCAL space changes, session begin/end).
+@@ -174,8 +179,8 @@ struct Event {
+     PoseSample previous;            // space change: poseInPreviousSpace (only if pose_valid==1)
+ };
+ 
+-inline size_t format_event_record(const Event& e, char* buf, size_t cap) {
+-    Out o(buf, cap);
++inline std::string format_event_record(const Event& e) {
++    Out o;
+     o.add("{\"v\":%d,\"type\":\"event\",\"build\":\"%s\",\"sid\":\"%s\",\"seq\":%" PRIu64
+           ",\"event\":\"%s\",\"space\":\"LOCAL\",\"local_epoch\":%u",
+           kSchemaVersion, e.build, e.session_id, e.seq, e.name, e.local_space_epoch);
+@@ -190,12 +195,46 @@ inline size_t format_event_record(const Event& e, char* buf, size_t cap) {
+         else o.add(",\"pose_in_previous_space\":null");
+     }
+     o.add("}");
+-    if (o.overflow) {
+-        Out x(buf, cap);
+-        x.add("{\"v\":%d,\"type\":\"overflow\",\"sid\":\"%s\",\"seq\":%" PRIu64 "}", kSchemaVersion, e.session_id, e.seq);
+-        return x.len;
++    return o.s;
++}
++
++// THE common emission gate: returns exactly the text to pass to __android_log_write().
++// If the complete record fits in kMaxRecordBytes it is returned unchanged; otherwise NO part
++// of it is returned, only a small, complete overflow record carrying the identity, the
++// dropped record's seq, its attempted size and the cap.
++inline std::string prepare_log_message(const std::string& json, const char* build, const char* sid, uint64_t seq) {
++    if (json.size() <= kMaxRecordBytes) return json;
++    Out o;
++    o.add("{\"v\":%d,\"type\":\"overflow\",\"build\":\"%s\",\"sid\":\"%s\",\"seq\":%" PRIu64
++          ",\"attempted_bytes\":%zu,\"cap_bytes\":%zu}",
++          kSchemaVersion, build, sid, seq, json.size(), kMaxRecordBytes);
++    return o.s;
++}
++
++// Opt-in logging self-test: a deterministic NON-POSE probe record padded to exactly
++// target_bytes UTF-8 bytes (if the skeleton fits). utf8 pads with U+00E9 (2 bytes each).
++// The host regenerates the identical string to verify end-to-end delivery byte-for-byte.
++inline std::string make_probe(const char* build, const char* sid, uint64_t seq, int probe_id, size_t target_bytes,
++                              bool utf8) {
++    Out head;
++    head.add("{\"v\":%d,\"type\":\"probe\",\"non_pose\":true,\"build\":\"%s\",\"sid\":\"%s\",\"seq\":%" PRIu64
++             ",\"probe_id\":%d,\"target_bytes\":%zu,\"utf8\":%s,\"pad\":\"",
++             kSchemaVersion, build, sid, seq, probe_id, target_bytes, utf8 ? "true" : "false");
++    Out tail;
++    tail.add("\",\"end\":\"QXEND-%d\"}", probe_id);
++    const size_t fixed = head.s.size() + tail.s.size();
++    std::string pad;
++    if (target_bytes > fixed) {
++        size_t need = target_bytes - fixed;
++        if (utf8) {
++            if (need % 2) { pad += 'x'; --need; }
++            for (size_t i = 0; i < need / 2; ++i) pad += "\xC3\xA9";  // U+00E9
++        } else {
++            static const char kPat[] = "abcdefghijklmnopqrstuvwxyz0123456789";
++            for (size_t i = 0; i < need; ++i) pad += kPat[i % (sizeof(kPat) - 1)];
++        }
+     }
+-    return o.len;
++    return head.s + pad + tail.s;
+ }
+ 
+ }  // namespace questxarm
+diff --git a/app/src/main.cpp b/app/src/main.cpp
+index e0f2e98..33dc73a 100755
+--- a/app/src/main.cpp
++++ b/app/src/main.cpp
+@@ -56,6 +56,7 @@ PFN_xrGetDeviceSampleRateFB xrGetDeviceSampleRateFB = nullptr;
+ #include "Remotes.h"
+ #include "QuestXarmTelemetry.h"
+ #include <random>
++#include <sys/system_properties.h>
+ 
+ #ifndef QUESTXARM_BUILD_ID
+ #define QUESTXARM_BUILD_ID "unknown"
+@@ -408,6 +409,7 @@ Function to create PCM samples from an array of amplitudes, frequency and durati
+             snprintf(buf, sizeof(buf), "%016" PRIx64, id);
+             qxSessionId_ = buf;
+         }
++        qxMaybeRunLogProbe();
+         if (false == ui_.Init(context, GetFileSys())) {
+             ALOG("TinyUI::Init FAILED.");
+             return false;
+@@ -1155,8 +1157,32 @@ Function to create PCM samples from an array of amplitudes, frequency and durati
+         }
+     }
+ 
+-    void qxLog(const char* buf) {
+-        __android_log_print(ANDROID_LOG_INFO, questxarm::kLogTag, "%s", buf);
++    // The ONLY QuestXarmPoseV1 emission point. One complete JSON object -> one log message,
++    // passed unformatted (no printf-style buffer). Over-cap records are replaced by an overflow
++    // record inside prepare_log_message(). A successful return does not prove delivery.
++    void qxEmit(const std::string& json, uint64_t seq) {
++        const std::string msg =
++            questxarm::prepare_log_message(json, QUESTXARM_BUILD_ID, qxSessionId_.c_str(), seq);
++        __android_log_write(ANDROID_LOG_INFO, questxarm::kLogTag, msg.c_str());
++    }
++
++    // Opt-in logging self-test (OFF unless `setprop debug.questxarm.logprobe 1` before launch).
++    // Emits finite, deterministic NON-POSE probe records through qxEmit(), once per launch.
++    void qxMaybeRunLogProbe() {
++        char val[PROP_VALUE_MAX] = {0};
++        if (__system_property_get("debug.questxarm.logprobe", val) <= 0 || strcmp(val, "1") != 0) {
++            return;
++        }
++        struct P { size_t bytes; bool utf8; };
++        const P probes[] = {{1023, false}, {1024, false}, {1500, false}, {1500, true},
++                            {questxarm::kMaxRecordBytes, false}, {questxarm::kMaxRecordBytes + 1, false},
++                            {3500, false}};
++        int id = 0;
++        for (const P& pr : probes) {
++            const uint64_t seq = ++qxSeq_;
++            qxEmit(questxarm::make_probe(QUESTXARM_BUILD_ID, qxSessionId_.c_str(), seq, ++id, pr.bytes, pr.utf8),
++                   seq);
++        }
+     }
+ 
+     void qxEmitEvent(const char* name, const char* state, int64_t timeNs, int poseValid,
+@@ -1176,9 +1202,7 @@ Function to create PCM samples from an array of amplitudes, frequency and durati
+             e.previous.q[0] = previous->orientation.x; e.previous.q[1] = previous->orientation.y;
+             e.previous.q[2] = previous->orientation.z; e.previous.q[3] = previous->orientation.w;
+         }
+-        char buf[questxarm::kMaxRecordBytes];
+-        questxarm::format_event_record(e, buf, sizeof(buf));
+-        qxLog(buf);
++        qxEmit(questxarm::format_event_record(e), e.seq);
+     }
+ 
+     // Every event is seen here before the framework's own handling (XrApp::HandleXrEvents).
+@@ -1276,9 +1300,7 @@ Function to create PCM samples from an array of amplitudes, frequency and durati
+         f.grip_r = qxLocate(RightControllerGripSpace, t, ActionPoseIsActive(GripPoseAction, RightHandPath) ? 1 : 0);
+         f.in_l = qxInputs(LeftHandPath, false);
+         f.in_r = qxInputs(RightHandPath, true);
+-        char buf[questxarm::kMaxRecordBytes];
+-        questxarm::format_pose_record(f, buf, sizeof(buf));
+-        qxLog(buf);
++        qxEmit(questxarm::format_pose_record(f), f.seq);
+     }
+ 
+     std::string qxSessionId_ = "0000000000000000";
+-- 
+2.47.3
+
