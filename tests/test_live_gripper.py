@@ -305,7 +305,7 @@ class LiveEntryPointTests(unittest.TestCase):
 
     def test_dry_run_cannot_reach_the_gripper_client(self) -> None:
         dry = (ROOT / "scripts" / "teleop_dryrun.py").read_text()
-        for name in ("gripctl_client", "live_gripper_test", "gripper_executor", "8088"):
+        for name in ("gripctl_client", "live_gripper_test", "gripper_executor", "8088", "xarm_command_link", "xarm_live_backend", "arm_first_move"):
             self.assertNotIn(name, dry)
         for f in sorted((ROOT / "scripts").glob("teleop_*.py")):
             self.assertNotIn("gripctl_client", f.read_text(), f.name)
@@ -379,7 +379,12 @@ class LiveEntryPointTests(unittest.TestCase):
         vals = [r[3]["value"] for r in g.posts()]
         self.assertGreaterEqual(n_active, 5)
         self.assertLessEqual(abs(vals[0] - 58.48), 8.0 + 3.0)  # first command near the jaws: no jump
-        self.assertEqual(vals[:n_active], sorted(vals[:n_active]))  # closing monotonically
+        act = vals[:n_active]
+        low = act.index(min(act))  # at pickup the trigger value may still be just below the jaws: a small dip first is correct
+        self.assertLessEqual(low, 2)
+        self.assertGreaterEqual(min(act), 58.48 - 8.0 - 0.01)
+        self.assertEqual(act[low:], sorted(act[low:]))  # then closing monotonically
+        self.assertLessEqual(max(b - a for a, b in zip(act, act[1:])), 50.0 * 0.25)  # rate limited (50 %/s, sends <= 0.25 s apart)
         self.assertLessEqual(max(vals), 85.0)
         self.assertGreater(vals[n_active - 1], 80.0)
         self.assertLessEqual(n_after - n_active, 1)  # at most the command already in flight at the release

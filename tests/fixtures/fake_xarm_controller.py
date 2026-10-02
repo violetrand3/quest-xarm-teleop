@@ -1,5 +1,7 @@
 """SYNTHETIC stand-in for an xArm controller, on loopback only. It is not a robot and proves
-nothing about one. It answers the private Modbus protocol on a control port and streams rich
+nothing about one. Its motion model (targets replaced in mode 7, queued in mode 0, state 4 clears
+them, a target outside the boundary raises an error) is an ASSUMPTION used to exercise our code;
+whether the real controller behaves that way is exactly what a supervised test has to find out. It answers the private Modbus protocol on a control port and streams rich
 reports on a report port, and it records EVERY frame it receives so a test can assert that an
 observer sent nothing but reads. Layouts follow the installed SDK 1.18.4 source."""
 from __future__ import annotations
@@ -19,8 +21,16 @@ BOUNDARY = [502, 160, 270, -300, 585, 270]  # x_max, x_min, y_max, y_min, z_max,
 
 class FakeController:
     def __init__(self, err: int = 0, warn: int = 0, silent: bool = False, report: bool = True, move: bool = False,
-                 report_period_s: float = 0.02):  # fmt: skip
+                 report_period_s: float = 0.02, mode7_replaces: bool = True, pose: list | None = None):  # fmt: skip
         self.err, self.warn, self.silent, self.report, self.move, self.period = err, warn, silent, report, move, report_period_s
+        self.mode7_replaces = mode7_replaces
+        self.pose = list(pose or POSE)  # mm, rad
+        self.mode, self.state, self.enabled = 0, 4, True
+        self.target: tuple | None = None  # (xyz, speed mm/s)
+        self.queue: list = []
+        self.max_speed = 50.0  # reduced-mode cap
+        self.lock = threading.Lock()
+        self.moves_accepted = 0
         self.frames: list = []  # (protocol, register, payload) of every request received
         self.alive = True
         self.ctrl = self._listen()
@@ -30,6 +40,7 @@ class FakeController:
         self.threads = [threading.Thread(target=self._accept, args=(self.ctrl, self._control), daemon=True)]
         if self.rep:
             self.threads.append(threading.Thread(target=self._accept, args=(self.rep, self._reports), daemon=True))
+        self.threads.append(threading.Thread(target=self._motion, daemon=True))
         for t in self.threads:
             t.start()
 
@@ -62,6 +73,60 @@ class FakeController:
                 continue
             threading.Thread(target=handler, args=(conn,), daemon=True).start()
 
+    def _motion(self) -> None:
+        dt = 0.005
+        while self.alive:
+            time.sleep(dt)
+            with self.lock:
+                if self.state in (4, 5) or not self.enabled:
+                    continue
+                if self.target is None and self.queue:
+                    self.target = self.queue.pop(0)
+                if self.target is None:
+                    self.state = 2
+                    continue
+                xyz, speed = self.target
+                d = [xyz[k] - self.pose[k] for k in range(3)]
+                n = math.sqrt(sum(v * v for v in d))
+                step = min(speed, self.max_speed) * dt
+                if n <= step:
+                    self.pose[:3] = list(xyz)
+                    self.target = None
+                else:
+                    self.state = 1
+                    for k in range(3):
+                        self.pose[k] += d[k] / n * step
+
+    def _write(self, reg: int, payload: bytes) -> int:
+        """Apply a write. Returns extra state bits for the reply (0x10 = not ready)."""
+        with self.lock:
+            if reg == 11:
+                self.enabled = bool(payload[1])
+            elif reg == 19:
+                self.mode = payload[0]
+            elif reg == 12:
+                if payload[0] == 4:
+                    self.target, self.queue, self.state = None, [], 4
+                elif payload[0] == 0 and not self.err:
+                    self.state = 2
+            elif reg == 21:
+                if self.err or self.state in (4, 5) or not self.enabled:
+                    return 0x10
+                vals = struct.unpack("<10f", payload[:40])
+                xyz, speed = list(vals[:3]), vals[6]
+                b = BOUNDARY
+                if not (b[1] <= xyz[0] <= b[0] and b[3] <= xyz[1] <= b[2] and b[5] <= xyz[2] <= b[4]):
+                    self.err, self.state, self.target, self.queue = 35, 4, None, []  # safety boundary
+                    return 0x10
+                self.moves_accepted += 1
+                if self.mode == 7 and self.mode7_replaces:
+                    self.target, self.queue = (xyz, speed), []
+                elif self.target is None and not self.queue:
+                    self.target = (xyz, speed)
+                else:
+                    self.queue.append((xyz, speed))
+            return 0x10 if (self.state in (4, 5) or not self.enabled) else 0
+
     def _answer(self, reg: int) -> bytes:
         f = lambda vals: struct.pack("<%df" % len(vals), *vals)  # noqa: E731
         if reg == 1:
@@ -69,13 +134,13 @@ class FakeController:
         if reg == 2:
             return (b"XI130500A00L00\0AC130000B00L00\0").ljust(40, b"\0")
         if reg == 13:
-            return bytes([4])
+            return bytes([self.state])
         if reg == 14:
-            return struct.pack(">H", 0)
+            return struct.pack(">H", len(self.queue) + (1 if self.target is not None and self.mode != 7 else 0))
         if reg == 15:
             return bytes([self.err, self.warn])
         if reg == 41:
-            return f(POSE)
+            return f(self.pose)
         if reg == 42:
             return f(JOINTS)
         if reg == 49:
@@ -106,7 +171,8 @@ class FakeController:
                 self.frames.append((prot, body[0], bytes(body[1:])))
                 if self.silent:
                     continue
-                state = 0x40 if self.err else 0x20 if self.warn else 0
+                extra = self._write(body[0], bytes(body[1:])) if len(body) > 1 else 0
+                state = (0x40 if self.err else 0x20 if self.warn else 0) | extra
                 ans = self._answer(body[0])
                 try:
                     conn.sendall(struct.pack(">HHH", trans, prot, len(ans) + 2) + bytes([body[0], state]) + ans)
@@ -120,9 +186,9 @@ class FakeController:
             joints[0] += math.radians(0.05) * counter
         b = bytearray(587)
         struct.pack_into(">I", b, 0, 587)
-        b[4] = (0 << 4) | 4  # mode 0, state 4
-        struct.pack_into(">H", b, 5, 0)
-        b[7:35], b[35:59] = f(joints), f(POSE)
+        b[4] = (self.mode << 4) | self.state
+        struct.pack_into(">H", b, 5, len(self.queue))
+        b[7:35], b[35:59] = f(joints), f(self.pose)
         b[87], b[88], b[89], b[90] = 0x3F, 0x3F, self.err, self.warn
         b[91:115], b[115:131] = f(TCP_OFFSET), f([0.82, 0.0, 0.0, 48.0])
         b[131], b[132] = 5, 1

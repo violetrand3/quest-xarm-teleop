@@ -89,17 +89,31 @@ class Ledger:
                 "notes": [e["note"] for e in ev if e["kind"] == "note"]}  # fmt: skip
 
 
-def install_wire_guard(cmd_tcp_class: Any, ledger: Ledger) -> Callable[[], None]:
-    """Allow only payload-free reads of READ_REGISTERS on the private protocol. Returns an undo."""
+def install_wire_guard(cmd_tcp_class: Any, ledger: Ledger, write_rules: dict | None = None) -> Callable[[], None]:
+    """Allow only payload-free reads of READ_REGISTERS on the private protocol. Returns an undo.
+
+    write_rules (None for the read-only inspector) lets a separate, explicitly commanding program
+    admit specific writes: {register: (name, validator(payload bytes) -> bool)}. A write passes only
+    if its register is listed AND its validator accepts the exact payload."""
     original = cmd_tcp_class.send_modbus_request
+    write_rules = write_rules or {}
 
     def guarded(self, unit_id, pdu_data, pdu_len, prot_id=-1, t_id=None, debug=False):  # type: ignore[no-untyped-def]
         protocol = getattr(self, "_protocol_identifier", None) if prot_id < 0 else prot_id
-        if unit_id not in READ_REGISTERS or pdu_len != 0 or protocol != 2:
-            ledger.add("wire_refused", register=unit_id, protocol=protocol, payload_len=pdu_len)
-            return -1  # the SDK treats this as "not sent"
-        ledger.add("wire_sent", register=f"{unit_id} {READ_REGISTERS[unit_id]}")
-        return original(self, unit_id, pdu_data, pdu_len, prot_id=prot_id, t_id=t_id, debug=debug)
+        if protocol == 2 and unit_id in READ_REGISTERS and pdu_len == 0:
+            ledger.add("wire_sent", register=f"{unit_id} {READ_REGISTERS[unit_id]}")
+            return original(self, unit_id, pdu_data, pdu_len, prot_id=prot_id, t_id=t_id, debug=debug)
+        rule = write_rules.get(unit_id) if protocol == 2 and pdu_len > 0 else None
+        if rule is not None:
+            try:
+                ok = bool(rule[1](bytes(pdu_data[i] for i in range(pdu_len))))
+            except Exception:
+                ok = False
+            if ok:
+                ledger.add("wire_sent", register=f"{unit_id} {rule[0]}")
+                return original(self, unit_id, pdu_data, pdu_len, prot_id=prot_id, t_id=t_id, debug=debug)
+        ledger.add("wire_refused", register=unit_id, protocol=protocol, payload_len=pdu_len)
+        return -1  # the SDK treats this as "not sent"
 
     cmd_tcp_class.send_modbus_request = guarded
     original_set = getattr(cmd_tcp_class, "set_protocol_identifier", None)
@@ -126,11 +140,12 @@ def install_wire_guard(cmd_tcp_class: Any, ledger: Ledger) -> Callable[[], None]
     return undo
 
 
-def install_api_guard(core: Any, ledger: Ledger) -> list:
-    """Replace every public method outside ALLOWED_API on this ONE instance with a recording stub."""
+def install_api_guard(core: Any, ledger: Ledger, allowed: frozenset = ALLOWED_API) -> list:
+    """Replace every public method outside `allowed` (default: the read-only ALLOWED_API) on this ONE
+    instance with a recording stub."""
     refused = []
     for name, _fn in inspect.getmembers(type(core), predicate=inspect.isfunction):  # never evaluates properties
-        if name.startswith("_") or name in ALLOWED_API:
+        if name.startswith("_") or name in allowed:
             continue
 
         def stub(*a: Any, _name: str = name, **k: Any) -> int:

@@ -74,8 +74,15 @@ class RobotBackend:
     def command_target(self, p_m: Vec3, orientation: tuple) -> None:
         raise NotImplementedError
 
-    def stop(self, reason: str) -> None:
+    def stop(self, reason: str, latched: bool = False) -> None:
+        """Called on EVERY disengagement. latched=False: ordinary release or input loss (no further
+        targets will come). latched=True: a fault; the backend must do its strongest software stop and
+        must not accept targets again until it is explicitly re-armed."""
         raise NotImplementedError
+
+    def motion_ready(self) -> tuple:
+        """(ready, reason). The adapter refuses to engage while this is False."""
+        return True, ""
 
     def read_gripper(self) -> GripperFeedback | None:
         return None
@@ -105,7 +112,7 @@ class FakeRobotBackend(RobotBackend):
         self.commands: deque = deque(maxlen=self.KEEP)  # (t_ns, p_m, orientation)
         self.stops: deque = deque(maxlen=self.KEEP)  # (t_ns, reason)
         self.gripper_previews: deque = deque(maxlen=self.KEEP)  # (t_ns, GripperProposal)
-        self.command_count = self.stop_count = self.preview_count = self.feedback_count = 0
+        self.command_count = self.stop_count = self.preview_count = self.feedback_count = self.latched_stop_count = 0
         # fault injection, used by tests only
         self.fail_feedback: str | None = None
         self.fail_command: str | None = None
@@ -135,9 +142,10 @@ class FakeRobotBackend(RobotBackend):
             with self._lock:
                 self._p, self._orientation = tuple(p_m), tuple(orientation)
 
-    def stop(self, reason: str) -> None:
+    def stop(self, reason: str, latched: bool = False) -> None:
         with self._lock:
             self.stop_count += 1
+            self.latched_stop_count += int(latched)
             self.stops.append((self.clock(), reason))
             if self.fail_stop:
                 raise BackendError(f"synthetic stop failure: {self.fail_stop}")

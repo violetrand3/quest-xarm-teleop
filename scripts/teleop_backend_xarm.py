@@ -75,7 +75,7 @@ class XArmPreparedBackend(RobotBackend):
         self.native_target(p_m, orientation)  # validated, then refused: no motion call is made
         raise LiveIntegrationBlocked(COMMAND_BLOCKERS)
 
-    def stop(self, reason: str) -> None:
+    def stop(self, reason: str, latched: bool = False) -> None:
         """The rig's own stop sequence. Its physical effect is unverified; it is not a hardware E-stop."""
         errors = []
         for call in (lambda: self._arm.emergency_stop(), lambda: self._arm.set_state(4)):

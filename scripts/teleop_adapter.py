@@ -180,13 +180,13 @@ class TeleopAdapter:
         if self.eng.state != old or reason.startswith("refused"):
             self.rec.write("transition", now, old=old, new=self.eng.state, reason=reason, latch=list(self.eng.latch_reasons))
 
-    def _stop_backend(self, now: int, reason: str, by: str) -> None:
+    def _stop_backend(self, now: int, reason: str, by: str, latched: bool) -> None:
         err = None
         try:
-            self.backend.stop(reason)
+            self.backend.stop(reason, latched=latched)
         except BackendError as e:
             err = str(e)
-        self.rec.write("stop", now, reason=reason, by=by, error=err, synthetic=self.backend.synthetic)
+        self.rec.write("stop", now, reason=reason, by=by, latched=latched, error=err, synthetic=self.backend.synthetic)
         if err is not None:
             self.eng.latch("stop_failed:" + err[:80])
 
@@ -200,7 +200,7 @@ class TeleopAdapter:
         self.eng.disengage(reason, latch)
         if latch:
             self.rec.write("fault", now, reason=reason, limit=reason.split(":")[0] in LIMIT_FAULTS)
-        self._stop_backend(now, reason, "scheduler")
+        self._stop_backend(now, reason, "scheduler", latch)
         self._transition(now, old, reason)
 
     def _feedback(self, now: int) -> tuple:
@@ -289,7 +289,11 @@ class TeleopAdapter:
                         self.gripper_executor.submit(proposal)  # non-blocking; the executor rate-limits and sends
         else:
             if eng.step_disengaged(view, now) == "press":
-                if fb is None:
+                ready, not_ready_why = self.backend.motion_ready()
+                if not ready:
+                    eng.refuse_engagement("refused: " + not_ready_why)
+                    self._transition(now, old, eng.blocked)
+                elif fb is None:
                     eng.refuse_engagement("refused: " + str(fb_problem))
                     self._transition(now, old, eng.blocked)
                 elif cfg.limits.workspace_problem(fb.p_m, "tool feedback") is not None:
@@ -349,5 +353,5 @@ class TeleopAdapter:
         with self._hb:
             self._ext_fault = why
         self.rec.write("fault", now, reason=why, limit=False)
-        self._stop_backend(now, why, "monitor")  # does not wait for the scheduler
+        self._stop_backend(now, why, "monitor", True)  # does not wait for the scheduler
         return why
