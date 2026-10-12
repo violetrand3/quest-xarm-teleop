@@ -306,6 +306,29 @@ class LiveTeleopProgramTests(unittest.TestCase):
         rc, res, _, _, _ = self.run_live(ctl2, None, [], duration=5.0)
         self.assertEqual(rc, 0)
 
+    def test_headset_facing_the_operator_flips_the_horizontal_directions(self) -> None:
+        import live_teleop as lt
+        import teleop_mapping as tm
+        self.assertEqual(lt.mapping_for_operator(0.0), [[0.0, 0.0, -1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        r180 = tm.validate_rotation(lt.mapping_for_operator(180.0))  # still a proper rotation
+        self.assertEqual([[round(v) for v in row] for row in r180], [[0, 0, 1], [1, 0, 0], [0, 1, 0]])  # LOCAL +z -> +x, LOCAL +x -> +y, up stays up
+        r90 = tm.validate_rotation(lt.mapping_for_operator(90.0))  # operator faces the headset's left: LOCAL -x is "forward"
+        self.assertEqual([[round(v) for v in row] for row in r90], [[-1, 0, 0], [0, 0, 1], [0, 1, 0]])
+        ctl = FakeController()
+
+        def drive(q: QuestFeed, notes: dict) -> None:
+            q.engage()
+            q.glide(+0.10, 40)  # the hand moves 100 mm AWAY from the operator = toward the headset's back = LOCAL +z
+            q.hold(+0.10, 25)
+            notes["pose"] = list(ctl.pose[:3])
+            q.hold(+0.10, 4, grip=0.0)
+
+        rc, res, _, _, notes = self.run_live(ctl, drive, ["--operator-yaw-deg", "180"])
+        self.assertNotIn("drive_error", notes, notes)
+        self.assertEqual((rc, res["faults"]), (0, []))
+        self.assertAlmostEqual(notes["pose"][0], POSE[0] + 25.0, delta=0.6)  # the arm moves away from its base (+x)
+        self.assertAlmostEqual(notes["pose"][1], POSE[1], delta=0.1)
+
     def test_refusals_before_anything_is_commanded(self) -> None:
         import live_teleop as lt
         real, sys.stdout = sys.stdout, io.StringIO()

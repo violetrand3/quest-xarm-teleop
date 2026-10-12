@@ -73,6 +73,16 @@ def workspace(pose: tuple, boundary: dict, box: list) -> tuple:
     return [round(v, 2) for v in lo], [round(v, 2) for v in hi]
 
 
+def mapping_for_operator(yaw_deg: float) -> list:
+    """R (backend from LOCAL) for an operator whose own forward is turned by yaw_deg about 'up' from the
+    headset's forward (LOCAL -z), counter-clockwise seen from above. 0: the headset faces the way the
+    operator faces (worn, or on the forehead). 180: the headset sits facing the operator.
+    R = R_BASE_FROM_LOCAL * Ry(yaw)^T, so a hand movement along the operator's forward maps to +x."""
+    c, s = math.cos(math.radians(yaw_deg)), math.sin(math.radians(yaw_deg))
+    ry_t = [[c, 0.0, -s], [0.0, 1.0, 0.0], [s, 0.0, c]]
+    return [[round(sum(R_BASE_FROM_LOCAL[i][k] * ry_t[k][j] for k in range(3)), 12) for j in range(3)] for i in range(3)]
+
+
 def build_config(lo_mm: list, hi_mm: list, a: argparse.Namespace) -> dict:
     rot = {} if a.rotation == "off" else {"rotation": {"mode": a.rotation, "scale": a.rot_scale, "max_angle_deg": a.rot_max_deg,
                                                        "w_max_deg_s": a.rot_speed, "max_error_deg": 10.0, "max_step_deg": 90.0}}  # fmt: skip
@@ -82,7 +92,8 @@ def build_config(lo_mm: list, hi_mm: list, a: argparse.Namespace) -> dict:
         "approved_for_live": True,
         "engagement": {"grip_released_max": 0.2, "grip_pressed_min": 0.8, "grip_hold_min": 0.5,
                        "input_fresh_ms": a.input_fresh_ms, "feedback_fresh_ms": 100},
-        "mapping": {"label": MAPPING_LABEL, "verified": False, "scale": a.scale, "R_backend_from_local": R_BASE_FROM_LOCAL},
+        "mapping": {"label": MAPPING_LABEL + f" Operator's forward is {a.operator_yaw_deg:g} deg from the headset's forward.",
+                    "verified": False, "scale": a.scale, "R_backend_from_local": mapping_for_operator(a.operator_yaw_deg)},
         "limits": {"workspace_min_m": [v / 1000.0 for v in lo_mm], "workspace_max_m": [v / 1000.0 for v in hi_mm],
                    "workspace_edge": "clamp", "max_anchor_displacement_m": 1.0, "max_controller_step_m": 0.30,  # a network gap is not a jump; the speed check below still catches teleports
                    "max_controller_speed_m_s": 2.5, "v_max_m_s": a.v_max / 1000.0, "a_max_m_s2": a.a_max / 1000.0,
@@ -113,6 +124,9 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     ap.add_argument("--rot-max-deg", type=float, default=30.0, help="limit from the tool orientation at session start (5..90)")
     ap.add_argument("--rot-speed", type=float, default=40.0, help="rotation speed limit, deg/s (5..120)")
     ap.add_argument("--rot-scale", type=float, default=1.0, help="tool rotation per hand rotation (0.2..1.5)")
+    ap.add_argument("--operator-yaw-deg", type=float, default=0.0,
+                    help="how the operator's forward is turned from the headset's forward, about 'up', counter-clockwise from above "
+                         "(0: headset worn or facing the way the operator faces; 180: headset on a table facing the operator)")
     ap.add_argument("--with-gripper", action="store_true", help="index trigger also drives the real gripper (0..90 %% closed)")
     ap.add_argument("--gripctl", default="http://127.0.0.1:8088")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -126,7 +140,8 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
         ok = (len(box) == 6 and all(0.0 <= v <= 300.0 for v in box) and 0.05 <= a.scale <= 1.0 and 5.0 <= a.v_max <= 150.0
               and 20.0 <= a.a_max <= 1000.0 and a.v_max <= a.ctrl_speed <= 200.0 and 50.0 <= a.ctrl_acc <= 2000.0
               and 5.0 <= a.track_err <= 30.0 and 100.0 <= a.input_fresh_ms <= 500.0 and 5.0 <= a.duration <= 600.0
-              and 5.0 <= a.rot_max_deg <= 90.0 and 5.0 <= a.rot_speed <= 120.0 and 0.2 <= a.rot_scale <= 1.5)  # fmt: skip
+              and 5.0 <= a.rot_max_deg <= 90.0 and 5.0 <= a.rot_speed <= 120.0 and 0.2 <= a.rot_scale <= 1.5
+              and -180.0 <= a.operator_yaw_deg <= 180.0)  # fmt: skip
     except ValueError:
         ok = False
     if not ok:
