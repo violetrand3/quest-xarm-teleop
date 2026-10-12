@@ -37,6 +37,7 @@ class XArmLiveBackend(RobotBackend):
     def __init__(self, link: cl.XArmCommandLink, speed_mm_s: float, acc_mm_s2: float):
         self.link, self.speed, self.acc = link, float(speed_mm_s), float(acc_mm_s2)
         self.command_count = self.stop_count = self.halt_count = 0
+        self.gripper: Any = None  # optional GripctlClient (separate device); None = gripper not used
         self.last_state: cl.ArmState | None = None
 
     def arm_motion(self) -> None:
@@ -81,7 +82,7 @@ class XArmLiveBackend(RobotBackend):
             raise BackendError(f"halt failed: {e}") from None
 
     def read_gripper(self) -> Any:
-        return None  # the gripper is a separate device; parked until its hardware is fixed
+        return None if self.gripper is None else self.gripper.read()
 
     def preview_gripper(self, proposal: GripperProposal) -> None:
         return None

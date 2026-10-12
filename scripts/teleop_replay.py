@@ -28,14 +28,14 @@ MS = 1_000_000
 
 
 def replay(path: Path, cfg: Any, send_period_ms: float = 1000 / 30, heartbeat_ms: float = 200, ack_at_s: tuple = (),
-           tail_s: float = 1.0) -> dict[str, Any]:  # fmt: skip
+           tail_s: float = 1.0, start_p_m: tuple | None = None) -> dict[str, Any]:  # fmt: skip
     with path.open(encoding="utf-8") as f:
         rows = [json.loads(x) for x in f]
     rows = [r for r in rows if "host_ns" in r]
     t0 = rows[0]["host_ns"]
     clock = [t0]
     channel, rec = InputChannel(), Recorder()
-    backend = FakeRobotBackend(clock=lambda: clock[0])
+    backend = FakeRobotBackend(clock=lambda: clock[0]) if start_p_m is None else FakeRobotBackend(clock=lambda: clock[0], start_p_m=start_p_m)
     adapter = TeleopAdapter(cfg, channel, backend, rec)
     state = ChannelReceiverState(channel)
     tr = pt.ContinuityTracker(expect_build=None, stale_ns=500 * MS)

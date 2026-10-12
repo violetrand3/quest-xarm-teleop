@@ -43,6 +43,7 @@ _SCHEMA = {
     "scheduler": {"period_ms", "max_tick_dt_ms", "monitor_period_ms", "stall_ms"},
     "gripper": {"pickup_tolerance_pct", "max_rate_pct_s"},
 }  # fmt: skip
+_OPTIONAL = {"limits": {"workspace_edge"}}  # "fault" (default): leaving the workspace latches a fault; "clamp": hold at the edge
 
 
 @dataclass(frozen=True)
@@ -71,8 +72,11 @@ def parse_config(d: Any) -> TeleopConfig:
     if not isinstance(d, dict) or set(d) != {"label", "approved_for_live", *_SCHEMA}:
         raise ConfigError(f"config must have exactly: label, approved_for_live, {', '.join(sorted(_SCHEMA))}")
     for sec, keys in _SCHEMA.items():
-        if not isinstance(d[sec], dict) or set(d[sec]) != keys:
+        if not isinstance(d[sec], dict) or not (keys <= set(d[sec]) <= keys | _OPTIONAL.get(sec, set())):
             raise ConfigError(f"config section {sec!r} must have exactly: {', '.join(sorted(keys))}")
+    edge = d["limits"].get("workspace_edge", "fault")
+    if edge not in ("fault", "clamp"):
+        raise ConfigError("limits.workspace_edge must be 'fault' or 'clamp'")
     if not isinstance(d["approved_for_live"], bool) or not isinstance(d["mapping"]["verified"], bool):
         raise ConfigError("approved_for_live and mapping.verified must be booleans")
 
@@ -99,7 +103,7 @@ def parse_config(d: Any) -> TeleopConfig:
         raise ConfigError("need 0 <= grip_released_max < grip_hold_min <= grip_pressed_min <= 1")
     limits = Limits(lo, hi, pos("limits", "max_anchor_displacement_m"), pos("limits", "max_controller_step_m"),
                     pos("limits", "max_controller_speed_m_s"), pos("limits", "v_max_m_s"), pos("limits", "a_max_m_s2"),
-                    pos("limits", "max_target_feedback_error_m"))  # fmt: skip
+                    pos("limits", "max_target_feedback_error_m"), clamp_to_workspace=edge == "clamp")  # fmt: skip
     ms = lambda sec, key: int(pos(sec, key) * 1e6)  # noqa: E731
     return TeleopConfig(
         str(d["label"]), d["approved_for_live"], d, float(e["grip_released_max"]), float(e["grip_pressed_min"]),
@@ -256,11 +260,15 @@ class TeleopAdapter:
                     if why is None:
                         ref.last_p_m, ref.last_t_query_ns, ref.last_seq = s.p_m, s.t_query_ns, s.source_seq
                         p_req = cfg.mapping.target(ref.p_tool0_m, ref.p_ctrl0_m, s.p_m)
+                        if cfg.limits.clamp_to_workspace:
+                            p_req = cfg.limits.clamp(p_req)
                         why = cfg.limits.target_problem(p_req, ref.p_tool0_m)
                         if why is None:
                             self.p_req = p_req
             if why is None:
                 limited = self.limiter.step(self.p_req, (dt_ns or 0) / 1e9)
+                if cfg.limits.clamp_to_workspace:
+                    limited = self.limiter.confine(cfg.limits.workspace_min_m, cfg.limits.workspace_max_m)
                 why = cfg.limits.workspace_problem(limited, "limited") or cfg.limits.tracking_problem(limited, fb.p_m)
                 latch = True
             if why is None:

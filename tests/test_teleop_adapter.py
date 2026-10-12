@@ -411,6 +411,42 @@ class LimitTests(unittest.TestCase):
         self.assertTrue(r.rec.faults[-1]["limit"])
         self.assertLessEqual(max(c[1][0] for c in r.backend.commands), 0.100 + 1e-9)
 
+    def test_clamp_option_holds_at_the_workspace_edge_instead_of_faulting(self) -> None:
+        r = Rig(cfg(limits__workspace_edge="clamp", limits__max_anchor_displacement_m=0.5))
+        r.engage()
+        out = {}
+        for i in range(1, 401):  # 800 mm of hand travel -> 160 mm requested; the fixed workspace ends at +100 mm
+            out = r.step(off(P0, (0.0, 0.0, -0.002 * i)), 1.0)
+        self.assertEqual(out["state"], ta.ACTIVE, r.rec.faults)
+        self.assertAlmostEqual(out["req_mm"][0], 99.8, places=6)  # held 0.2 mm inside the edge
+        self.assertLessEqual(max(c[1][0] for c in r.backend.commands), 0.100 + 1e-9)
+        for i in range(400, 300, -1):  # coming back: the tool leaves the edge only once the hand is back inside
+            out = r.step(off(P0, (0.0, 0.0, -0.002 * i)), 1.0)
+        self.assertAlmostEqual(out["req_mm"][0], 99.8, places=6)
+        for i in range(300, 199, -1):
+            out = r.step(off(P0, (0.0, 0.0, -0.002 * i)), 1.0)
+        self.assertAlmostEqual(out["req_mm"][0], 80.0, places=6)
+        with self.assertRaises(tm.ConfigError):
+            cfg(limits__workspace_edge="bounce")
+
+    def test_holding_at_an_awkward_edge_never_faults(self) -> None:
+        # Regression for the first live session (2026-10-12): the request was held on the box edge at
+        # y = +1.59 mm while the hand kept moving along the other axes, and the rate-limited target landed
+        # a rounding error outside the edge -> latched "workspace_violation:limited".
+        import math as m
+        for edge in (0.00159, 0.0503177, 0.0271828):
+            r = Rig(cfg(limits__workspace_edge="clamp", limits__max_anchor_displacement_m=0.5,
+                        limits__workspace_max_m=[edge, 0.10, 0.10]))  # fmt: skip
+            r.engage()
+            out, dts = {}, [20.0, 20.02, 19.99, 20.01, 20.03, 19.98]
+            for i in range(1, 1500):
+                hand = (0.05 * m.sin(i * 0.013), 0.04 * m.sin(i * 0.0071), -min(0.6, 0.0011 * i))  # oblique: x keeps pushing past the edge
+                r.pose(off(P0, hand), 1.0)
+                out = r.tick(dts[i % len(dts)])
+                self.assertEqual(out["state"], ta.ACTIVE, (edge, i, r.rec.faults))
+            self.assertLessEqual(out["lim_mm"][0], edge * 1000.0)
+            self.assertGreater(out["lim_mm"][0], edge * 1000.0 - 0.25)
+
     def test_anchor_displacement_limit(self) -> None:
         r = Rig(cfg(limits__max_anchor_displacement_m=0.01))
         r.engage()
@@ -833,6 +869,35 @@ class DryRunProcessTests(unittest.TestCase):
             self.assertEqual(lim[0], 0.0)  # zero jump at engagement
             self.assertTrue(4.0 < max(lim) <= 10.0 + 1e-6, max(lim))  # 50 mm of hand travel -> at most 10 mm
             self.assertIn("DRY RUN: NO ROBOT OR GRIPPER CONNECTED", out)
+
+
+LIVE1 = ROOT / "data/checkpoint10/src_tele_20261012-182231.jsonl"
+LIVE1_SUMMARY = ROOT / "data/checkpoint10/teleop_tele_20261012-182231.summary.json"
+
+
+@unittest.skipUnless(LIVE1.exists() and LIVE1_SUMMARY.exists(), "the first live session's recording is only on the local PC")
+class LiveSessionReplayTests(unittest.TestCase):
+    """REPLAY of the recorded input of the first live arm session (2026-10-12) against a FAKE arm."""
+
+    def test_the_box_edge_fault_of_the_first_live_session_is_gone(self) -> None:
+        import teleop_limits as tl
+        import teleop_replay
+        summ = json.loads(LIVE1_SUMMARY.read_text())
+        start = tuple(v / 1000 for v in summ["workspace_mm"]["start"])
+        run = lambda: teleop_replay.replay(LIVE1, ta.parse_config(summ["config"]), ack_at_s=(8.0,), start_p_m=start)  # noqa: E731
+        o = run()
+        self.assertEqual((o["engagements"], [f for f in o["faults"] if "reference" not in f["reason"]]), (1, []))
+        hi = summ["config"]["limits"]["workspace_max_m"]
+        self.assertLessEqual(max(c[1][1] for c in o["commands"]), hi[1])  # the y edge the session ran into
+        self.assertGreater(o["synthetic_target_requests"], 700)
+        # as that session actually ran (request held exactly on the edge, limited target not confined): the fault comes back
+        inset, eps, confine = tl.CLAMP_INSET_M, tl.EDGE_EPS_M, tl.RateLimiter.confine
+        tl.CLAMP_INSET_M, tl.EDGE_EPS_M, tl.RateLimiter.confine = 0.0, 0.0, lambda self, lo, hi: self.p
+        try:
+            old = run()
+        finally:
+            tl.CLAMP_INSET_M, tl.EDGE_EPS_M, tl.RateLimiter.confine = inset, eps, confine
+        self.assertTrue(any(f["reason"].startswith("workspace_violation:limited y=") for f in old["faults"]), old["faults"])
 
 
 REPLAYS = {

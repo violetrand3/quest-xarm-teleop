@@ -186,7 +186,7 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     ap.add_argument("--acc", type=float, default=100.0, help="mm/s^2 (max 500)")
     ap.add_argument("--mode", type=int, choices=[0, 7], default=7)
     ap.add_argument("--allow-reduced-mode-off", action="store_true",
-                    help="position mode (0) only: run although the controller's reduced mode is off. The operator's explicit decision; "
+                    help="run although the controller's reduced mode is off. The operator's explicit decision, recorded; "
                          "this program still refuses anything above --speed or outside its small box")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args(argv)
@@ -236,8 +236,8 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
             if not (len(rs) > 5 and rs[5] == 1):
                 raise Abort("the fence (safety boundary) is not on; nothing was commanded")
             if rs[0] != 1:
-                if not (args.allow_reduced_mode_off and args.mode == 0):
-                    raise Abort("reduced mode is not on; nothing was commanded (only a position-mode run may waive this, with --allow-reduced-mode-off)")
+                if not args.allow_reduced_mode_off:
+                    raise Abort("reduced mode is not on; nothing was commanded (the operator can waive this with --allow-reduced-mode-off)")
                 out["before"]["reduced_mode_waived_by_operator"] = True
             s2 = (time.sleep(0.5), probe.read())[1]
             if max(abs(a - b) for a, b in zip(s.pose[:3], s2.pose[:3])) > 0.2:

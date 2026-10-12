@@ -19,6 +19,10 @@ def dist(a: Sequence[float], b: Sequence[float]) -> float:
     return math.sqrt(sum((a[k] - b[k]) ** 2 for k in range(3)))
 
 
+CLAMP_INSET_M = 0.0002
+EDGE_EPS_M = 1e-7  # floating-point slack at the workspace edge (0.0001 mm)
+
+
 @dataclass(frozen=True)
 class Limits:
     workspace_min_m: tuple
@@ -29,10 +33,16 @@ class Limits:
     v_max_m_s: float
     a_max_m_s2: float
     max_target_feedback_error_m: float
+    clamp_to_workspace: bool = False  # True: a request beyond the fixed workspace is held at its edge instead of faulting
+
+    def clamp(self, p: Sequence[float]) -> tuple:
+        """Hold a request just INSIDE the workspace (0.2 mm), so that the rate-limited target that follows
+        it can never land a rounding error outside the edge."""
+        return tuple(min(self.workspace_max_m[k] - CLAMP_INSET_M, max(self.workspace_min_m[k] + CLAMP_INSET_M, p[k])) for k in range(3))
 
     def workspace_problem(self, p: Sequence[float], what: str) -> str | None:
         for k, ax in enumerate("xyz"):
-            if not (self.workspace_min_m[k] <= p[k] <= self.workspace_max_m[k]):
+            if not (self.workspace_min_m[k] - EDGE_EPS_M <= p[k] <= self.workspace_max_m[k] + EDGE_EPS_M):
                 return f"workspace_violation:{what} {ax}={p[k] * 1000:+.1f}mm outside [{self.workspace_min_m[k] * 1000:+.0f},{self.workspace_max_m[k] * 1000:+.0f}]"
         return None
 
@@ -74,6 +84,20 @@ class RateLimiter:
 
     def clear(self) -> None:
         self.p, self.v = None, (0.0, 0.0, 0.0)
+
+    def confine(self, lo: Sequence[float], hi: Sequence[float]) -> tuple:
+        """Keep the limited target inside [lo, hi]. While it chases a request that slides along a wall it
+        can otherwise drift a few hundredths of a millimetre past it. An axis that touches a wall loses its
+        outward speed."""
+        assert self.p is not None
+        p, v = list(self.p), list(self.v)
+        for k in range(3):
+            if p[k] > hi[k]:
+                p[k], v[k] = hi[k], min(v[k], 0.0)
+            elif p[k] < lo[k]:
+                p[k], v[k] = lo[k], max(v[k], 0.0)
+        self.p, self.v = tuple(p), (v[0], v[1], v[2])
+        return self.p
 
     def step(self, p_req: Sequence[float], dt_s: float) -> tuple:
         assert self.p is not None, "limiter used without an engagement"

@@ -310,7 +310,7 @@ class FirstMoveProgramTests(unittest.TestCase):
         self.assertGreaterEqual(res["tests"]["B_second_target"]["peak_travel_mm"], 5.5)
 
     def test_reduced_mode_off_is_refused_unless_waived_for_position_mode(self) -> None:
-        for extra, expect_run in (([], False), (["--mode", "7", "--allow-reduced-mode-off"], False), (["--mode", "0", "--allow-reduced-mode-off"], True)):
+        for extra, expect_run in (([], False), (["--mode", "0"], False), (["--mode", "0", "--allow-reduced-mode-off"], True)):
             ctl = FakeController(pose=NEAR_FENCE)
             ctl.reduced_on = False
             rc, res, _ = self.run_program(ctl, extra)

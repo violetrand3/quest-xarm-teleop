@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# One LIVE teleop session: Quest right controller -> REAL arm on linux2 (small box, slow).
+# Usage: teleop_live_session.sh <name> <confirmation-file> <teleop seconds> [extra live_teleop.py flags]
+# The lab program runs detached and parks the arm by itself (on SIGINT, on its own duration limit, or on a fault).
+set -u
+P=~/quest-xarm-teleop; D=$P/data/checkpoint10; R=$P/run; N=$1; CONF=$2; TEL=$3; shift 3
+L=quest-xarm-teleop-dryrun/logs
+SSHO=(-o BatchMode=yes -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10)
+S=$(adb devices | awk 'NR>1 && $2=="device"{print $1}'); [ "$(echo "$S" | grep -c .)" = 1 ] || { echo "need exactly one headset on adb"; exit 2; }
+say() { spd-say -w -l es "$1" >/dev/null 2>&1; }
+sayq() { spd-say -l es "$1" >/dev/null 2>&1; }
+mark() { python3 -c 'import time,sys;print(time.monotonic_ns(), sys.argv[1])' "$1" >> "$D/marks_$N.txt"; echo "MARK $1"; }
+st() { tail -n 1 "$D/teleop_$N.console.txt" 2>/dev/null | awk -F' [|] ' '{split($2,a," "); print a[1]}'; }
+wait_state() { local end=$((SECONDS + $2)); while [ $SECONDS -lt $end ]; do s=$(st); for w in $1; do [ "$s" = "$w" ] && { echo "$s"; return 0; }; done; sleep 0.2; done; echo "$(st)"; return 1; }
+wait_avail() { python3 - "$D/src_$N.jsonl" "$1" "$2" <<'PY'
+import json,sys,time
+path,need,maxs=sys.argv[1],float(sys.argv[2]),float(sys.argv[3]); t0=time.monotonic(); since=None
+def ok():
+    try:
+        with open(path,'rb') as f:
+            f.seek(0,2); f.seek(max(0,f.tell()-6000)); lines=f.read().decode('utf-8','replace').splitlines()[1:]
+        r=json.loads(lines[-1]); return r.get('available') is True and (time.monotonic_ns()-r['host_ns'])<300e6
+    except Exception: return False
+while time.monotonic()-t0<maxs:
+    if ok():
+        since=since or time.monotonic()
+        if time.monotonic()-since>=need: print("available"); sys.exit(0)
+    else: since=None
+    time.sleep(0.05)
+print("NOT available within limit"); sys.exit(1)
+PY
+}
+ack() { ssh "${SSHO[@]}" linux2 "kill -USR1 \$(cat ~/$L/pid_$N) && echo 'operator acknowledgement sent'"; }
+finish() {
+  T=$(cat "$R/tx.pid" 2>/dev/null); kill -INT "$T" 2>/dev/null; for i in $(seq 1 60); do kill -0 "$T" 2>/dev/null || break; sleep 0.25; done; echo "sender stopped"
+  sed -i "s/$S/[REDACTED]/g" "$D/tx_$N.console.txt" 2>/dev/null
+  T=$(cat "$R/tunnel_link.pid" 2>/dev/null); ps -o args= -p "$T" 2>/dev/null | grep -q -- "-L 127.0.0.1:18765:127.0.0.1:28765" && kill "$T" && echo "link tunnel closed"
+  ssh "${SSHO[@]}" linux2 "kill -INT \$(cat ~/$L/pid_$N) 2>/dev/null; for i in \$(seq 1 60); do [ -f ~/$L/done_$N ] && break; sleep 0.5; done; [ -f ~/$L/done_$N ] && echo 'lab program finished and parked' || echo 'LAB PROGRAM NOT FINISHED'; cat ~/$L/run_$N.log"
+  T=$(cat "$R/tailc.pid" 2>/dev/null); kill "$T" 2>/dev/null
+  scp -q "${SSHO[@]}" "linux2:$L/teleop_$N.*" "linux2:$L/teleop_link_$N.jsonl" "linux2:$L/refdiff_${N}_*.json" "$D/" && echo fetched
+  adb -s "$S" shell am force-stop org.questxarm.reader && echo "app force-stopped"; echo "DONE $N ($1)"
+}
+scp -q "${SSHO[@]}" "$CONF" "linux2:$L/confirm_$N.txt" || exit 2
+echo "camera wall viewers (c920/rs_depth > 0 means the full camera page is open somewhere): $(ssh "${SSHO[@]}" linux2 'curl -s -m 5 http://127.0.0.1:8090/api/status' | python3 -c 'import json,sys; print({k:v["viewers"] for k,v in json.load(sys.stdin)["cameras"].items()})')"
+ssh "${SSHO[@]}" linux2 "cd ~/quest-xarm-teleop-dryrun && rm -f logs/done_$N && (nohup setsid bash scripts/ops/lab_teleop_live_run.sh $N $((TEL + 90)) $* > logs/run_$N.log 2>&1 < /dev/null &)"
+: > "$D/teleop_$N.console.txt"
+ssh "${SSHO[@]}" linux2 "tail -n +1 -F ~/$L/teleop_$N.console.txt 2>/dev/null" > "$D/teleop_$N.console.txt" 2>/dev/null &
+echo $! > "$R/tailc.pid"
+for i in $(seq 1 100); do grep -q "Armed in mode\|ABORTED\|Traceback\|^error" "$D/teleop_$N.console.txt" 2>/dev/null && break; sleep 0.25; done
+grep -v '^\[SDK\]\|^ROBOT_IP\|^SDK_VERSION' "$D/teleop_$N.console.txt" | sed -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/<ip>/g' | head -6 | cut -c1-300
+grep -q "Armed in mode" "$D/teleop_$N.console.txt" || { echo "the live program did not arm; ending"; finish abort; exit 3; }
+ssh "${SSHO[@]}" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -L 127.0.0.1:18765:127.0.0.1:28765 linux2 > "$R/tunnel_link.txt" 2>&1 &
+echo $! > "$R/tunnel_link.pid"; for i in $(seq 1 40); do ss -ltn | grep -q '127.0.0.1:18765 ' && break; sleep 0.25; done
+( cd "$P/scripts" && exec python3 -u quest_pose_stream_sender.py --serial "$S" --port 18765 --max-rate 30 --log "$D/tx_$N.jsonl" --source-log "$D/src_$N.jsonl" --summary "$D/tx_$N.summary.json" > "$D/tx_$N.console.txt" 2>&1 ) &
+echo $! > "$R/tx.pid"; sleep 2
+adb -s "$S" shell am broadcast -a com.oculus.vrpowermanager.prox_close > /dev/null 2>&1   # keep the headset awake on the forehead
+adb -s "$S" shell am force-stop org.questxarm.reader; sleep 1
+mark "launch app"; adb -s "$S" shell am start -W -n org.questxarm.reader/com.rail.oculus.teleop.MainActivity 2>&1 | grep -E "Status|LaunchState"
+say "Visor en la frente. Control derecho delante de ti. No aprietes nada."
+wait_avail 2 90 || { say "No se detecta el control. Paramos."; mark "abort: no input"; finish abort; exit 3; }
+sleep 4; mark "acknowledge start-up notices"; ack; sleep 1.5; mark "state before cues = $(st)"
+say "Suelta el botón del dedo medio."; s=$(wait_state "ARMED" 12); mark "after release cue = $s"
+[ "$s" = "ARMED" ] || { ack; sleep 1.5; s=$(wait_state "ARMED" 8); mark "after second acknowledgement = $s"; }
+[ "$s" = "ARMED" ] || { say "No se pudo preparar. Paramos."; mark "abort: not armed ($s)"; finish abort; exit 4; }
+mark "teleop window start"; say "Aprieta y mantén el dedo medio. Mueve la mano despacio."
+prev=""; end=$((SECONDS + TEL)); fault=0
+while [ $SECONDS -lt $end ]; do
+  s=$(st)
+  if [ -n "$s" ] && [ "$s" != "$prev" ]; then
+    mark "state $prev -> $s"
+    case "$s" in
+      ACTIVE) sayq "Activo";;
+      FAULT_LATCHED) fault=1; break;;
+      *) [ "$prev" = "ACTIVE" ] && sayq "Pausa";;
+    esac
+    prev=$s
+  fi
+  sleep 0.25
+done
+if [ $fault = 1 ]; then mark "fault latched; ending"; say "Fallo. Paramos."; else mark "cue end"; say "Suelta el botón. Terminado."; fi
+sleep 1.5; mark "end"
+finish ok
