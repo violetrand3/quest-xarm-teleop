@@ -72,8 +72,29 @@ mounting transform, which is not known here.
 | Full test modules on linux2 (178 tests) | pass (one timing-dependent test failed once under load, passed on 6 reruns) |
 | Real camera wall, made-up robot rows, 8 s, no arm connection | 30.0 fps on both cameras, largest gap 36 ms, all frames decode, video starts 22 ms after the start mark |
 
-Not yet checked on hardware: the A and B buttons of the real controller (they arrive in the data but were
-never pressed in a recorded session), and a recording during real arm motion.
+## First session on the rig (`rec_20261012-195208`)
+
+Approved by the operator in a question form (labmate on site, area clear, other agent paused, OK to move;
+headset on the table facing away). Settings as in the previous session: box 100/100/150/150/35/120 mm,
+120 mm/s, full wrist rotation up to 30 deg, gripper on. 4-minute window.
+
+| Item | Result |
+|---|---|
+| Session | ended normally: 321 s, 15 engagements, 6183 targets, 0 halts, no latched fault, 0 link refusals |
+| Arm after | parked, state 4, no error, at x 303.4, y 52.3, z 406.9 mm |
+| Episode 1 | 41.9 s, 2097 rows at 50.0 Hz (largest gap 20.8 ms), pose and joints in every row, 1248 targets |
+| Arm motion in the episode | 559 mm of travel; following for 25.0 s |
+| Video | wrist 1259 frames, fixed 1256 frames, 30.0 fps; largest gap 66 ms (wrist), 36 ms (fixed); 54 MB |
+| Rows vs video | image change per 2 s follows the recorded arm travel (correlation 0.86 fixed camera, 0.70 wrist camera), including a 14 s pause that is still in both |
+| Extra arm read for the joints | whole per-tick read took 1.0 ms median, 2.4 ms at most |
+| Labels | `--labels 8` gave 1250 actions; median step 0.9 mm, largest 31.7 mm and 5.5 deg over 8 frames |
+
+**The A and B buttons were not pressed in this session** (no press in 17,344 controller records), so
+episode 1 was started and saved from the laptop with the toggle signal (SIGUSR2) while the operator was
+moving the arm. The spoken cues "Grabando" and "Guardado" fired. The same app build did report A and B
+presses in the button test of 2026-09-30, and the button logic passes with the simulated arm, but a
+press on the real controller starting an episode has not been seen yet. B (discard) is equally unseen
+on hardware. The jaws stayed open during the episode (trigger at 0), so no jaw motion is in it.
 
 ## Limits
 
