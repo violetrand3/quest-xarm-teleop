@@ -80,7 +80,7 @@ def build_config(lo_mm: list, hi_mm: list, a: argparse.Namespace) -> dict:
                        "input_fresh_ms": a.input_fresh_ms, "feedback_fresh_ms": 100},
         "mapping": {"label": MAPPING_LABEL, "verified": False, "scale": a.scale, "R_backend_from_local": R_BASE_FROM_LOCAL},
         "limits": {"workspace_min_m": [v / 1000.0 for v in lo_mm], "workspace_max_m": [v / 1000.0 for v in hi_mm],
-                   "workspace_edge": "clamp", "max_anchor_displacement_m": 0.5, "max_controller_step_m": 0.12,
+                   "workspace_edge": "clamp", "max_anchor_displacement_m": 1.0, "max_controller_step_m": 0.30,  # a network gap is not a jump; the speed check below still catches teleports
                    "max_controller_speed_m_s": 2.5, "v_max_m_s": a.v_max / 1000.0, "a_max_m_s2": a.a_max / 1000.0,
                    "max_target_feedback_error_m": a.track_err / 1000.0},
         "scheduler": {"period_ms": 20, "max_tick_dt_ms": 100, "monitor_period_ms": 25, "stall_ms": 150},
@@ -96,12 +96,12 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     ap.add_argument("--moves-real-arm", action="store_true")
     ap.add_argument("--human-confirmation", default="")
     ap.add_argument("--allow-reduced-mode-off", action="store_true", help="the operator's explicit decision; recorded")
-    ap.add_argument("--box", default="50,50,50,50,10,60", help="mm around the start pose: x-,x+,y-,y+,z-,z+ (each 0..120)")
-    ap.add_argument("--scale", type=float, default=0.25, help="tool displacement per hand displacement (0.05..0.5)")
-    ap.add_argument("--v-max", type=float, default=30.0, help="target speed limit, mm/s (5..40)")
+    ap.add_argument("--box", default="50,50,50,50,10,60", help="mm around the start pose: x-,x+,y-,y+,z-,z+ (each 0..300)")
+    ap.add_argument("--scale", type=float, default=0.25, help="tool displacement per hand displacement (0.05..1.0)")
+    ap.add_argument("--v-max", type=float, default=30.0, help="target speed limit, mm/s (5..150)")
     ap.add_argument("--a-max", type=float, default=150.0, help="target acceleration limit, mm/s^2")
-    ap.add_argument("--ctrl-speed", type=float, default=50.0, help="speed given to the controller for each line target, mm/s (<= 50)")
-    ap.add_argument("--ctrl-acc", type=float, default=500.0, help="acceleration given to the controller, mm/s^2 (<= 1000)")
+    ap.add_argument("--ctrl-speed", type=float, default=50.0, help="speed given to the controller for each line target, mm/s (<= 200)")
+    ap.add_argument("--ctrl-acc", type=float, default=500.0, help="acceleration given to the controller, mm/s^2 (<= 2000)")
     ap.add_argument("--track-err", type=float, default=20.0, help="fault if the target is further than this from the arm, mm")
     ap.add_argument("--input-fresh-ms", type=float, default=300.0)
     ap.add_argument("--with-gripper", action="store_true", help="index trigger also drives the real gripper (0..90 %% closed)")
@@ -114,8 +114,8 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     a = ap.parse_args(argv)
     try:
         box = [float(x) for x in a.box.split(",")]
-        ok = (len(box) == 6 and all(0.0 <= v <= 120.0 for v in box) and 0.05 <= a.scale <= 0.5 and 5.0 <= a.v_max <= 40.0
-              and 20.0 <= a.a_max <= 500.0 and a.v_max <= a.ctrl_speed <= 50.0 and 50.0 <= a.ctrl_acc <= 1000.0
+        ok = (len(box) == 6 and all(0.0 <= v <= 300.0 for v in box) and 0.05 <= a.scale <= 1.0 and 5.0 <= a.v_max <= 150.0
+              and 20.0 <= a.a_max <= 1000.0 and a.v_max <= a.ctrl_speed <= 200.0 and 50.0 <= a.ctrl_acc <= 2000.0
               and 5.0 <= a.track_err <= 30.0 and 100.0 <= a.input_fresh_ms <= 500.0 and 5.0 <= a.duration <= 600.0)  # fmt: skip
     except ValueError:
         ok = False

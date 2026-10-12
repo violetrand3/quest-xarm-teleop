@@ -261,12 +261,13 @@ class LiveTeleopProgramTests(unittest.TestCase):
             self.assertEqual(lt.main(["--address", "127.0.0.1", "--moves-real-arm"]), 2)  # no confirmation
             self.assertEqual(lt.main(["--address", "127.0.0.1", "--v-max", "200"]), 2)
             self.assertEqual(lt.main(["--address", "127.0.0.1", "--box", "50,50,50,50,10,500"]), 2)
+            self.assertEqual(lt.main(["--address", "127.0.0.1", "--ctrl-speed", "250", "--v-max", "100"]), 2)
         finally:
             sys.stdout = real
         for prep, extra, why in ((lambda c: setattr(c, "reduced_on", False), [], "reduced mode"),
                                  (lambda c: setattr(c, "sim", True), [], "simulation"),
                                  (lambda c: setattr(c, "err", 22), [], "error 22"),
-                                 (lambda c: None, ["--box", "150,50,50,50,10,60"], None)):  # fmt: skip
+                                 (lambda c: None, ["--box", "350,50,50,50,10,60"], None)):  # fmt: skip
             ctl = FakeController()
             prep(ctl)
             rc, res, _, _, _ = self.run_live(ctl, None, extra, duration=5.0)
