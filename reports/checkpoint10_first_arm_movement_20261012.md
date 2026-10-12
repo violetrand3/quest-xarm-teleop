@@ -162,3 +162,23 @@ Confirmations: `data/checkpoint10/confirm_tele_20261012-184031.txt` ("Large"), `
 State left: arm parked at x 334.6, y 45.6, z 405.3 mm, yaw turned 4.9° from where it started the day, state 4, mode 0, no error. Gripper open. Reduced mode still off.
 
 Not exercised on the rig yet: "full" rotation (tilting), rotation faster than 20°/s, the fault paths of rotation (covered by synthetic tests only).
+
+### Session 5 (`teleop_tele_20261012-191114`): full rotation, headset on the table
+Confirmation: `data/checkpoint10/confirm_fullrot_20261012.txt` (headset "Facing away from me", so operator yaw 0; all three conditions ticked).
+
+- New setting `--operator-yaw-deg`: how the operator's forward is turned from the headset's forward, for a headset that is not worn (0 here; 180 if it faces the operator).
+- Tilt check first (`first_move_rot_20261012-191026.json`): 5° about base x and back. The target's roll wrapped from +179.73° to −175.22°; the controller turned 4.994° the short way, flange shift 0.0 mm, returned to start.
+
+| Measure | Value |
+|---|---|
+| Time engaged | 140.1 s in 17 engagements, all ended by releasing the clutch; no faults, no halts |
+| Tool rotation from the session start | up to 30.0° (the limit, held) |
+| By axis (base frame) | tilt about x −22.0…+11.1°, tilt about y −11.9…+14.5°, turn about z −29.7…+28.8° |
+| Gripper axis away from straight down | 0.2° … 22.2° (8.6° at session start) |
+| Rotation speed | up to 21°/s |
+| Arm travel | x 290–397, y −77…142, z 370–431 mm (box x 235–435, y −104…196, z 370–525) |
+| Target-to-arm distance | median 0.21 mm, max 6.6 mm |
+| Gripper | 74 commands, 0 errors |
+| Link | RTT median 230 ms, p95 305 ms |
+
+State left: arm parked at x 298.9, y −74.6, z 397.0 mm with the tool where the operator left it (roll 177.6°, pitch −5.3°, yaw −3.8°; at the start of the day it was 179.7°, −8.6°, −7.0°), state 4, mode 0, no error. Gripper open. Reduced mode still off.
