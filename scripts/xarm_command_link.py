@@ -57,6 +57,7 @@ class ArmState:
     cmdnum: int
     t_mono_ns: int  # host clock when the last of the reads completed
     read_ms: float
+    joints: tuple | None = None  # J1..J6 in rad; only read when the link's read_joints is set (episode recording)
 
 
 def make_write_rules(box_min_mm: tuple, box_max_mm: tuple, max_speed_mm_s: float, max_acc_mm_s2: float,
@@ -107,6 +108,7 @@ class XArmCommandLink:
         self.connected = False
         self.armed_mode: int | None = None  # set by arm_motion(), cleared by halt()/any failed command
         self.version: str | None = None
+        self.read_joints = False  # True: read() also reads the joint angles (one more read-only request per call)
 
     # -- logged SDK access ----------------------------------------------------------------------
     def _call(self, name: str, *a: Any, **k: Any) -> Any:
@@ -178,8 +180,9 @@ class XArmCommandLink:
         state = self._get("get_state")
         err, warn = self._get("get_err_warn_code")
         cmdnum = self._get("get_cmdnum")
+        joints = tuple(self._get("get_servo_angle")[:6]) if self.read_joints else None
         t1 = self.clock()
-        return ArmState(tuple(pose[:6]), int(state), int(err), int(warn), int(cmdnum), t1, round((t1 - t0) / 1e6, 2))
+        return ArmState(tuple(pose[:6]), int(state), int(err), int(warn), int(cmdnum), t1, round((t1 - t0) / 1e6, 2), joints)
 
     def read_aa(self) -> tuple:
         """Pose with the orientation as an axis-angle vector (x, y, z mm; rx, ry, rz rad), from the controller."""

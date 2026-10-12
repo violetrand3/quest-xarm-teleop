@@ -51,6 +51,8 @@ class InputSample:
     q_xyzw: tuple | None  # recorded for diagnosis; never used for the target
     grip: float | None  # side grip (middle finger); None = missing, which is NOT a release
     trigger: float | None  # index trigger; None stays None
+    a: bool | None = None  # thumb buttons; used only for episode recording, never for motion. None = missing
+    b: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -110,7 +112,7 @@ class InputChannel:
                 g, i = v.record.poses["grip_r"], v.record.inputs["in_r"]
                 self._sample = InputSample(now_ns, v.source_seq, v.t_query_ns, v.identity(), v.continuity_gen, v.available,
                                            tuple(v.reasons), None if g.p is None else tuple(g.p),
-                                           None if g.q is None else tuple(g.q), i.get("squeeze"), i.get("trigger"))  # fmt: skip
+                                           None if g.q is None else tuple(g.q), i.get("squeeze"), i.get("trigger"), i.get("a"), i.get("b"))  # fmt: skip
                 self._gen, self._source_up, self._stale = v.continuity_gen, v.source_up, v.source_stale
             elif ptype == "status":
                 gen, _loss, _gaps, breaks, not_listed = pt.validate_continuity(pkt.get("continuity"))

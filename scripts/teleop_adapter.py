@@ -140,8 +140,9 @@ def load_config(path: Path) -> TeleopConfig:
 class Recorder:
     """Diagnostic JSONL recorder (thread-safe). Every line belongs to a dry run and says so in the header."""
 
-    def __init__(self, stream: TextIO | None = None):
+    def __init__(self, stream: TextIO | None = None, tap: Callable[[dict], None] | None = None):
         self._stream, self._lock = stream, threading.Lock()
+        self._tap = tap  # optional observer of every record (episode recording); must return at once and never raise
         self.counts: dict = {}
         self.transitions: list = []
         self.faults: list = []
@@ -157,6 +158,12 @@ class Recorder:
                 keep.append(rec)
             if self._stream is not None:
                 self._stream.write(json.dumps(rec, separators=(",", ":")) + "\n")
+        if self._tap is not None:
+            try:
+                self._tap(rec)
+            except Exception:  # an observer that fails is dropped; it must never reach the control loop
+                self._tap = None
+                self.counts["tap_failed"] = 1
 
 
 LIMIT_FAULTS = frozenset({"workspace_violation", "anchor_displacement_violation", "controller_discontinuity",
@@ -248,7 +255,7 @@ class TeleopAdapter:
         view = self.channel.view(consume=True)
         fb, fb_problem = self._feedback(now)
         old = eng.state
-        commanded = limited = None
+        commanded = limited = cmd_ori = None
         grip_status, proposal, gripper_fb = "idle", None, None
 
         if ack:
@@ -307,7 +314,7 @@ class TeleopAdapter:
             if why is None:
                 try:
                     self.backend.command_target(limited, orientation)
-                    commanded = limited
+                    commanded, cmd_ori = limited, orientation
                 except BackendError as e:
                     why, latch = "command_failed:" + str(e)[:80], True
                 with self._hb:
@@ -354,6 +361,7 @@ class TeleopAdapter:
                     try:
                         self.backend.command_target(self.p_req, eng.ref.orientation)
                         commanded = limited = self.p_req
+                        cmd_ori = eng.ref.orientation
                     except BackendError as e:
                         self._disengage(now, "command_failed:" + str(e)[:80], True)
             elif eng.state != old:
@@ -372,6 +380,8 @@ class TeleopAdapter:
             "req_mm": _mm(self.p_req), "lim_mm": _mm(limited), "cmd_mm": _mm(commanded),
             "fb_mm": None if fb is None else _mm(fb.p_m), "fb_problem": fb_problem,
             "ori": None if eng.ref is None else list(eng.ref.orientation),
+            "cmd_ori": None if cmd_ori is None else list(cmd_ori),  # orientation sent with cmd_mm in this tick
+            "btn_a": None if s is None else s.a, "btn_b": None if s is None else s.b,
             "rot_deg": None if self.rot is None else self.rot.angles_deg()[0], "rot_req_deg": None if self.rot is None else self.rot.angles_deg()[1],
             "fb_q": None if fb is None or fb.q_xyzw is None else [round(v, 6) for v in fb.q_xyzw],
             "gripper": grip_status, "gripper_pct": None if proposal is None else proposal.pct_closed,

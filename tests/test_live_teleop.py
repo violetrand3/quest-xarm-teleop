@@ -59,10 +59,10 @@ class QuestFeed:
             if frames:
                 return json.loads(frames[0])
 
-    def pose(self, p=P0, grip=1.0, trig=0.0, q=(0.0, 0.0, 0.0, 1.0)) -> None:  # type: ignore[no-untyped-def]
+    def pose(self, p=P0, grip=1.0, trig=0.0, q=(0.0, 0.0, 0.0, 1.0), a=False, b=False) -> None:  # type: ignore[no-untyped-def]
         self.seq += 1
         self.tq += 33_000_000
-        obj = rec_obj(self.seq, t=self.tq, gr=syn_pose(p, q), in_r=syn_inputs(True, squeeze=grip, trigger=trig, a=False, b=False))
+        obj = rec_obj(self.seq, t=self.tq, gr=syn_pose(p, q), in_r=syn_inputs(True, squeeze=grip, trigger=trig, a=a, b=b))
         feed(self.tr, obj, 0)
         assert self.rpc(pose_pkt(self.tr, obj, self.seq))["status"] == "ok"
         time.sleep(0.03)
@@ -91,7 +91,7 @@ class LiveTeleopProgramTests(unittest.TestCase):
         with socket.socket() as s0:
             s0.bind(("127.0.0.1", 0))
             port = s0.getsockname()[1]
-        saved = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGUSR1)}
+        saved = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGUSR1, signal.SIGUSR2)}
         notes: dict = {}
 
         def runner() -> None:
@@ -156,6 +156,62 @@ class LiveTeleopProgramTests(unittest.TestCase):
         self.assertNotIn("127.0.0.1", json.dumps(res["before"]))
         self.assertIn("ARM LIVE", text)
 
+    def test_thumb_buttons_record_an_episode_with_pose_joints_targets_and_video(self) -> None:
+        from fake_xarm_controller import JOINTS
+        from test_episode_recorder import FakeCameras
+
+        import episode_inspect as ei
+        ctl, cams = FakeController(), FakeCameras()
+        tmp = tempfile.TemporaryDirectory()
+        sess = Path(tmp.name) / "sess"
+
+        def press(q: QuestFeed, dz: float, grip: float, **button: bool) -> None:
+            for held in (True, True, False, False):
+                q.pose((P0[0], P0[1], P0[2] + dz), grip=grip, **({k: held for k in button}))
+
+        def drive(q: QuestFeed, notes: dict) -> None:
+            for _ in range(40):  # the camera recorder needs a moment before it reports frames
+                q.pose(grip=0.0)
+            notes["reads_of_joints_before"] = sum(1 for _, r, _ in ctl.frames if r == 42)
+            press(q, 0.0, 0.0, a=True)  # A: start
+            q.engage()
+            q.glide(-0.10, 40)
+            q.hold(-0.10, 20)
+            press(q, -0.10, 1.0, a=True)  # A again, clutch still held: stop and save
+            q.hold(-0.10, 10)
+            press(q, -0.10, 1.0, a=True)  # a second episode ...
+            q.hold(-0.10, 15)
+            press(q, -0.10, 1.0, b=True)  # ... discarded with B
+            q.hold(-0.10, 10, grip=0.0)
+
+        try:
+            rc, res, ticks, text, notes = self.run_live(ctl, drive, ["--record-dir", str(sess)] + [x for n, u in cams.cams.items()
+                                                                                                      for x in ("--record-cam", f"{n}={u}")], duration=14.0)  # fmt: skip
+            self.assertNotIn("drive_error", notes, notes)
+            self.assertEqual((rc, res["result"]), (0, "ok"), res.get("abort_reason"))
+            e = res["episodes"]
+            self.assertEqual((e["saved"], e["discarded"], e["refused"], e["error"]), (1, 1, 0, None), text[-1500:])
+            self.assertEqual(sorted(p.name for p in sess.iterdir() if p.is_dir()), ["episode_0001"])
+            out, problems, steps, _ = ei.check(sess / "episode_0001")
+            self.assertEqual(problems, [])
+            self.assertGreater(len(steps), 60)
+            self.assertTrue(all(r["joints"] == [round(v, 6) for v in JOINTS[:6]] and len(r["tcp_rpy"]) == 3 and len(r["tcp_q"]) == 4 for r in steps))
+            self.assertAlmostEqual(steps[-1]["tcp_mm"][0] - steps[0]["tcp_mm"][0], 25.0, delta=0.6)  # the arm's own motion is in the rows
+            sent = [r for r in steps if r["cmd_mm"] is not None]
+            self.assertGreater(len(sent), 40)
+            self.assertTrue(all(r["state"] == "ACTIVE" and len(r["cmd_rpy"]) == 3 for r in sent))
+            self.assertTrue(all(c["frames"] > 40 for c in out["cameras"].values()), out)
+            meta = json.loads((sess / "session.json").read_text())
+            self.assertNotIn("127.0.0.1\"", json.dumps(meta["args"]))
+            self.assertEqual(meta["workspace_mm"], res["workspace_mm"])
+            self.assertIn("ep=rec#1", text)
+            self.assertTrue(all(r in (11, 12, 19, 21) for r, _ in self.writes(ctl)))  # recording adds reads only
+            self.assertGreater(sum(1 for _, r, _ in ctl.frames if r == 42), 100)
+            self.assertEqual((ctl.mode, ctl.state), (0, 4))
+        finally:
+            cams.close()
+            tmp.cleanup()
+
     def test_pushing_past_the_box_is_held_at_its_edge_without_a_fault(self) -> None:
         ctl = FakeController()
 
@@ -187,7 +243,7 @@ class LiveTeleopProgramTests(unittest.TestCase):
         rc, res, ticks, text, notes = self.run_live(ctl, drive)
         self.assertNotIn("drive_error", notes, notes)
         self.assertEqual(res["halts"], 1)
-        self.assertTrue(res["faults"][0]["reason"].startswith("feedback_failed:controller error 31"))
+        self.assertTrue(res["faults"][0]["reason"].startswith("feedback_failed:controller error 31"), res["faults"])
         self.assertIn("re-arm refused", text)
         self.assertEqual(res["engagements"], 1)  # never engaged again
         regs = [r for r, _ in self.writes(ctl)]

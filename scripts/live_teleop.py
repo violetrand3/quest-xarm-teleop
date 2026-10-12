@@ -20,6 +20,11 @@ Directions (R below): as if you stood at the robot's base looking outward. Hand 
 (away from the base), hand right -> -y, hand up -> +z. +z was verified on the rig; the x/y signs
 come from the lab's notes and have NOT been verified.
 
+Episode recording (--record-dir): thumb button A starts an episode and, pressed again, stops and
+saves it; thumb button B discards the episode being recorded. Each saved episode holds the arm pose,
+joints, targets and jaw position of every 20 ms tick plus the camera video, on one clock (see
+episode_recorder.py). SIGUSR2 = the same as button A.
+
 set_state(4) is a software stop, not the physical emergency stop.
 Needs --moves-real-arm and --human-confirmation; without them it only prints the plan.
 """
@@ -50,6 +55,7 @@ from teleop_mapping import GripperFollower
 from xarm_live_backend import XArmLiveBackend
 
 BANNER = "ARM LIVE (REAL ARM MOVES)"
+DEFAULT_RECORD_CAMS = {"iphone": "http://127.0.0.1:8090/cam/iphone", "zed": "http://127.0.0.1:8090/cam/zed"}  # wrist, fixed
 FENCE_MARGIN_MM = 10.0
 LINK_MARGIN_MM = 2.0
 PRINT_INTERVAL_S = 0.5
@@ -130,7 +136,12 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     ap.add_argument("--with-gripper", action="store_true", help="index trigger also drives the real gripper (0..90 %% closed)")
     ap.add_argument("--gripctl", default="http://127.0.0.1:8088")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
-    ap.add_argument("--duration", type=float, default=120.0, help="seconds, then park and exit (max 600)")
+    ap.add_argument("--duration", type=float, default=120.0, help="seconds, then park and exit (max 1800)")
+    ap.add_argument("--record-dir", type=Path, help="record episodes into this new directory (button A start/stop+save, B discard)")
+    ap.add_argument("--record-cam", action="append", default=[], metavar="NAME=URL",
+                    help="loopback MJPEG stream to save with each episode; repeatable (default: the lab camera wall's iphone and zed)")
+    ap.add_argument("--record-min-free-gb", type=float, default=5.0, help="no episode starts with less free disk space than this")
+    ap.add_argument("--record-max-s", type=float, default=300.0, help="an episode is stopped and saved after this long (10..900)")
     ap.add_argument("--log", type=Path)
     ap.add_argument("--link-log", type=Path)
     ap.add_argument("--summary", type=Path)
@@ -139,7 +150,8 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
         box = [float(x) for x in a.box.split(",")]
         ok = (len(box) == 6 and all(0.0 <= v <= 300.0 for v in box) and 0.05 <= a.scale <= 1.0 and 5.0 <= a.v_max <= 150.0
               and 20.0 <= a.a_max <= 1000.0 and a.v_max <= a.ctrl_speed <= 200.0 and 50.0 <= a.ctrl_acc <= 2000.0
-              and 5.0 <= a.track_err <= 30.0 and 100.0 <= a.input_fresh_ms <= 500.0 and 5.0 <= a.duration <= 600.0
+              and 5.0 <= a.track_err <= 30.0 and 100.0 <= a.input_fresh_ms <= 500.0 and 5.0 <= a.duration <= 1800.0
+              and 10.0 <= a.record_max_s <= 900.0 and a.record_min_free_gb >= 1.0
               and 5.0 <= a.rot_max_deg <= 90.0 and 5.0 <= a.rot_speed <= 120.0 and 0.2 <= a.rot_scale <= 1.5
               and -180.0 <= a.operator_yaw_deg <= 180.0)  # fmt: skip
     except ValueError:
@@ -156,10 +168,11 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     if len(a.human_confirmation.strip()) < 10:
         print("error: --moves-real-arm needs --human-confirmation", file=sys.stderr)
         return 2
-    for p in (a.log, a.link_log, a.summary):
+    for p in (a.log, a.link_log, a.summary, a.record_dir):
         if p is not None and p.exists():
             print(f"error: {p} already exists", file=sys.stderr)
             return 2
+    record_cams = dict(c.partition("=")[::2] for c in a.record_cam) or dict(DEFAULT_RECORD_CAMS)
     address = a.address or ro.address_from_file(a.address_from_file)
     api_class, cmd_class, sdk_ver = sdk or cl.load_sdk()
     out: dict = {"tool": "live_teleop", "banner": BANNER, "sdk": sdk_ver, "result": "started", "host_wall_start": time.time(),
@@ -179,6 +192,7 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     server: DiagnosticServer | None = None
     gripper: Any = None
     adapter: TeleopAdapter | None = None
+    episodes: Any = None
     rec = Recorder(None)
     state: ChannelReceiverState | None = None
     stop = threading.Event()
@@ -234,7 +248,6 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
                                   max_rot_rad=math.radians(a.rot_max_deg + 3.0 if a.rotation != "off" else 1.0))  # fmt: skip
         link.connect()
         backend = XArmLiveBackend(link, a.ctrl_speed, a.ctrl_acc)
-        rec = Recorder(opened(a.log))
         channel = InputChannel()
         if a.with_gripper:
             from gripctl_client import GripctlClient  # the gripper is a separate device and optional
@@ -246,6 +259,25 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
                 raise Abort("gripper not connected; nothing was commanded")
             out["gripper_start"] = {k: g0.get(k) for k in ("ticks", "pct")}
             backend.gripper = gripper
+        if a.record_dir is not None:
+            from episode_recorder import EpisodeRecorder  # no hardware access of its own
+
+            link.read_joints = True  # one more read-only request per tick, so every row also has the joint angles
+
+            def extras() -> dict:
+                s0 = backend.last_state  # type: ignore[union-attr]
+                return {"arm": None if s0 is None else {"pose": s0.pose, "joints": s0.joints, "state": s0.state, "t": s0.t_mono_ns,
+                                                        "read_ms": s0.read_ms},
+                        "gripper": None if gripper is None else gripper.snapshot()}  # fmt: skip
+
+            episodes = EpisodeRecorder(a.record_dir, {
+                "tool": "live_teleop", "args": out["args"], "workspace_mm": out["workspace_mm"], "config": cfg.raw,
+                "arm": {"controller_version": probe.version, "frame": backend.frame, "start_pose_mm_rad": list(s2.pose),
+                        "boundary": boundary, "controller_speed_mm_s": a.ctrl_speed, "controller_acc_mm_s2": a.ctrl_acc},
+                "gripper_calibration": out.get("gripper_calibration"), "gripper_trigger_range_pct_closed": [0.0, 90.0] if gripper is not None else None,
+                "human_confirmation": a.human_confirmation}, record_cams, extras, a.record_min_free_gb, a.record_max_s,
+                log=lambda m: print(m, flush=True))  # fmt: skip
+        rec = Recorder(opened(a.log), tap=None if episodes is None else episodes.on_record)
         adapter = TeleopAdapter(cfg, channel, backend, rec, gripper_executor=gripper)
         if gripper is not None:
             adapter.follower = GripperFollower(8.0, 50.0, 0.0, 90.0)
@@ -261,6 +293,8 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal.signal(sig, lambda *_: stop.set())
         signal.signal(signal.SIGUSR1, on_usr1)
+        if episodes is not None:
+            signal.signal(signal.SIGUSR2, lambda *_: episodes.request("toggle"))
 
         backend.arm_motion()  # enable, mode 7, state 0: the operator's explicit step is having launched this program
         time.sleep(1.0)
@@ -311,7 +345,7 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
             print(f"{(now - start) / 1e9:7.1f}s {BANNER} | {t['state']}{why} | input={inp} gen={t.get('gen')} grip={n2(t.get('grip'))} "
                   f"trig={n2(t.get('trig'))} | mm: req={f3(t.get('req_mm'))} lim={f3(t.get('lim_mm'))} fb={f3(t.get('fb_mm'))} rot={t.get('rot_deg')} | "
                   f"armed={'yes' if link.armed_mode is not None else 'NO'} cmds={backend.command_count} halts={backend.halt_count} "
-                  f"faults={rec.counts.get('fault', 0)}", flush=True)  # fmt: skip
+                  f"faults={rec.counts.get('fault', 0)}" + ("" if episodes is None else f" | ep={episodes.status()}"), flush=True)  # fmt: skip
             if now - start >= a.duration * 1e9:
                 break
         out["result"] = "ok"
@@ -338,6 +372,11 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
                 print(f"PARK FAILED: {e}. USE THE PHYSICAL STOP IF THE ARM IS MOVING.", flush=True)
             out["ledger"] = link.ledger.summary()
             link.close()
+        if episodes is not None:  # after the arm is parked: an episode still open is saved, marked closed_by session_end
+            try:
+                out["episodes"] = episodes.close()
+            except Exception as e:
+                out["episodes"] = {"error": f"{type(e).__name__}: {e}"}
         end = time.monotonic_ns()
         if adapter is not None and backend is not None:
             out.update(elapsed_s=round((end - start) / 1e9, 2), ticks=adapter.ticks, engagements=adapter.eng.engagements,
@@ -360,6 +399,8 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
         with a.summary.open("x", encoding="utf-8") as f:
             f.write(text + "\n")
     print(json.dumps({k: out.get(k) for k in ("result", "abort_reason", "engagements", "targets_sent", "halts", "final_state", "final_latch", "after")}, default=str), flush=True)
+    if out.get("episodes"):
+        print("episodes: " + json.dumps({k: out["episodes"].get(k) for k in ("dir", "saved", "discarded", "refused", "last_refusal", "error", "free_gb_after")}), flush=True)
     return 0 if out["result"] == "ok" else 3
 
 

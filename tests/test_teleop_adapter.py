@@ -73,8 +73,9 @@ class Rig:
         self.pseq += 1
         self.tq += int(tq_ms * MS)
         kw.setdefault("sid", self.sid)
+        a, b = kw.pop("a", False), kw.pop("b", False)
         obj = rec_obj(self.seq, t=self.tq, gr=syn_pose(p, q, flags=flags),
-                      in_r=syn_inputs(True, squeeze=grip, trigger=trigger, a=False, b=False), **kw)  # fmt: skip
+                      in_r=syn_inputs(True, squeeze=grip, trigger=trigger, a=a, b=b), **kw)  # fmt: skip
         feed(self.tr, obj, self.now)
         return self._send(pose_pkt(self.tr, obj, self.pseq, recv=self.now))
 
@@ -265,6 +266,49 @@ class EngagementTests(unittest.TestCase):
             self.assertEqual(r._send(bad)["status"], "rejected")
             return r.tick()
         self._loss_case(go, "packet_rejected")
+
+
+class RecordingFieldTests(unittest.TestCase):
+    """What episode recording reads from the adapter: thumb buttons, the orientation sent, and the record tap."""
+
+    def test_thumb_buttons_are_reported_and_change_nothing_about_motion(self) -> None:
+        plain, pressed = Rig(), Rig()
+        for r, btn in ((plain, {}), (pressed, {"a": True, "b": True})):
+            for _ in range(5):
+                self.assertEqual(r.step(P0, 1.0, **btn)["state"], ta.WAIT_RELEASE)  # a button is not a clutch
+            r.step(P0, 0.0, **btn)
+            r.step(P0, 1.0, **btn)
+            out = r.glide((0.0, 0.0, -0.05), 10, **btn)
+            self.assertEqual((out["btn_a"], out["btn_b"]), (btn.get("a", False), btn.get("b", False)))
+        self.assertEqual([c[1:] for c in plain.backend.commands], [c[1:] for c in pressed.backend.commands])
+        self.assertGreater(len(plain.backend.commands), 5)
+        r = Rig()
+        self.assertEqual((r.tick()["btn_a"], r.tick()["btn_b"]), (None, None))  # no input yet: missing, not released
+
+    def test_the_orientation_sent_is_in_the_tick_only_when_a_target_was_sent(self) -> None:
+        r = Rig()
+        self.assertIsNone(r.step(P0, 0.0)["cmd_ori"])
+        first = r.step(P0, 1.0)
+        self.assertEqual((first["cmd_ori"], first["cmd_mm"] is not None), (list(r.backend.commands[-1][2]), True))
+        out = r.glide((0.0, 0.0, -0.03), 5)
+        self.assertEqual(out["cmd_ori"], list(r.backend.commands[-1][2]))
+        out = r.step(off(P0, (0.0, 0.0, -0.03)), 0.0)  # released
+        self.assertEqual((out["cmd_mm"], out["cmd_ori"]), (None, None))
+
+    def test_the_tap_sees_every_record_and_a_failing_tap_is_dropped_not_propagated(self) -> None:
+        seen: list = []
+        rec = ta.Recorder(tap=seen.append)
+        rec.write("tick", 1, state="X")
+        rec.write("fault", 2, reason="r")
+        self.assertEqual(seen, [{"k": "tick", "t": 1, "state": "X"}, {"k": "fault", "t": 2, "reason": "r"}])
+
+        def bad(_: dict) -> None:
+            raise RuntimeError("observer broke")
+
+        rec = ta.Recorder(tap=bad)
+        rec.write("tick", 1)
+        rec.write("tick", 2)
+        self.assertEqual((rec.counts["tick"], rec.counts["tap_failed"]), (2, 1))
 
 
 class ReferenceChangeTests(unittest.TestCase):

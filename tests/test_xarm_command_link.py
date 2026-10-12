@@ -89,6 +89,20 @@ class CommandLinkTests(unittest.TestCase):
         self.assertEqual(writes(ctl), [])
         self.assertIn("2.5.5", L.version)
 
+    def test_joint_angles_are_read_only_when_asked_for(self) -> None:
+        from fake_xarm_controller import JOINTS
+        ctl = FakeController()
+        link = self.link(ctl)
+        self.assertIsNone(link.read().joints)
+        self.assertEqual(sum(1 for _, r, _ in ctl.frames if r == 42), 0)
+        link.read_joints = True
+        j = link.read().joints
+        self.assertEqual(len(j), 6)
+        for got, want in zip(j, JOINTS):
+            self.assertAlmostEqual(got, want, places=5)
+        self.assertEqual(sum(1 for _, r, _ in ctl.frames if r == 42), 1)
+        self.assertTrue(all(r in rp.READ_REGISTERS for _, r, _ in ctl.frames))
+
     def test_arming_sends_enable_mode_state_in_order_and_nothing_else(self) -> None:
         ctl = FakeController()
         L = self.link(ctl)
