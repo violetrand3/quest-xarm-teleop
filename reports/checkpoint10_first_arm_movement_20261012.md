@@ -78,3 +78,48 @@ For the trigger path this means the trigger range should be about 0–90 % close
 2. Streaming-mode run of the same 10 mm test.
 3. Small x and y moves to fix the direction mapping.
 4. First teleoperated motion, slow, inside a small box.
+
+---
+
+## 8. Later the same day: streaming mode and the first live teleoperation
+The operator decided to go without reduced mode ("Go without reduced mode", all four conditions ticked; verbatim in `data/checkpoint10/confirm_teleop_20261012.txt`).
+
+### Streaming-mode check (`first_move_m7_20261012-182134.json`)
+| Test | Result |
+|---|---|
+| One move up 10 mm and back | Reached 10.00 mm in 1.2 s, peak 10.4 mm/s |
+| Second target sent 0.4 s into a move | **Replaced**: the arm turned back at 4.2 mm |
+| `set_state(4)` during a move | Stopped 0.24 mm after the request; did not resume |
+
+So mode 7 does what teleoperation needs: a new target replaces the old one and the speed argument is honoured.
+
+### Session 1 (`teleop_tele_20261012-182231`), arm only
+- Engaged 13 s; the arm followed the hand over about 90 mm in y; target-to-arm distance at most 1.5 mm.
+- Ended by a latched fault, `workspace_violation:limited`, when the operator pushed against the box edge. **My bug:** with the request held exactly on the edge while the hand kept moving along the other axes, the rate-limited target drifted a few hundredths of a millimetre past the edge and the adapter treated that as a violation. The arm was stopped with `set_state(4)` as designed.
+- Fix: the request is held 0.2 mm inside the edge and the limited target is confined to the box. Replaying this session's recorded input against a fake arm reproduces the fault with the fix switched off and runs clean with it (`tests/test_teleop_adapter.py`, `LiveSessionReplayTests`).
+
+### Session 2 (`teleop_tele_20261012-183044`), arm and gripper
+| Measure | Value |
+|---|---|
+| Time engaged | 77.7 s in 7 engagements; no faults, no halts |
+| Why engagements ended | 4 clutch releases, 3 input gaps over 300 ms |
+| Arm travel | x 291–359, y −60…+3, z 392–435 mm (box x 264–363, y −98…+4, z 392–462) |
+| Target-to-arm distance | median 0.02 mm, max 1.47 mm |
+| Arm speed | up to 30.7 mm/s (limit 30) |
+| Tool orientation | unchanged throughout |
+| Line targets sent / refused by the link | 3886 / 0 |
+| Gripper | 195 commands, 0 errors; servo 1–89 % closed |
+| Camera cross-check | picture change vs arm displacement: 0.94 (wrist), 0.93 (fixed); jaw opening vs servo position: −0.97 (189 px open, 146 px closed) |
+| Link | RTT median 260 ms, p95 531 ms; input age max 296 ms |
+
+- The link was slower than it should be: the full camera wall was still being viewed somewhere (its extra streams had viewers) during both sessions.
+- Directions: the operator's hand moved left and the arm moved toward +y, as the mapping intends. Whether every direction feels right to the operator on the cameras has not been confirmed yet.
+
+### State left
+Arm parked at x 339.2, y 3.4, z 396.2 mm, state 4, mode 0, no error. Gripper open at 526 ticks. Reduced mode still off. No process of mine on `linux2` except the view-only camera relay.
+
+### What is not there yet
+- Tool rotation (the wrist does not follow the hand).
+- A bigger workspace, higher speed and scale: all still first-session values.
+- Recording of episodes for training.
+- Video in the headset.
