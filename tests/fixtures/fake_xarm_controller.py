@@ -21,7 +21,9 @@ BOUNDARY = [502, 160, 270, -300, 585, 270]  # x_max, x_min, y_max, y_min, z_max,
 
 class FakeController:
     def __init__(self, err: int = 0, warn: int = 0, silent: bool = False, report: bool = True, move: bool = False,
-                 report_period_s: float = 0.02, mode7_replaces: bool = True, pose: list | None = None):  # fmt: skip
+                 report_period_s: float = 0.02, mode7_replaces: bool = True, pose: list | None = None, sim: bool = False):  # fmt: skip
+        self.sim = sim
+        self.reduced_on = True
         self.err, self.warn, self.silent, self.report, self.move, self.period = err, warn, silent, report, move, report_period_s
         self.mode7_replaces = mode7_replaces
         self.pose = list(pose or POSE)  # mm, rad
@@ -144,9 +146,9 @@ class FakeController:
         if reg == 42:
             return f(JOINTS)
         if reg == 49:
-            return bytes([1])
+            return bytes([int(self.reduced_on)])
         if reg == 53:
-            return (bytes([1]) + struct.pack(">6h", *BOUNDARY) + f([250.0, math.radians(60.0)])
+            return (bytes([int(self.reduced_on)]) + struct.pack(">6h", *BOUNDARY) + f([250.0, math.radians(60.0)])
                     + f([math.radians(v) for v in (-360, 360) * 7]) + bytes([1, 0]))  # fmt: skip
         return b""
 
@@ -197,7 +199,7 @@ class FakeController:
         b[181:201], b[201:221], b[221:229] = f([1000, 1, 50000, 0.1, 1000]), f([20, 0.01, 20, 0.0001, 3.14]), f([2.3, 2.7])
         struct.pack_into(">I", b, 284, counter)
         b[288:312] = f(WORLD_OFFSET)
-        b[314], b[315], b[316] = 0, 1, 0
+        b[314], b[315], b[316] = int(self.sim), 1, 0
         b[494] = 0b00011
         b[495] = 1
         struct.pack_into(">6h", b, 496, *BOUNDARY)

@@ -309,6 +309,38 @@ class FirstMoveProgramTests(unittest.TestCase):
         self.assertTrue(res["tests"]["B_second_target"]["verdict"].startswith("QUEUED"))
         self.assertGreaterEqual(res["tests"]["B_second_target"]["peak_travel_mm"], 5.5)
 
+    def test_reduced_mode_off_is_refused_unless_waived_for_position_mode(self) -> None:
+        for extra, expect_run in (([], False), (["--mode", "7", "--allow-reduced-mode-off"], False), (["--mode", "0", "--allow-reduced-mode-off"], True)):
+            ctl = FakeController(pose=NEAR_FENCE)
+            ctl.reduced_on = False
+            rc, res, _ = self.run_program(ctl, extra)
+            moved = [r for _, r, _ in ctl.frames if r not in READS]
+            if expect_run:
+                self.assertEqual((rc, res["result"]), (0, "ok"), res.get("abort_reason"))
+                self.assertTrue(res["before"]["reduced_mode_waived_by_operator"])
+                self.assertTrue(res["tests"]["B_second_target"]["verdict"].startswith("QUEUED"))  # the model queues in mode 0
+                self.assertEqual((ctl.mode, ctl.state), (0, 4))
+            else:
+                self.assertEqual((rc, res["result"], moved), (3, "aborted", []), extra)
+                self.assertIn("reduced mode is not on", res["abort_reason"])
+
+    def test_simulation_mode_commands_nothing(self) -> None:
+        ctl = FakeController(pose=NEAR_FENCE, sim=True)  # the controller would report motion while the real arm stays still
+        rc, res, _ = self.run_program(ctl)
+        self.assertEqual((rc, res["result"]), (3, "aborted"))
+        self.assertIn("SIMULATION", res["abort_reason"])
+        self.assertEqual([r for _, r, _ in ctl.frames if r not in READS], [])
+
+    def test_orientation_check_is_wrap_safe_near_180_degrees(self) -> None:
+        import arm_first_move_test as fm
+        import xarm_command_link as cl
+        t = fm.FirstMove(None, {"k": 2, "sign": 1.0}, 10.0, 10.0, 100.0, 0, [])  # type: ignore[arg-type]
+        t.start = (300.0, 0.0, 400.0, math.radians(-179.42), 0.0, 0.0)
+        ok = cl.ArmState((300.0, 0.0, 405.0, math.radians(179.97), 0.0, 0.0), 1, 0, 0, 0, 0, 0.0)  # roll wrapped: a 0.61 deg change
+        t.check(ok)
+        with self.assertRaises(fm.Abort):
+            t.check(cl.ArmState((300.0, 0.0, 405.0, math.radians(175.0), 0.0, 0.0), 1, 0, 0, 0, 0, 0.0))  # a real 5.6 deg change
+
     def test_error_or_busy_arm_at_start_commands_nothing(self) -> None:
         for kw in ({"err": 22}, {"warn": 11}):
             ctl = FakeController(pose=NEAR_FENCE, **kw)

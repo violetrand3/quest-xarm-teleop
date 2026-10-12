@@ -21,8 +21,10 @@ for f in sorted(os.listdir(d), key=lambda x: int(x[:-4])):
     band = cv2.cvtColor(img[int(0.80 * h):int(0.95 * h)], cv2.COLOR_BGR2HSV)
     blue = cv2.inRange(band, (95, 90, 60), (125, 255, 255)).mean(axis=0) > 60  # column is "jaw" if mostly blue
     cols = np.flatnonzero(blue)
-    left, right = cols[cols < w // 2], cols[cols >= w // 2]
-    gap = int(right.min() - left.max()) if len(left) and len(right) else None
+    gap = None
+    if len(cols) > 1:  # the opening is the widest run of non-jaw columns between jaw columns (the jaws need not be centred)
+        steps = np.diff(cols)
+        gap = int(steps.max()) if steps.max() > 3 else 0
     small = cv2.resize(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), (160, 120)).astype(np.int16)
     motion = None if prev is None else float(np.abs(small - prev).mean())
     prev = small

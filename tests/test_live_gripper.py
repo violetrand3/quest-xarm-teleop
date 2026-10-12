@@ -36,8 +36,9 @@ from test_teleop_adapter import CONFIG, P0, Rig  # noqa: E402
 class FakeGripctl:
     """SYNTHETIC gripctl: GET /api/state, POST /api/do/grip. Everything else is recorded and refused."""
 
-    def __init__(self, ticks: int = 1950):
+    def __init__(self, ticks: int = 1950, open_ticks: int = 3033, closed_ticks: int = 1181, valid: bool = True):
         self.ticks, self.connected, self.fail_grip = ticks, True, False
+        self.open_ticks, self.closed_ticks, self.valid = open_ticks, closed_ticks, valid
         self.requests: list = []  # (monotonic s, method, path, body)
         outer = self
 
@@ -56,6 +57,10 @@ class FakeGripctl:
                     self._send(200, {"ok": True, "age": 0.02, "status": {"connected": outer.connected},
                                      "values": {"position": outer.ticks if outer.connected else None, "goal_position": outer.ticks,
                                                 "load": 0.0, "moving": 0, "torque_enable": 1}})  # fmt: skip
+                elif self.path == "/api/calibration":
+                    self._send(200, {"ok": True, "valid": outer.valid, "note": None,
+                                     "calibration": {"open_position": outer.open_ticks, "closed_position": outer.closed_ticks,
+                                                     "close_effort_pct": 80.0, "move_effort_pct": 39.0}})  # fmt: skip
                 else:
                     self._send(404, {"ok": False})
 
@@ -68,7 +73,7 @@ class FakeGripctl:
                     self._send(400, {"ok": False, "error": "not connected"})
                 else:
                     src = outer.ticks
-                    outer.ticks = int(round(3033 - 18.52 * body["value"]))
+                    outer.ticks = int(round(outer.open_ticks + (outer.closed_ticks - outer.open_ticks) * body["value"] / 100.0))
                     self._send(200, {"ok": True, "error": None, "grip": {"percent": body["value"], "target": outer.ticks, "from": src,
                                                                          "direction": "closing" if outer.ticks < src else "opening"}})  # fmt: skip
 
@@ -108,7 +113,31 @@ class GripctlClientTests(unittest.TestCase):
     def client(self, **kw) -> gc.GripctlClient:  # type: ignore[no-untyped-def]
         c = gc.GripctlClient(self.g.url, min_interval_s=kw.pop("min_interval_s", 0.05), state_period_s=0.01, **kw)
         self.addCleanup(c.close)
+        c.load_calibration()
         return c
+
+    def test_calibration_comes_from_the_driver_in_either_encoder_direction(self) -> None:
+        g2 = FakeGripctl(ticks=573, open_ticks=512, closed_ticks=2048)  # the calibration after the repair: open < closed
+        self.addCleanup(g2.close)
+        c = gc.GripctlClient(g2.url, min_interval_s=0.05, state_period_s=0.01)
+        self.addCleanup(c.close)
+        c.refresh_state()
+        self.assertFalse(c.read().connected)  # no calibration loaded: the gripper counts as not connected
+        c.submit(prop(50.0))
+        c._maybe_send()
+        self.assertEqual(g2.posts(), [])
+        self.assertEqual(c.load_calibration()["open_ticks"], 512)
+        c.refresh_state()
+        self.assertAlmostEqual(c.read().pct_closed, (573 - 512) / 1536 * 100, places=6)  # 3.97 % closed
+        c.submit(prop(10.0))
+        c._maybe_send()
+        self.assertEqual(g2.ticks, 666)  # 10 % of the way from 512 toward 2048
+        c.refresh_state()
+        self.assertAlmostEqual(c.read().pct_closed, 10.0, delta=0.05)
+        bad = FakeGripctl(valid=False)
+        self.addCleanup(bad.close)
+        with self.assertRaises(ValueError):
+            gc.GripctlClient(bad.url).load_calibration()
 
     def test_only_the_loopback_service_is_accepted(self) -> None:
         for bad in ("http://192.168.1.50:8088", "http://localhost:8088", "https://127.0.0.1:8088", "http://127.0.0.1:8088/api", "http://127.0.0.1"):
@@ -121,8 +150,9 @@ class GripctlClientTests(unittest.TestCase):
         fb = c.read()
         self.assertTrue(fb.connected and not fb.synthetic)
         self.assertAlmostEqual(fb.pct_closed, (3033 - 1950) / 1852 * 100, places=6)  # 58.48 % closed
-        self.assertAlmostEqual(gc.ticks_to_pct_closed(3033), 0.0)
-        self.assertAlmostEqual(gc.ticks_to_pct_closed(1181), 100.0)
+        self.assertAlmostEqual(gc.ticks_to_pct_closed(3033, 3033, 1181), 0.0)
+        self.assertAlmostEqual(gc.ticks_to_pct_closed(1181, 3033, 1181), 100.0)
+        self.assertAlmostEqual(gc.ticks_to_pct_closed(2048, 512, 2048), 100.0)
 
     def test_sends_newest_only_rate_limited_and_with_a_minimum_step(self) -> None:
         events: list = []
@@ -142,7 +172,7 @@ class GripctlClientTests(unittest.TestCase):
         self.assertTrue(wait(lambda: len(self.g.posts()) == 2))
         t = [r[0] for r in self.g.posts()]
         self.assertGreaterEqual(t[1] - t[0], 0.15)
-        self.assertEqual({(r[1], r[2]) for r in self.g.requests}, {("GET", "/api/state"), ("POST", "/api/do/grip")})
+        self.assertEqual({(r[1], r[2]) for r in self.g.requests}, {("GET", "/api/calibration"), ("GET", "/api/state"), ("POST", "/api/do/grip")})
         self.assertTrue(all(e[1]["ok"] for e in events if e[0] == "gripper_command"))
 
     def test_nothing_is_sent_when_the_servo_is_disconnected_or_state_unknown(self) -> None:
@@ -190,6 +220,7 @@ class GripctlClientTests(unittest.TestCase):
     def test_stale_state_is_not_connected(self) -> None:
         now = [10**9]
         c = gc.GripctlClient(self.g.url, clock=lambda: now[0], stale_s=0.4)
+        c.load_calibration()
         c.refresh_state()
         self.assertTrue(c.read().connected)
         now[0] += 500_000_000
@@ -391,7 +422,7 @@ class LiveEntryPointTests(unittest.TestCase):
         self.assertFalse([r for r in g.posts()[:-1] if r[0] > t_release + 0.25])
         self.assertAlmostEqual(vals[-1], 58.48, places=1)  # the deliberate end-of-test restore
         self.assertEqual(g.ticks, 1950)
-        self.assertEqual({(r[1], r[2]) for r in g.requests}, {("GET", "/api/state"), ("POST", "/api/do/grip")})
+        self.assertEqual({(r[1], r[2]) for r in g.requests}, {("GET", "/api/calibration"), ("GET", "/api/state"), ("POST", "/api/do/grip")})
         self.assertEqual((o["robot_arm_connection_attempted"], o["gripper"]["restore"]["done"], o["gripper"]["final"]["ticks"]), (False, True, 1950))
         self.assertIn("GRIPPER LIVE", out)
 

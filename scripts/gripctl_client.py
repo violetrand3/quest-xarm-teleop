@@ -2,9 +2,12 @@
 
 THIS MOVES HARDWARE. It is imported only by live_gripper_test.py, never by the dry run.
 
-Only the loopback service is accepted (http://127.0.0.1:<port>), and only two requests exist:
+Only the loopback service is accepted (http://127.0.0.1:<port>), and only three requests exist:
+    GET  /api/calibration                the driver's own open/closed positions (read once at start)
     GET  /api/state                      position (ticks), connected, snapshot age
-    POST /api/do/grip {"value": pct}     percent closed, 0 = open (3033 ticks), 100 = closed (1181)
+    POST /api/do/grip {"value": pct}     percent closed: 0 = the driver's calibrated open position,
+                                         100 = its calibrated closed position (nothing is hardcoded here;
+                                         the calibration changed when the gripper was repaired)
 No torque, calibration, stop, open/close, jog, limit or raw-register request is ever made.
 (`grip` itself enables torque and sets the driver's effort cap; that is the driver's behaviour.)
 
@@ -27,11 +30,12 @@ import urllib.request
 from typing import Any, Callable
 
 from teleop_backend import GripperFeedback, GripperProposal
-from teleop_mapping import GRIPPER_OPEN_TICKS, GRIPPER_SPAN_TICKS
 
 
-def ticks_to_pct_closed(ticks: float) -> float:
-    return (GRIPPER_OPEN_TICKS - ticks) / GRIPPER_SPAN_TICKS * 100.0
+def ticks_to_pct_closed(ticks: float, open_ticks: float, closed_ticks: float) -> float:
+    """Percent closed, linear between the calibrated open (0 %) and closed (100 %) positions,
+    whichever way round they lie on the encoder."""
+    return (ticks - open_ticks) / (closed_ticks - open_ticks) * 100.0
 
 
 class GripctlClient:
@@ -49,19 +53,33 @@ class GripctlClient:
         self._last_sent_pct: float | None = None
         self._last_send_ns = 0
         self._state: dict | None = None  # newest good state
+        self.calibration: dict | None = None  # from the driver; without it the gripper counts as not connected
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.sent = self.send_errors = self.state_reads = self.state_errors = self.cancelled = 0
         self.send_ms: list = []
 
-    # -- HTTP (the only two requests) ------------------------------------------------------------
+    # -- HTTP (the only three requests) ----------------------------------------------------------
+    def load_calibration(self) -> dict:
+        with urllib.request.urlopen(self.base + "/api/calibration", timeout=self.timeout) as r:
+            d = json.load(r)
+        c = d.get("calibration") or {}
+        o, cl = c.get("open_position"), c.get("closed_position")
+        if not d.get("valid") or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (o, cl)) or o == cl:
+            raise ValueError(f"gripper calibration not usable: valid={d.get('valid')} open={o} closed={cl} note={d.get('note')}")
+        self.calibration = {"open_ticks": o, "closed_ticks": cl, "close_effort_pct": c.get("close_effort_pct"),
+                            "move_effort_pct": c.get("move_effort_pct")}  # fmt: skip
+        return self.calibration
+
     def _get_state(self) -> dict:
         with urllib.request.urlopen(self.base + "/api/state", timeout=self.timeout) as r:
             d = json.load(r)
         v, st = d.get("values") or {}, d.get("status") or {}
         ticks = v.get("position")
-        ok = bool(st.get("connected")) and isinstance(ticks, (int, float)) and isinstance(d.get("age"), (int, float))
-        return {"connected": ok, "ticks": ticks, "pct": ticks_to_pct_closed(ticks) if ok else None, "age_s": d.get("age"),
+        cal = self.calibration
+        ok = bool(st.get("connected")) and isinstance(ticks, (int, float)) and isinstance(d.get("age"), (int, float)) and cal is not None
+        pct = ticks_to_pct_closed(ticks, cal["open_ticks"], cal["closed_ticks"]) if ok else None  # type: ignore[index]
+        return {"connected": ok, "ticks": ticks, "pct": pct, "age_s": d.get("age"),
                 "goal": v.get("goal_position"), "load": v.get("load"), "moving": v.get("moving"), "torque": v.get("torque_enable"),
                 "read_ns": self.clock()}  # fmt: skip
 

@@ -35,6 +35,7 @@ import xarm_readonly_preflight as ro
 
 FENCE_MARGIN_MM = 5.0
 POLL_S = 0.02
+ARM_SETTLE_S = 1.0  # pause after arming before the first target, as the vendor's examples do
 
 
 class Abort(RuntimeError):
@@ -84,13 +85,13 @@ class FirstMove:
             raise Abort(f"moved {off:.2f} mm off the test axis")
         if not (-2.0 <= self.along(s.pose) <= self.d + 2.0):
             raise Abort(f"position {self.along(s.pose):.2f} mm is outside the planned 0..{self.d:g} mm")
-        rot = max(abs(s.pose[i] - self.start[i]) for i in range(3, 6))  # type: ignore[index]
+        rot = max(abs(math.remainder(s.pose[i] - self.start[i], math.tau)) for i in range(3, 6))  # type: ignore[index]  # wrap-safe near +-180 deg
         if rot > math.radians(1.0):
             raise Abort(f"orientation changed by {math.degrees(rot):.2f} deg")
 
     def watch(self, seconds: float, label: str, until: Any = None) -> list:
         """Poll the pose; returns [(t_s, travel_mm, state, cmdnum)]. Every sample is checked."""
-        t0, tr = time.monotonic(), []
+        t0, t0_ns, tr = time.monotonic(), time.monotonic_ns(), []
         while time.monotonic() - t0 < seconds:
             s = self.link.read()
             tr.append((round(time.monotonic() - t0, 3), round(self.along(s.pose), 3), s.state, s.cmdnum))
@@ -98,7 +99,7 @@ class FirstMove:
             if until is not None and until(tr):
                 break
             time.sleep(POLL_S)
-        self.note("trajectory", label=label, samples=tr)
+        self.note("trajectory", label=label, t0_mono_ns=t0_ns, samples=tr)
         return tr
 
     @staticmethod
@@ -113,6 +114,7 @@ class FirstMove:
         T = self.d / self.speed
         armed = self.link.arm_motion(self.mode)
         self.note("armed", mode=self.mode, state=armed.state, reported_mode=self.link.reported_mode())
+        time.sleep(ARM_SETTLE_S)
 
         # A. one move out, one move back
         self.link.move_line(self.target(self.d), self.speed, self.acc)
@@ -146,7 +148,7 @@ class FirstMove:
         # C. set_state(4) during a move
         self.link.move_line(self.target(self.d), self.speed, self.acc)
         pre = self.watch(min(0.5 * T, 0.6), "C before stop")
-        t_req = time.monotonic()
+        t_req, t_req_ns = time.monotonic(), time.monotonic_ns()
         after_halt = self.link.halt()
         t_ack = time.monotonic()
         tr, t0 = [], time.monotonic()
@@ -155,7 +157,7 @@ class FirstMove:
             tr.append((round(time.monotonic() - t_req, 3), round(self.along(s.pose), 3), s.state, s.cmdnum))
             self.check(s)
             time.sleep(POLL_S)
-        self.note("trajectory", label="C after stop", samples=tr)
+        self.note("trajectory", label="C after stop", t0_mono_ns=t_req_ns, samples=tr)
         at_req, final = pre[-1][1], tr[-1][1]
         still = next((x[0] for i, x in enumerate(tr) if all(abs(y[1] - final) <= 0.05 for y in tr[i:])), None)
         res["C_stop_during_move"] = {"travel_when_requested_mm": at_req, "final_travel_mm": final,
@@ -164,6 +166,7 @@ class FirstMove:
                                      "resumed_by_itself": final >= self.d - 0.5}  # fmt: skip
         # return to the start: needs an explicit re-arm after the stop
         self.link.arm_motion(self.mode)
+        time.sleep(ARM_SETTLE_S)
         self.link.move_line(self.target(0.0), self.speed, self.acc)
         tr = self.watch(T + 3.0, "C back", until=lambda t: self.settled(t, 0.0))
         res["returned_to_start"] = self.settled(tr, 0.0)
@@ -182,6 +185,9 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     ap.add_argument("--speed", type=float, default=10.0, help="mm/s (max 20)")
     ap.add_argument("--acc", type=float, default=100.0, help="mm/s^2 (max 500)")
     ap.add_argument("--mode", type=int, choices=[0, 7], default=7)
+    ap.add_argument("--allow-reduced-mode-off", action="store_true",
+                    help="position mode (0) only: run although the controller's reduced mode is off. The operator's explicit decision; "
+                         "this program still refuses anything above --speed or outside its small box")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args(argv)
     if not (2.0 <= args.distance <= 20.0 and 2.0 <= args.speed <= 20.0 and 20.0 <= args.acc <= 500.0):
@@ -213,14 +219,26 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
             s = probe.read()
             rs = probe.reduced_states()
             boundary = ro.decode_boundary(rs[1])
+            sim, t_end = None, time.monotonic() + 2.0
+            while sim is None and time.monotonic() < t_end:
+                sim = probe.is_simulation()
+                time.sleep(0.05)
             out["before"] = {"pose": list(s.pose), "state": s.state, "error": s.error, "warn": s.warn, "cmdnum": s.cmdnum,
+                             "is_simulation_robot": sim, "reported_mode": probe.reported_mode(),
                              "version": probe.version, "reduced_mode_on": rs[0], "fence_on": rs[5] if len(rs) > 5 else None, "boundary": boundary}  # fmt: skip
+            if sim is not False:
+                raise Abort(("the controller is in SIMULATION mode: the real arm would not move" if sim else
+                             "no status report from the controller, so real vs simulation is unknown") + "; nothing was commanded")
             if s.error or s.warn:
                 raise Abort(f"controller error {s.error} / warning {s.warn}; nothing was commanded")
             if s.cmdnum != 0 or s.state not in (2, 4):
                 raise Abort(f"arm is not idle (state {s.state}, {s.cmdnum} queued commands); nothing was commanded")
-            if rs[0] != 1 or (len(rs) > 5 and rs[5] != 1):
-                raise Abort("reduced mode or the fence is not on; nothing was commanded")
+            if not (len(rs) > 5 and rs[5] == 1):
+                raise Abort("the fence (safety boundary) is not on; nothing was commanded")
+            if rs[0] != 1:
+                if not (args.allow_reduced_mode_off and args.mode == 0):
+                    raise Abort("reduced mode is not on; nothing was commanded (only a position-mode run may waive this, with --allow-reduced-mode-off)")
+                out["before"]["reduced_mode_waived_by_operator"] = True
             s2 = (time.sleep(0.5), probe.read())[1]
             if max(abs(a - b) for a, b in zip(s.pose[:3], s2.pose[:3])) > 0.2:
                 raise Abort("the arm is moving; nothing was commanded")
@@ -235,7 +253,7 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
         link = cl.XArmCommandLink(api_class, cmd_class, address, tuple(pl["box_min_mm"]), tuple(pl["box_max_mm"]), args.speed, args.acc)
         link.connect()
         test = FirstMove(link, pl, args.distance, args.speed, args.acc, args.mode, log)
-        for sig in (signal.SIGINT, signal.SIGTERM):
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal.signal(sig, lambda *_: setattr(test, "stop_requested", True))
         out["tests"] = test.run()
         out["result"] = "ok"

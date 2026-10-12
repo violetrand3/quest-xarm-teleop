@@ -172,6 +172,11 @@ class XArmCommandLink:
         """Mode from the rich report (the controller has no mode query). None if no report arrived yet."""
         return int(self.core.mode) if getattr(self.core, "_first_report_over", False) else None
 
+    def is_simulation(self) -> bool | None:
+        """Simulation flag from the rich report. In simulation mode the controller reports a moving pose
+        while the real arm stays still. None if no report arrived yet."""
+        return bool(self.core.is_simulation_robot) if getattr(self.core, "_first_report_over", False) else None
+
     def reduced_states(self) -> Any:
         return self._get("get_reduced_states")
 
@@ -190,9 +195,16 @@ class XArmCommandLink:
                 raise LinkError(f"{name}({arg}) failed (code {code})")
             if name == "set_mode":
                 time.sleep(0.1)
-        s = self.read()
-        if s.error or s.warn or s.state in (4, 5):
-            raise LinkError(f"after arming: state {s.state}, error {s.error}, warning {s.warn}")
+        t_end = time.monotonic() + 1.0
+        while True:  # the state may take a moment to leave "stopped" after set_state(0)
+            s = self.read()
+            if s.error or s.warn:
+                raise LinkError(f"after arming: error {s.error}, warning {s.warn}")
+            if s.state not in (4, 5):
+                break
+            if time.monotonic() > t_end:
+                raise LinkError(f"after arming: controller still in state {s.state}")
+            time.sleep(0.05)
         deadline = time.monotonic() + 1.5
         while time.monotonic() < deadline and self.reported_mode() != mode:
             time.sleep(0.05)

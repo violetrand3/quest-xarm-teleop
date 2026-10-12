@@ -100,12 +100,17 @@ def main(argv: list[str] | None = None) -> int:
 
     rec = Recorder(opened(args.log))
     gripper = GripctlClient(args.gripctl, on_event=lambda kind, r: rec.write(kind, time.monotonic_ns(), **r))
+    try:
+        cal = gripper.load_calibration()
+    except Exception as e:
+        print(f"error: {e}; nothing was sent", file=sys.stderr)
+        return 3
     start_state = gripper.refresh_state()
     if not start_state or not start_state.get("connected"):
         print(f"error: gripper state not available ({(start_state or {}).get('error')}); nothing was sent", file=sys.stderr)
         return 3
     rec.write("gripper_start", time.monotonic_ns(), **{k: start_state.get(k) for k in ("ticks", "pct", "goal", "torque", "load", "age_s")},
-              range_pct=[args.open_pct, args.closed_pct], pickup_tolerance_pct=args.pickup_tolerance_pct,
+              range_pct=[args.open_pct, args.closed_pct], pickup_tolerance_pct=args.pickup_tolerance_pct, calibration=cal,
               max_rate_pct_s=args.max_rate_pct_s, human_confirmation=args.human_confirmation)  # fmt: skip
     channel = InputChannel()
     backend = FakeArmRealGripperBackend(gripper)
@@ -192,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
         "banner": BANNER, "role": "live_gripper_test", "robot_arm_connection_attempted": False, "gripper_commanded": True,
         "human_confirmation": args.human_confirmation, "elapsed_s": round((end - start) / 1e9, 3), "ticks": adapter.ticks,
         "final_state": adapter.eng.state, "final_latch": list(adapter.eng.latch_reasons), "engagements": adapter.eng.engagements,
-        "gripper": {"range_pct": [args.open_pct, args.closed_pct], "pickup_tolerance_pct": args.pickup_tolerance_pct,
+        "gripper": {"calibration": cal, "range_pct": [args.open_pct, args.closed_pct], "pickup_tolerance_pct": args.pickup_tolerance_pct,
                     "max_rate_pct_s": args.max_rate_pct_s, "start": {k: start_state.get(k) for k in ("ticks", "pct", "goal", "torque")},
                     "end_before_restore": {k: end_state.get(k) for k in ("ticks", "pct", "goal", "connected")},
                     "restore": restore, "final": {k: final.get(k) for k in ("ticks", "pct", "goal", "torque", "load", "connected")},
