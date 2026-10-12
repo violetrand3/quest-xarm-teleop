@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import signal
 import sys
 import threading
@@ -73,7 +74,10 @@ def workspace(pose: tuple, boundary: dict, box: list) -> tuple:
 
 
 def build_config(lo_mm: list, hi_mm: list, a: argparse.Namespace) -> dict:
+    rot = {} if a.rotation == "off" else {"rotation": {"mode": a.rotation, "scale": a.rot_scale, "max_angle_deg": a.rot_max_deg,
+                                                       "w_max_deg_s": a.rot_speed, "max_error_deg": 10.0, "max_step_deg": 90.0}}  # fmt: skip
     return {
+        **rot,
         "label": "LIVE teleop, small box around the start pose; values chosen for a first supervised session",
         "approved_for_live": True,
         "engagement": {"grip_released_max": 0.2, "grip_pressed_min": 0.8, "grip_hold_min": 0.5,
@@ -104,6 +108,11 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     ap.add_argument("--ctrl-acc", type=float, default=500.0, help="acceleration given to the controller, mm/s^2 (<= 2000)")
     ap.add_argument("--track-err", type=float, default=20.0, help="fault if the target is further than this from the arm, mm")
     ap.add_argument("--input-fresh-ms", type=float, default=300.0)
+    ap.add_argument("--rotation", choices=["off", "yaw", "full"], default="off",
+                    help="off: tool orientation frozen at each engagement. yaw: turning the hand about 'up' turns the tool about base z. full: all axes")
+    ap.add_argument("--rot-max-deg", type=float, default=30.0, help="limit from the tool orientation at session start (5..90)")
+    ap.add_argument("--rot-speed", type=float, default=40.0, help="rotation speed limit, deg/s (5..120)")
+    ap.add_argument("--rot-scale", type=float, default=1.0, help="tool rotation per hand rotation (0.2..1.5)")
     ap.add_argument("--with-gripper", action="store_true", help="index trigger also drives the real gripper (0..90 %% closed)")
     ap.add_argument("--gripctl", default="http://127.0.0.1:8088")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -116,14 +125,16 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
         box = [float(x) for x in a.box.split(",")]
         ok = (len(box) == 6 and all(0.0 <= v <= 300.0 for v in box) and 0.05 <= a.scale <= 1.0 and 5.0 <= a.v_max <= 150.0
               and 20.0 <= a.a_max <= 1000.0 and a.v_max <= a.ctrl_speed <= 200.0 and 50.0 <= a.ctrl_acc <= 2000.0
-              and 5.0 <= a.track_err <= 30.0 and 100.0 <= a.input_fresh_ms <= 500.0 and 5.0 <= a.duration <= 600.0)  # fmt: skip
+              and 5.0 <= a.track_err <= 30.0 and 100.0 <= a.input_fresh_ms <= 500.0 and 5.0 <= a.duration <= 600.0
+              and 5.0 <= a.rot_max_deg <= 90.0 and 5.0 <= a.rot_speed <= 120.0 and 0.2 <= a.rot_scale <= 1.5)  # fmt: skip
     except ValueError:
         ok = False
     if not ok:
         print("error: argument outside its allowed range; nothing was done", file=sys.stderr)
         return 2
     print(f"{BANNER}. Box {a.box} mm around the start pose, scale {a.scale}, target speed <= {a.v_max:g} mm/s, "
-          f"controller cap {a.ctrl_speed:g} mm/s, gripper {'ON' if a.with_gripper else 'off'}.", flush=True)  # fmt: skip
+          f"controller cap {a.ctrl_speed:g} mm/s, gripper {'ON' if a.with_gripper else 'off'}, wrist rotation {a.rotation}"
+          + (f" (max {a.rot_max_deg:g} deg, {a.rot_speed:g} deg/s)." if a.rotation != "off" else "."), flush=True)  # fmt: skip
     if not a.moves_real_arm:
         print("plan only: --moves-real-arm not given; no connection was made", flush=True)
         return 0
@@ -188,6 +199,11 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
             s2 = (time.sleep(0.5), probe.read())[1]
             if max(abs(u - v) for u, v in zip(s.pose[:3], s2.pose[:3])) > 0.2:
                 raise Abort("the arm is moving; nothing was commanded")
+            if a.rotation != "off":
+                err = math.degrees(probe.rpy_convention_error_rad())  # read-only: our roll/pitch/yaw reading vs the controller's axis-angle
+                out["before"]["rpy_convention_error_deg"] = round(err, 4)
+                if err > 0.2:
+                    raise Abort(f"roll/pitch/yaw convention check failed ({err:.2f} deg); wrist rotation cannot be trusted; nothing was commanded")
             lo, hi = workspace(s2.pose, boundary, box)
             out["workspace_mm"] = {"min": lo, "max": hi, "start": [round(v, 2) for v in s2.pose[:3]]}
         finally:
@@ -197,8 +213,10 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
         print(f"workspace (base frame, mm): x {lo[0]}..{hi[0]}, y {lo[1]}..{hi[1]}, z {lo[2]}..{hi[2]}; start {out['workspace_mm']['start']}", flush=True)
 
         # 2. the commanding link, boxed to that workspace
+        # the link also refuses any target rotated further from the start orientation than the session allows
         link = cl.XArmCommandLink(api_class, cmd_class, address, tuple(v - LINK_MARGIN_MM for v in lo), tuple(v + LINK_MARGIN_MM for v in hi),
-                                  a.ctrl_speed, a.ctrl_acc)  # fmt: skip
+                                  a.ctrl_speed, a.ctrl_acc, ref_rpy=tuple(s2.pose[3:6]),
+                                  max_rot_rad=math.radians(a.rot_max_deg + 3.0 if a.rotation != "off" else 1.0))  # fmt: skip
         link.connect()
         backend = XArmLiveBackend(link, a.ctrl_speed, a.ctrl_acc)
         rec = Recorder(opened(a.log))
@@ -276,7 +294,7 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
             why = f" [{t['blocked'][:60]}]" if t.get("blocked") else ""
             inp = "DISCONNECTED" if not t.get("connected") else "AVAILABLE" if t.get("avail") else "UNAVAILABLE"
             print(f"{(now - start) / 1e9:7.1f}s {BANNER} | {t['state']}{why} | input={inp} gen={t.get('gen')} grip={n2(t.get('grip'))} "
-                  f"trig={n2(t.get('trig'))} | mm: req={f3(t.get('req_mm'))} lim={f3(t.get('lim_mm'))} fb={f3(t.get('fb_mm'))} | "
+                  f"trig={n2(t.get('trig'))} | mm: req={f3(t.get('req_mm'))} lim={f3(t.get('lim_mm'))} fb={f3(t.get('fb_mm'))} rot={t.get('rot_deg')} | "
                   f"armed={'yes' if link.armed_mode is not None else 'NO'} cmds={backend.command_count} halts={backend.halt_count} "
                   f"faults={rec.counts.get('fault', 0)}", flush=True)  # fmt: skip
             if now - start >= a.duration * 1e9:

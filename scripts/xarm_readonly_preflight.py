@@ -49,7 +49,8 @@ BANNER = "READ-ONLY OBSERVER: no enable, no mode/state change, no stop, no motio
 
 # Payload-free read registers of the private Modbus protocol (core/config/x_config.py UxbusReg).
 READ_REGISTERS = {1: "GET_VERSION", 2: "GET_ROBOT_SN", 13: "GET_STATE", 14: "GET_CMDNUM", 15: "GET_ERROR",
-                  41: "GET_TCP_POSE", 42: "GET_JOINT_POS", 49: "GET_REDUCED_MODE", 53: "GET_REDUCED_STATE"}  # fmt: skip
+                  41: "GET_TCP_POSE", 42: "GET_JOINT_POS", 49: "GET_REDUCED_MODE", 53: "GET_REDUCED_STATE",
+                  91: "GET_TCP_POSE_AA"}  # fmt: skip
 # Public SDK methods that stay callable on the guarded instance. Everything else is refused.
 ALLOWED_API = frozenset({
     "connect", "disconnect",  # connection management

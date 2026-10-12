@@ -32,6 +32,7 @@ from typing import Any
 
 import xarm_command_link as cl
 import xarm_readonly_preflight as ro
+from teleop_rotation import q_conj, q_from_rotvec, q_mul, q_to_rotvec, q_to_rpy, rpy_to_q
 
 FENCE_MARGIN_MM = 5.0
 POLL_S = 0.02
@@ -173,6 +174,76 @@ class FirstMove:
         return res
 
 
+class RotationCheck:
+    """A small pure rotation of the tool about one base axis and back (the flange position is not moved).
+    Tells us that an orientation target works through our link, which way it turns, and how fast."""
+
+    def __init__(self, link: cl.XArmCommandLink, axis: str, angle_deg: float, speed: float, acc: float, mode: int, log: list):
+        self.link, self.axis, self.angle, self.speed, self.acc, self.mode, self.log = link, axis, math.radians(angle_deg), speed, acc, mode, log
+        self.u = {"x": (1.0, 0.0, 0.0), "y": (0.0, 1.0, 0.0), "z": (0.0, 0.0, 1.0)}[axis]
+        self.start: tuple | None = None
+        self.q0: tuple | None = None
+        self.stop_requested = False
+
+    def turned(self, pose: tuple) -> tuple:
+        """(rotation about the test axis, rotation about anything else), radians, since the start."""
+        r = q_to_rotvec(q_mul(rpy_to_q(*pose[3:6]), q_conj(self.q0)))  # type: ignore[arg-type]
+        on = sum(r[k] * self.u[k] for k in range(3))
+        return on, math.sqrt(max(0.0, sum(v * v for v in r) - on * on))
+
+    def check(self, s: cl.ArmState) -> None:
+        if self.stop_requested:
+            raise Abort("stop requested by the operator")
+        if s.error or s.warn:
+            raise Abort(f"controller error {s.error} / warning {s.warn}")
+        if math.dist(s.pose[:3], self.start[:3]) > 2.0:  # type: ignore[index]
+            raise Abort(f"the flange moved {math.dist(s.pose[:3], self.start[:3]):.2f} mm during a pure rotation")  # type: ignore[index]
+        on, other = self.turned(s.pose)
+        if not (-math.radians(1.5) <= on <= self.angle + math.radians(1.5)) or other > math.radians(1.5):
+            raise Abort(f"rotation {math.degrees(on):.2f} deg about {self.axis}, {math.degrees(other):.2f} deg off-axis: outside the plan")
+
+    def watch(self, seconds: float, label: str, goal_rad: float) -> list:
+        t0, t0_ns, tr = time.monotonic(), time.monotonic_ns(), []
+        while time.monotonic() - t0 < seconds:
+            s = self.link.read()
+            tr.append((round(time.monotonic() - t0, 3), round(math.degrees(self.turned(s.pose)[0]), 3), s.state))
+            self.check(s)
+            if len(tr) >= 10 and all(abs(x[1] - math.degrees(goal_rad)) <= 0.15 for x in tr[-10:]):
+                break
+            time.sleep(POLL_S)
+        self.log.append(dict(k="trajectory", t=time.monotonic_ns(), label=label, t0_mono_ns=t0_ns, unit="deg about " + self.axis, samples=tr))
+        return tr
+
+    def run(self) -> dict:
+        s0 = self.link.read()
+        self.start, self.q0 = s0.pose, rpy_to_q(*s0.pose[3:6])
+        err = math.degrees(self.link.rpy_convention_error_rad())
+        res: dict = {"rpy_convention_error_deg": round(err, 4)}
+        if err > 0.2:
+            raise Abort(f"roll/pitch/yaw convention check failed: {err:.2f} deg between our reading and the controller's axis-angle; nothing was commanded")
+        self.link.arm_motion(self.mode)
+        time.sleep(ARM_SETTLE_S)
+        q_t = q_mul(q_from_rotvec(tuple(self.angle * v for v in self.u)), self.q0)
+        target = tuple(self.start[:3]) + tuple(q_to_rpy(q_t))
+        self.link.move_line(target, self.speed, self.acc)
+        tr = self.watch(8.0, "R out", self.angle)
+        reached = len(tr) >= 10 and all(abs(x[1] - math.degrees(self.angle)) <= 0.15 for x in tr[-10:])
+        at = self.link.read()
+        res["R_rotation"] = {
+            "axis": "base " + self.axis, "target_deg": round(math.degrees(self.angle), 2), "turned_deg": tr[-1][1], "reached": reached,
+            "first_motion_after_s": next((x[0] for x in tr if abs(x[1]) > 0.1), None), "duration_s": tr[-1][0],
+            "peak_deg_s": round(max(((b[1] - a[1]) / (b[0] - a[0]) for a, b in zip(tr, tr[5:]) if b[0] > a[0]), default=0.0), 1),
+            "speed_argument": self.speed, "start_rpy_deg": [round(math.degrees(v), 3) for v in self.start[3:6]],
+            "target_rpy_deg": [round(math.degrees(v), 3) for v in target[3:6]], "reported_rpy_deg": [round(math.degrees(v), 3) for v in at.pose[3:6]],
+            "flange_shift_mm": round(math.dist(at.pose[:3], self.start[:3]), 3)}  # fmt: skip
+        if not reached:
+            raise Abort("rotation check: the tool did not reach the target orientation")
+        self.link.move_line(self.start, self.speed, self.acc)
+        tr = self.watch(8.0, "R back", 0.0)
+        res["returned_to_start"] = len(tr) >= 10 and all(abs(x[1]) <= 0.15 for x in tr[-10:])
+        return res
+
+
 def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     src = ap.add_mutually_exclusive_group(required=True)
@@ -188,13 +259,22 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     ap.add_argument("--allow-reduced-mode-off", action="store_true",
                     help="run although the controller's reduced mode is off. The operator's explicit decision, recorded; "
                          "this program still refuses anything above --speed or outside its small box")
+    ap.add_argument("--rotate-deg", type=float, default=0.0,
+                    help="instead of the translation tests: turn the tool by this angle (2..15) about a base axis and back, without moving the flange")
+    ap.add_argument("--rot-axis", choices=["x", "y", "z"], default="z")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args(argv)
+    if args.rotate_deg and not (2.0 <= args.rotate_deg <= 15.0):
+        print("error: --rotate-deg must be 2..15", file=sys.stderr)
+        return 2
     if not (2.0 <= args.distance <= 20.0 and 2.0 <= args.speed <= 20.0 and 20.0 <= args.acc <= 500.0):
         print("error: distance 2..20 mm, speed 2..20 mm/s, acc 20..500 mm/s^2", file=sys.stderr)
         return 2
-    print(f"FIRST ARM MOVEMENT TEST: {args.distance:g} mm along base {args.axis} at {args.speed:g} mm/s, mode {args.mode}. "
-          "Tests: A single move, B second target during a move, C set_state(4) during a move.", flush=True)  # fmt: skip
+    if args.rotate_deg:
+        print(f"ARM ROTATION CHECK: {args.rotate_deg:g} deg about base {args.rot_axis} and back, flange position fixed, mode {args.mode}.", flush=True)
+    else:
+        print(f"FIRST ARM MOVEMENT TEST: {args.distance:g} mm along base {args.axis} at {args.speed:g} mm/s, mode {args.mode}. "
+              "Tests: A single move, B second target during a move, C set_state(4) during a move.", flush=True)  # fmt: skip
     if not args.moves_real_arm:
         print("plan only: --moves-real-arm not given; no connection was made", flush=True)
         return 0
@@ -210,7 +290,7 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     out: dict = {"tool": "arm_first_move_test", "sdk": sdk_ver, "args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items() if k != "address"},
                  "result": "started", "host_wall_start": time.time()}  # fmt: skip
     link: cl.XArmCommandLink | None = None
-    test: FirstMove | None = None
+    test: Any = None
     try:
         # 1. read-only look first, with a link that cannot move anything (degenerate box around nothing)
         probe = cl.XArmCommandLink(api_class, cmd_class, address, (0, 0, 0), (1e-3, 1e-3, 1e-3), 1e-3, 1e-3)
@@ -250,9 +330,17 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
         print(f"plan: from {pl['start_mm']} move {'+' if pl['sign'] > 0 else '-'}{args.axis} to {args.axis}={pl['end_coordinate_mm']} "
               f"(hard box {pl['box_min_mm']} .. {pl['box_max_mm']})", flush=True)  # fmt: skip
         # 2. the commanding link, boxed to this plan
-        link = cl.XArmCommandLink(api_class, cmd_class, address, tuple(pl["box_min_mm"]), tuple(pl["box_max_mm"]), args.speed, args.acc)
-        link.connect()
-        test = FirstMove(link, pl, args.distance, args.speed, args.acc, args.mode, log)
+        if args.rotate_deg:
+            box = ([round(v - 1.5, 3) for v in s2.pose[:3]], [round(v + 1.5, 3) for v in s2.pose[:3]])
+            out["plan"] = {"rotation_deg": args.rotate_deg, "axis": args.rot_axis, "box_min_mm": box[0], "box_max_mm": box[1]}
+            link = cl.XArmCommandLink(api_class, cmd_class, address, tuple(box[0]), tuple(box[1]), args.speed, args.acc,
+                                      ref_rpy=tuple(s2.pose[3:6]), max_rot_rad=math.radians(args.rotate_deg + 2.0))  # fmt: skip
+            link.connect()
+            test = RotationCheck(link, args.rot_axis, args.rotate_deg, args.speed, args.acc, args.mode, log)
+        else:
+            link = cl.XArmCommandLink(api_class, cmd_class, address, tuple(pl["box_min_mm"]), tuple(pl["box_max_mm"]), args.speed, args.acc)
+            link.connect()
+            test = FirstMove(link, pl, args.distance, args.speed, args.acc, args.mode, log)
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal.signal(sig, lambda *_: setattr(test, "stop_requested", True))
         out["tests"] = test.run()

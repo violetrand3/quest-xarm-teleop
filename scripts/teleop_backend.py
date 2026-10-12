@@ -46,6 +46,7 @@ class ToolFeedback:
     read_mono_ns: int  # this host's monotonic clock when the read completed (not a robot timestamp)
     synthetic: bool
     source: str
+    q_xyzw: tuple | None = None  # tool rotation in the backend frame as a unit quaternion; None = not provided
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,10 @@ class RobotBackend:
         """(ready, reason). The adapter refuses to engage while this is False."""
         return True, ""
 
+    def orientation_from_q(self, q_xyzw: tuple) -> tuple:
+        """The backend-native orientation for a rotation given as a quaternion (only used with wrist rotation)."""
+        raise BackendError("this backend cannot take a rotation target")
+
     def read_gripper(self) -> GripperFeedback | None:
         return None
 
@@ -103,8 +108,9 @@ class FakeRobotBackend(RobotBackend):
     KEEP = 50_000
 
     def __init__(self, clock: Callable[[], int] = time.monotonic_ns, start_p_m: Vec3 = START_P_M,
-                 gripper_pct_closed: float | None = 0.0):  # fmt: skip
+                 gripper_pct_closed: float | None = 0.0, rotation: bool = False):  # fmt: skip
         self.clock = clock
+        self._q = (0.0, 0.0, 0.0, 1.0) if rotation else None  # synthetic tool rotation; None = rotation not offered
         self._lock = threading.Lock()
         self._p = tuple(float(v) for v in start_p_m)
         self._orientation = self.START_ORIENTATION
@@ -127,7 +133,12 @@ class FakeRobotBackend(RobotBackend):
             if self.fail_feedback:
                 raise BackendError(f"synthetic feedback failure: {self.fail_feedback}")
             t = self.clock() if self.frozen_read_ns is None else self.frozen_read_ns
-            return ToolFeedback(self._p, self._orientation, self.ORIENTATION_REPR, self.frame, t, True, self.name)
+            return ToolFeedback(self._p, self._orientation, self.ORIENTATION_REPR, self.frame, t, True, self.name, self._q)
+
+    def orientation_from_q(self, q_xyzw: tuple) -> tuple:
+        if self._q is None:
+            raise BackendError("synthetic backend created without rotation")
+        return ("q",) + tuple(q_xyzw)
 
     def command_target(self, p_m: Vec3, orientation: tuple) -> None:
         with self._lock:
@@ -141,6 +152,8 @@ class FakeRobotBackend(RobotBackend):
         if self.tracking:
             with self._lock:
                 self._p, self._orientation = tuple(p_m), tuple(orientation)
+                if orientation and orientation[0] == "q":
+                    self._q = tuple(orientation[1:])
 
     def stop(self, reason: str, latched: bool = False) -> None:
         with self._lock:

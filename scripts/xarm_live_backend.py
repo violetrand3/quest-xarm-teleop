@@ -25,6 +25,7 @@ from typing import Any
 
 import xarm_command_link as cl
 from teleop_backend import BackendError, GripperProposal, RobotBackend, ToolFeedback, Vec3
+from teleop_rotation import q_to_rpy, rpy_to_q
 
 
 class XArmLiveBackend(RobotBackend):
@@ -61,7 +62,11 @@ class XArmLiveBackend(RobotBackend):
         if s.error or s.warn:
             raise BackendError(f"controller error {s.error} / warning {s.warn} (never cleared automatically)")
         return ToolFeedback((s.pose[0] / 1000.0, s.pose[1] / 1000.0, s.pose[2] / 1000.0), tuple(s.pose[3:6]),
-                            self.ORIENTATION_REPR, self.frame, s.t_mono_ns, False, "xarm get_position")  # fmt: skip
+                            self.ORIENTATION_REPR, self.frame, s.t_mono_ns, False, "xarm get_position",
+                            rpy_to_q(s.pose[3], s.pose[4], s.pose[5]))  # fmt: skip
+
+    def orientation_from_q(self, q_xyzw: tuple) -> tuple:
+        return q_to_rpy(q_xyzw)  # roll, pitch, yaw in rad; the convention is checked against the controller at session start
 
     def command_target(self, p_m: Vec3, orientation: tuple) -> None:
         pose = (p_m[0] * 1000.0, p_m[1] * 1000.0, p_m[2] * 1000.0) + tuple(orientation)

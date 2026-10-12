@@ -12,6 +12,8 @@ import struct
 import threading
 import time
 
+from teleop_rotation import q_angle, q_conj, q_mul, q_step_toward, q_to_rotvec, q_to_rpy, rpy_to_q
+
 POSE = [299.83, 3.43, 461.18, math.radians(179.86), math.radians(-15.1), math.radians(-6.64)]
 JOINTS = [math.radians(v) for v in (1.0, -30.0, -40.0, 0.5, 55.0, -6.0, 0.0)]
 TCP_OFFSET = [0.0, 0.0, 172.0, 0.0, 0.0, 0.0]
@@ -24,6 +26,8 @@ class FakeController:
                  report_period_s: float = 0.02, mode7_replaces: bool = True, pose: list | None = None, sim: bool = False):  # fmt: skip
         self.sim = sim
         self.reduced_on = True
+        self.rot_rate_deg_s = 60.0  # invented: how fast the model turns toward a commanded orientation
+        self.aa_wrong = False  # True: report an axis-angle orientation built with a DIFFERENT angle convention
         self.err, self.warn, self.silent, self.report, self.move, self.period = err, warn, silent, report, move, report_period_s
         self.mode7_replaces = mode7_replaces
         self.pose = list(pose or POSE)  # mm, rad
@@ -87,17 +91,24 @@ class FakeController:
                 if self.target is None:
                     self.state = 2
                     continue
-                xyz, speed = self.target
+                xyz, speed, rpy = self.target
                 d = [xyz[k] - self.pose[k] for k in range(3)]
                 n = math.sqrt(sum(v * v for v in d))
                 step = min(speed, self.max_speed) * dt
-                if n <= step:
+                pos_done = n <= step
+                if pos_done:
                     self.pose[:3] = list(xyz)
+                else:
+                    for k in range(3):
+                        self.pose[k] += d[k] / n * step
+                q_cur, q_tgt = rpy_to_q(*self.pose[3:6]), rpy_to_q(*rpy)
+                rot_step = math.radians(self.rot_rate_deg_s) * dt
+                rot_done = q_angle(q_cur, q_tgt) <= rot_step
+                self.pose[3:6] = list(rpy) if rot_done else list(q_to_rpy(q_step_toward(q_cur, q_tgt, rot_step)))
+                if pos_done and rot_done:
                     self.target = None
                 else:
                     self.state = 1
-                    for k in range(3):
-                        self.pose[k] += d[k] / n * step
 
     def _write(self, reg: int, payload: bytes) -> int:
         """Apply a write. Returns extra state bits for the reply (0x10 = not ready)."""
@@ -115,18 +126,18 @@ class FakeController:
                 if self.err or self.state in (4, 5) or not self.enabled:
                     return 0x10
                 vals = struct.unpack("<10f", payload[:40])
-                xyz, speed = list(vals[:3]), vals[6]
+                xyz, speed, rpy = list(vals[:3]), vals[6], list(vals[3:6])
                 b = BOUNDARY
                 if not (b[1] <= xyz[0] <= b[0] and b[3] <= xyz[1] <= b[2] and b[5] <= xyz[2] <= b[4]):
                     self.err, self.state, self.target, self.queue = 35, 4, None, []  # safety boundary
                     return 0x10
                 self.moves_accepted += 1
                 if self.mode == 7 and self.mode7_replaces:
-                    self.target, self.queue = (xyz, speed), []
+                    self.target, self.queue = (xyz, speed, rpy), []
                 elif self.target is None and not self.queue:
-                    self.target = (xyz, speed)
+                    self.target = (xyz, speed, rpy)
                 else:
-                    self.queue.append((xyz, speed))
+                    self.queue.append((xyz, speed, rpy))
             return 0x10 if (self.state in (4, 5) or not self.enabled) else 0
 
     def _answer(self, reg: int) -> bytes:
@@ -143,6 +154,12 @@ class FakeController:
             return bytes([self.err, self.warn])
         if reg == 41:
             return f(self.pose)
+        if reg == 91:
+            r, p, y = self.pose[3:6]
+            q = rpy_to_q(r, p, y)
+            if self.aa_wrong:  # the same three angles applied in the opposite order
+                q = q_mul(rpy_to_q(r, 0, 0), q_mul(rpy_to_q(0, p, 0), rpy_to_q(0, 0, y)))
+            return f(list(self.pose[:3]) + list(q_to_rotvec(q)))
         if reg == 42:
             return f(JOINTS)
         if reg == 49:

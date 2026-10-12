@@ -59,10 +59,10 @@ class QuestFeed:
             if frames:
                 return json.loads(frames[0])
 
-    def pose(self, p=P0, grip=1.0, trig=0.0) -> None:  # type: ignore[no-untyped-def]
+    def pose(self, p=P0, grip=1.0, trig=0.0, q=(0.0, 0.0, 0.0, 1.0)) -> None:  # type: ignore[no-untyped-def]
         self.seq += 1
         self.tq += 33_000_000
-        obj = rec_obj(self.seq, t=self.tq, gr=syn_pose(p), in_r=syn_inputs(True, squeeze=grip, trigger=trig, a=False, b=False))
+        obj = rec_obj(self.seq, t=self.tq, gr=syn_pose(p, q), in_r=syn_inputs(True, squeeze=grip, trigger=trig, a=False, b=False))
         feed(self.tr, obj, 0)
         assert self.rpc(pose_pkt(self.tr, obj, self.seq))["status"] == "ok"
         time.sleep(0.03)
@@ -252,6 +252,59 @@ class LiveTeleopProgramTests(unittest.TestCase):
         self.assertAlmostEqual(notes["x"], POSE[0] + 10.0, delta=0.6)  # the arm followed at the same time
         self.assertEqual({(r[1], r[2]) for r in g.requests}, {("GET", "/api/calibration"), ("GET", "/api/state"), ("POST", "/api/do/grip")})
         self.assertEqual(res["gripper_calibration"]["open_ticks"], 512)
+
+    def test_wrist_rotation_turns_the_tool_about_the_vertical(self) -> None:
+        import math
+        import teleop_rotation as tr
+        ctl = FakeController()
+        q0 = tr.rpy_to_q(*POSE[3:6])
+        up = lambda deg: (0.0, math.sin(math.radians(deg) / 2), 0.0, math.cos(math.radians(deg) / 2))  # noqa: E731  hand turn about LOCAL up
+        tilt = lambda deg: (math.sin(math.radians(deg) / 2), 0.0, 0.0, math.cos(math.radians(deg) / 2))  # noqa: E731  about LOCAL x
+
+        def drive(q: QuestFeed, notes: dict) -> None:
+            for _ in range(5):
+                q.pose(grip=0.0)
+            for _ in range(3):
+                q.pose(grip=1.0)
+            for i in range(1, 21):
+                q.pose(q=tilt(1.0 * i))  # tilting the hand 20 deg: must do nothing in yaw mode
+            notes["after_tilt"] = math.degrees(tr.q_angle(q0, tr.rpy_to_q(*ctl.pose[3:6])))
+            for i in range(1, 21):
+                q.pose(q=tr.q_mul(up(1.0 * i), tilt(20.0)))  # then turning it 20 deg about up
+            for _ in range(30):
+                q.pose(q=tr.q_mul(up(20.0), tilt(20.0)))
+            notes["q"] = tr.rpy_to_q(*ctl.pose[3:6])
+            notes["xyz"] = list(ctl.pose[:3])
+            for i in range(1, 31):
+                q.pose(q=tr.q_mul(up(20.0 + 2.0 * i), tilt(20.0)))  # on to 80 deg: the limit is 30
+            for _ in range(40):
+                q.pose(q=tr.q_mul(up(80.0), tilt(20.0)))
+            notes["at_limit"] = math.degrees(tr.q_angle(q0, tr.rpy_to_q(*ctl.pose[3:6])))
+            for _ in range(4):
+                q.pose(grip=0.0, q=tr.q_mul(up(80.0), tilt(20.0)))
+
+        rc, res, ticks, text, notes = self.run_live(ctl, drive, ["--rotation", "yaw"], duration=13.0)
+        self.assertNotIn("drive_error", notes, notes)
+        self.assertEqual((rc, res["result"], res["faults"], res["halts"]), (0, "ok", [], 0), res.get("abort_reason"))
+        self.assertLess(notes["after_tilt"], 0.05)
+        self.assertLess(math.degrees(tr.q_angle(notes["q"], tr.q_mul(tr.q_from_rotvec((0.0, 0.0, math.radians(20.0))), q0))), 0.3)  # 20 deg about base z
+        for k in range(3):
+            self.assertAlmostEqual(notes["xyz"][k], POSE[k], delta=0.05)  # the flange stayed put
+        self.assertAlmostEqual(notes["at_limit"], 30.0, delta=0.3)
+        self.assertLess(res["before"]["rpy_convention_error_deg"], 0.01)
+        self.assertEqual(res["config"]["rotation"]["mode"], "yaw")
+
+    def test_wrist_rotation_is_refused_when_the_angle_convention_does_not_match(self) -> None:
+        ctl = FakeController()
+        ctl.aa_wrong = True
+        rc, res, _, _, _ = self.run_live(ctl, None, ["--rotation", "full"], duration=5.0)
+        self.assertEqual((rc, res["result"]), (3, "aborted"))
+        self.assertIn("convention", res["abort_reason"])
+        self.assertEqual(self.writes(ctl), [])
+        ctl2 = FakeController()
+        ctl2.aa_wrong = True  # without wrist rotation the convention is not used, so the session may run
+        rc, res, _, _, _ = self.run_live(ctl2, None, [], duration=5.0)
+        self.assertEqual(rc, 0)
 
     def test_refusals_before_anything_is_commanded(self) -> None:
         import live_teleop as lt

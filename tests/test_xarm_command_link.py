@@ -156,6 +156,31 @@ class CommandLinkTests(unittest.TestCase):
         self.assertEqual([r for r, _ in writes(ctl)].count(21), 0)
         self.assertEqual(len(L.ledger.summary()["wire_frames_refused"]), 4)
 
+    def test_orientation_limit_at_the_wire_and_convention_check(self) -> None:
+        import teleop_rotation as tr
+        ctl = FakeController()
+        undo = LoopbackSdkTests.remap(ctl)
+        api, cmd, _ = self.cl.load_sdk()
+        L = self.cl.XArmCommandLink(api, cmd, "127.0.0.1", (250, -50, 400), (350, 50, 520), 20.0, 200.0,
+                                    ref_rpy=tuple(POSE[3:6]), max_rot_rad=math.radians(5.0))  # fmt: skip
+        self.addCleanup(lambda: (L.close(), undo(), time.sleep(0.05), ctl.close()))
+        L.connect()
+        self.assertLess(math.degrees(L.rpy_convention_error_rad()), 0.01)  # our reading agrees with the (synthetic) controller's axis-angle
+        ctl.aa_wrong = True
+        self.assertGreater(math.degrees(L.rpy_convention_error_rad()), 1.0)  # a different convention would be noticed
+        ctl.aa_wrong = False
+        s = L.arm_motion(7)
+        q0 = tr.rpy_to_q(*s.pose[3:6])
+        turn = lambda deg: tuple(s.pose[:3]) + tuple(tr.q_to_rpy(tr.q_mul(tr.q_from_rotvec((0.0, 0.0, math.radians(deg))), q0)))  # noqa: E731
+        L.move_line(turn(3.0), 20.0, 200.0)  # 3 deg from the reference: allowed
+        time.sleep(0.3)
+        self.assertAlmostEqual(math.degrees(tr.q_angle(q0, tr.rpy_to_q(*L.read().pose[3:6]))), 3.0, delta=0.05)
+        with self.assertRaises(self.cl.LinkError):
+            L.move_line(turn(8.0), 20.0, 200.0)  # 8 deg: refused before it reaches the wire
+        self.assertEqual([r for r, _ in writes(ctl)].count(21), 1)
+        with self.assertRaises(ValueError):
+            self.cl.XArmCommandLink(api, cmd, "127.0.0.1", (0, 0, 0), (1, 1, 1), 1.0, 1.0, ref_rpy=(0.0, 0.0, 0.0))
+
     def test_unarmed_and_after_halt_nothing_moves(self) -> None:
         ctl = FakeController()
         L = self.link(ctl)
@@ -323,6 +348,40 @@ class FirstMoveProgramTests(unittest.TestCase):
             else:
                 self.assertEqual((rc, res["result"], moved), (3, "aborted", []), extra)
                 self.assertIn("reduced mode is not on", res["abort_reason"])
+
+    def test_rotation_check_turns_the_tool_and_returns(self) -> None:
+        import teleop_rotation as tr
+        ctl = FakeController(pose=NEAR_FENCE)
+        q0 = tr.rpy_to_q(*NEAR_FENCE[3:6])
+        seen: list = []
+
+        def spy() -> None:
+            t_end = time.monotonic() + 12
+            while time.monotonic() < t_end:
+                seen.append((tr.q_angle(q0, tr.rpy_to_q(*ctl.pose[3:6])), math.dist(ctl.pose[:3], NEAR_FENCE[:3])))
+                time.sleep(0.02)
+
+        rc, res, _ = self.run_program(ctl, ["--rotate-deg", "5", "--rot-axis", "z"], during=spy)
+        self.assertEqual((rc, res["result"]), (0, "ok"), res.get("abort_reason"))
+        r = res["tests"]["R_rotation"]
+        self.assertTrue(r["reached"] and res["tests"]["returned_to_start"])
+        self.assertAlmostEqual(r["turned_deg"], 5.0, delta=0.15)
+        self.assertLess(res["tests"]["rpy_convention_error_deg"], 0.01)
+        self.assertAlmostEqual(math.degrees(max(a for a, _ in seen)), 5.0, delta=0.2)  # the model really turned, and by no more
+        self.assertLess(max(d for _, d in seen), 0.01)  # the flange did not move
+        self.assertLess(math.degrees(tr.q_angle(q0, tr.rpy_to_q(*ctl.pose[3:6]))), 0.05)
+        self.assertEqual((ctl.mode, ctl.state), (0, 4))
+        for _, reg, _p in ctl.frames:
+            self.assertIn(reg, READS | {11, 12, 19, 21})
+
+    def test_rotation_check_refuses_when_the_angle_convention_does_not_match(self) -> None:
+        ctl = FakeController(pose=NEAR_FENCE)
+        ctl.aa_wrong = True
+        rc, res, _ = self.run_program(ctl, ["--rotate-deg", "5"])
+        self.assertEqual((rc, res["result"]), (3, "aborted"))
+        self.assertIn("convention", res["abort_reason"])
+        self.assertEqual([r for _, r, _ in ctl.frames if r in (11, 21)], [])  # never enabled, never moved
+        self.assertEqual({p[:1] for _, r, p in ctl.frames if r == 19}, {bytes([0])})  # only the final park to mode 0
 
     def test_simulation_mode_commands_nothing(self) -> None:
         ctl = FakeController(pose=NEAR_FENCE, sim=True)  # the controller would report motion while the real arm stays still
