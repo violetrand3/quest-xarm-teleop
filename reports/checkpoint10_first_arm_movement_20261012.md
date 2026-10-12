@@ -123,3 +123,42 @@ Arm parked at x 339.2, y 3.4, z 396.2 mm, state 4, mode 0, no error. Gripper ope
 - A bigger workspace, higher speed and scale: all still first-session values.
 - Recording of episodes for training.
 - Video in the headset.
+
+---
+
+## 9. Bigger box, higher speed and wrist rotation (same evening)
+Confirmations: `data/checkpoint10/confirm_tele_20261012-184031.txt` ("Large"), `confirm_rotation_20261012.txt` ("Turn only").
+
+### Session 3 (`teleop_tele_20261012-184031`): "Large" box, arm and gripper
+| Measure | Value |
+|---|---|
+| Box (base frame, mm) | x 199–479, y −247…253, z 366–546 |
+| Settings | scale 0.667, target speed ≤ 120 mm/s, controller cap 150 mm/s |
+| Time engaged | 70.8 s in 5 engagements; no faults, no halts |
+| Arm travel | x 225–434, y −85…154, z 366–546 mm (both z edges reached and held) |
+| Target-to-arm distance | median 0.34 mm, max 7.2 mm |
+| Arm speed | up to 125 mm/s |
+| Gripper | 90 commands, 0 errors |
+| Link (full camera wall closed) | RTT median 229 ms, p95 302 ms; input age max 126 ms; no engagement lost to late input |
+
+### Wrist rotation
+- `scripts/teleop_rotation.py`: the tool orientation follows the hand's rotation since engagement, mapped into the base frame, limited in angle (measured from the tool orientation at the session's first engagement) and in speed. Mode "yaw" passes only the turn about the vertical; "full" passes all axes.
+- The arm takes roll/pitch/yaw. Our reading of those angles (R = Rz·Ry·Rx) is checked at session start against the controller's own axis-angle readout of the same pose (read-only); on the rig the difference was 0.0°.
+- The command link now also refuses, at the wire, any target rotated further from the session's start orientation than the session allows.
+- Rotation check (`first_move_rot_20261012-185735.json`): 5° about base z and back in mode 7. Turned 4.994°, flange shift 0.0 mm, returned to start. With the speed argument 10 the tool turned at about 1.9°/s, i.e. roughly 0.19°/s per mm/s. At the session's controller cap of 150 mm/s that is about 28°/s, so the session's rotation limit was set to 20°/s.
+
+### Session 4 (`teleop_tele_20261012-190011`): arm, gripper and rotation ("turn only", ±45°)
+| Measure | Value |
+|---|---|
+| Time engaged | 176.8 s in 7 engagements, all ended by releasing the clutch; no faults, no halts |
+| Arm travel | x 200–446, y −227…152, z 367–545 mm |
+| Tool rotation about the vertical | −45.0° … +45.0° (both limits reached and held); tilt 0.00° |
+| Rotation speed | up to 23°/s measured on the arm (target limit 20°/s) |
+| Target-to-arm distance | median 0.41 mm, max 6.7 mm |
+| Line targets sent / refused | 8838 / 0 |
+| Gripper | 39 commands, 0 errors |
+| Link | RTT median 231 ms, p95 305 ms |
+
+State left: arm parked at x 334.6, y 45.6, z 405.3 mm, yaw turned 4.9° from where it started the day, state 4, mode 0, no error. Gripper open. Reduced mode still off.
+
+Not exercised on the rig yet: "full" rotation (tilting), rotation faster than 20°/s, the fault paths of rotation (covered by synthetic tests only).

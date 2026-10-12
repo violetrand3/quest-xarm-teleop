@@ -2,7 +2,7 @@
 # Runs ON THE LAB HOST, detached. One supervised arm_first_move_test.py run with camera frames.
 # Usage: lab_first_move_run.sh <name> <mode 0|7> <axis> [extra flag] ; needs logs/confirm_<name>.txt
 cd ~/quest-xarm-teleop-dryrun || exit 1
-N=$1; MODE=$2; AXIS=$3; EXTRA=${4:-}
+N=$1; MODE=$2; AXIS=$3; shift 3; EXTRA="$*"
 python3 scripts/lab_frame_capture.py logs/cam_$N 60 10 zed iphone > logs/cam_$N.log 2>&1 &
 CAP=$!
 sleep 2.5
