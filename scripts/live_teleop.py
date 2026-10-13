@@ -57,6 +57,7 @@ from xarm_live_backend import XArmLiveBackend
 BANNER = "ARM LIVE (REAL ARM MOVES)"
 DEFAULT_RECORD_CAMS = {"iphone": "http://127.0.0.1:8090/cam/iphone", "zed": "http://127.0.0.1:8090/cam/zed"}  # wrist, fixed
 FENCE_MARGIN_MM = 10.0
+REDUCED_JOINT_FACTOR = 2.5  # wrist joints turned up to 2.4 times faster than the tool in the session of 2026-10-12 (reconstructed)
 START_INSIDE_MM = 1.0  # with --box-abs the arm must start at least this far inside the box
 LINK_MARGIN_MM = 2.0
 PRINT_INTERVAL_S = 0.5
@@ -238,10 +239,27 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
                 raise Abort(f"arm is not idle (state {s.state}, {s.cmdnum} queued commands); nothing was commanded")
             if not (len(rs) > 5 and rs[5] == 1):
                 raise Abort("the fence (safety boundary) is not on; nothing was commanded")
+            red_tcp = float(rs[2]) if len(rs) > 3 else None  # mm/s
+            red_joint = math.degrees(float(rs[3])) if len(rs) > 3 else None  # deg/s
+            out["before"].update(reduced_max_tcp_speed_mm_s=red_tcp, reduced_max_joint_speed_deg_s=None if red_joint is None else round(red_joint, 2))
             if rs[0] != 1:
                 if not a.allow_reduced_mode_off:
                     raise Abort("reduced mode is not on; nothing was commanded")
                 out["before"]["reduced_mode_waived_by_operator"] = True
+            else:
+                # In reduced mode the controller has its own speed limits and raises error 24 when a streamed target
+                # passes them (seen on the rig 2026-10-12). Refuse here instead of failing in the middle of a movement.
+                print(f"controller reduced mode is ON: TCP limit {red_tcp} mm/s, joint limit {None if red_joint is None else round(red_joint, 1)} deg/s", flush=True)
+                if red_tcp is None or red_joint is None:
+                    raise Abort("reduced mode is on but its speed limits could not be read; nothing was commanded")
+                if a.ctrl_speed > red_tcp + 0.01:  # the limits arrive as 32-bit floats
+                    raise Abort(f"reduced mode is ON with a TCP speed limit of {red_tcp:g} mm/s and this session asks for up to {a.ctrl_speed:g} mm/s "
+                                f"(the controller stops with error 24 above its limit). Use --v-max and --ctrl-speed at or below {red_tcp:g}, "
+                                "or have reduced mode changed on the controller; nothing was commanded")
+                if a.rotation != "off" and a.rot_speed * REDUCED_JOINT_FACTOR > red_joint + 0.01:
+                    raise Abort(f"reduced mode is ON with a joint speed limit of {red_joint:g} deg/s; turning the tool at {a.rot_speed:g} deg/s can need "
+                                f"{REDUCED_JOINT_FACTOR:g} times that at the wrist joints. Use --rot-speed at or below {red_joint / REDUCED_JOINT_FACTOR:.0f}, "
+                                "or have reduced mode changed on the controller; nothing was commanded")
             s2 = (time.sleep(0.5), probe.read())[1]
             if max(abs(u - v) for u, v in zip(s.pose[:3], s2.pose[:3])) > 0.2:
                 raise Abort("the arm is moving; nothing was commanded")

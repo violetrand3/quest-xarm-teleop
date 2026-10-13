@@ -26,6 +26,7 @@ class FakeController:
                  report_period_s: float = 0.02, mode7_replaces: bool = True, pose: list | None = None, sim: bool = False):  # fmt: skip
         self.sim = sim
         self.reduced_on = True
+        self.reduced_tcp_mm_s, self.reduced_joint_deg_s = 250.0, 180.0  # reduced-mode speed limits reported by register 53
         self.rot_rate_deg_s = 60.0  # invented: how fast the model turns toward a commanded orientation
         self.aa_wrong = False  # True: report an axis-angle orientation built with a DIFFERENT angle convention
         self.err, self.warn, self.silent, self.report, self.move, self.period = err, warn, silent, report, move, report_period_s
@@ -165,7 +166,7 @@ class FakeController:
         if reg == 49:
             return bytes([int(self.reduced_on)])
         if reg == 53:
-            return (bytes([int(self.reduced_on)]) + struct.pack(">6h", *BOUNDARY) + f([250.0, math.radians(60.0)])
+            return (bytes([int(self.reduced_on)]) + struct.pack(">6h", *BOUNDARY) + f([self.reduced_tcp_mm_s, math.radians(self.reduced_joint_deg_s)])
                     + f([math.radians(v) for v in (-360, 360) * 7]) + bytes([1, 0]))  # fmt: skip
         return b""
 

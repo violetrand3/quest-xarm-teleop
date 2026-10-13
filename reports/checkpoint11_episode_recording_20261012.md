@@ -170,3 +170,29 @@ above the bin bottom. A further step can follow once the remaining gap has been 
 - Result for the operator's question: the reach is enough. At 245-248 mm the open jaws already straddle the part.
 - Proposed: this program's floor at 240 mm; controller floor back up from 215 to 235 mm (lab-side change).
   The error has to be cleared on the lab side after the labmate has looked at the gripper and the bin.
+
+## Pick test at the 240 mm floor (`tele_20261012-204347`): part picked and lifted, then controller error 24
+
+- Before it: the other agent raised the controller floor 215 -> 235 mm (20:37:52) and cleared error 31 (20:40:26),
+  arm not moved; the operator reported "nothing wrong with the gripper". Approved in a question form
+  ("Pick test only, 2 minutes"). Box x 199-479, y -247...260, z 240-546 mm, 120 mm/s cap. The operator's camera
+  page was connected (checked through the camera wall's viewer count).
+- **The pick worked.** One engagement of 43 s. The arm sat at the floor (240.2 mm) for 9.5 s without touching,
+  the jaws closed to 85 % on the white part at the floor, the part was lifted to flange z 310 mm (7 cm) between
+  the jaws, brought back down and released (wrist-camera frames at each step).
+- Then, while lifting again at the 120 mm/s cap with the wrist turning at 20 deg/s, the controller raised
+  **error 24 (speed exceeds limit)** at 75.35 s. The program latched the fault and sent state 4; the error was
+  not cleared. Arm stopped at x 311.9, y 142.4, z 288.4 mm, jaws open. Nothing was hit.
+- Ruled out: scheduler timing (20.0 ms +- 0.2 throughout), a jump in the target (smooth 2.4 mm steps, lag 6.7 mm),
+  the wrist singularity (joint angles reconstructed with a kinematic model that matches the recorded joints of
+  an earlier episode to 1.6 mm: J5 never below 22.6 deg; fastest joints 48-49 deg/s, earlier in the session).
+- **Most likely cause: the controller's reduced mode is ON again.** The start-up read of both sessions after the
+  fence change of 20:29:53 shows reduced mode on; every earlier session today shows it off. With it off the arm
+  spent seconds above 100 mm/s in earlier sessions with no error; with it on, the error came at this session's
+  fastest moment (117 mm/s). The reduced-mode limits read on 2026-10-01 were TCP 50 mm/s and joints 20 deg/s;
+  the present values were not read. This is an inference from timing, not a controller statement.
+- My miss: the program read "reduced mode on" at the start of both sessions and neither flagged the change nor
+  compared its limits with the session's speeds.
+- Fix: `live_teleop.py` now records the reduced-mode TCP and joint speed limits and, when reduced mode is on,
+  refuses to start if `--ctrl-speed` is above the TCP limit or `--rot-speed` x 2.5 is above the joint limit
+  (test with the simulated controller; 80 arm-related tests pass on linux2).

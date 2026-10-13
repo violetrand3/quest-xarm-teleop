@@ -432,6 +432,28 @@ class LiveTeleopProgramTests(unittest.TestCase):
         finally:
             sys.stdout = real
 
+    def test_reduced_mode_speed_limits_below_the_session_speeds_command_nothing(self) -> None:
+        """Rig, 2026-10-12: reduced mode had been switched on (TCP 50 mm/s) and a 120 mm/s session ended in controller error 24."""
+        fast = ["--v-max", "120", "--ctrl-speed", "150"]
+        for prep, extra, why in ((lambda c: setattr(c, "reduced_tcp_mm_s", 50.0), fast, "TCP speed limit of 50 mm/s"),
+                                 (lambda c: setattr(c, "reduced_joint_deg_s", 20.0), ["--rotation", "full", "--rot-speed", "20"], "joint speed limit of 20 deg/s"),
+                                 (lambda c: setattr(c, "reduced_joint_deg_s", 20.0), ["--rotation", "yaw", "--rot-speed", "9"], "joint speed limit of 20 deg/s")):  # fmt: skip
+            ctl = FakeController()
+            prep(ctl)
+            rc, res, _, _, _ = self.run_live(ctl, None, extra, duration=5.0)
+            self.assertEqual((rc, res["result"]), (3, "aborted"), why)
+            self.assertIn(why, res["abort_reason"])
+            self.assertEqual(self.writes(ctl), [], why)
+        ctl = FakeController()  # the same limits are fine for a session that stays below them
+        ctl.reduced_tcp_mm_s, ctl.reduced_joint_deg_s = 50.0, 20.0
+        rc, res, _, text, _ = self.run_live(ctl, None, ["--v-max", "40", "--ctrl-speed", "50", "--rotation", "full", "--rot-speed", "8"], duration=5.0)
+        self.assertEqual((rc, res["before"]["reduced_max_tcp_speed_mm_s"], res["before"]["reduced_max_joint_speed_deg_s"]), (0, 50.0, 20.0))
+        self.assertIn("reduced mode is ON: TCP limit 50.0 mm/s", text)
+        ctl = FakeController()  # reduced mode off (operator's waiver): its limits do not apply
+        ctl.reduced_on, ctl.reduced_tcp_mm_s = False, 50.0
+        rc, res, _, _, _ = self.run_live(ctl, None, fast + ["--allow-reduced-mode-off"], duration=5.0)
+        self.assertEqual((rc, res["before"]["reduced_mode_waived_by_operator"]), (0, True))
+
     def test_refusals_before_anything_is_commanded(self) -> None:
         import live_teleop as lt
         real, sys.stdout = sys.stdout, io.StringIO()
