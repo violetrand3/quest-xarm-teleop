@@ -109,3 +109,27 @@ on hardware. The jaws stayed open during the episode (trigger at 0), so no jaw m
 ```
 REC=1 scripts/ops/teleop_live_session.sh <name> <confirmation file> <seconds> [live_teleop flags]
 ```
+
+## Second session: bigger box, buttons used by the operator (`rec_20261012-201053`)
+
+The operator asked for a lower floor ("at least 20 cm") and more room to the left. Both limits were this
+program's own box, not the controller's. New option `--box-abs x_min,x_max,y_min,y_max,z_min,z_max`
+(absolute, base frame; must contain the start pose and stay 10 mm inside the controller's fence).
+Box used: x 199-479, y -247...260, z 280-546 mm: floor 8.2 cm lower than before, left side 18.5 cm
+further. The controller's fence (z >= 270, y <= 270) was not changed, so 20 cm lower was not available.
+Approved in a question form (labmate on site, bigger box clear, other agent paused, OK to move);
+operator chose 120 mm/s over the offered 60 mm/s; headset on the table facing away; 4 minutes.
+
+| Item | Result |
+|---|---|
+| Session | ended normally: 278 s, 13 engagements, 5211 targets, 0 halts, no latched fault |
+| Arm after | parked, state 4, no error, at x 279.5, y 180.6, z 342.6 mm |
+| Space actually used | x 258-450, y -60...219, z 280-461 mm |
+| Held at the new floor | 5.6 s with the hand asking for lower; never held at the left edge |
+| Buttons | A pressed 3 times, B once, all acted on: episode 1 saved, episode 2 discarded; cues spoken |
+| Episode 1 | 70.0 s, 3502 rows at 50.0 Hz, 1491 mm of travel, jaws 0.9-88.4 % closed, 2101 + 2098 frames at 30 fps, 86 MB, no problems |
+
+Video at the lowest point (flange z 280.2 mm): the jaw tips are inside the clear bin, beside the white
+part. The jaws were closed (to 88 %) only later, at flange z 324-343 mm, with nothing between them. So
+the bin is now reachable, and no grasp is seen in this session. Whether 280 is low enough to grasp a
+part lying on the bin floor is not settled: the operator pushed against the floor for 5.6 s.
