@@ -204,6 +204,7 @@ class LiveTeleopProgramTests(unittest.TestCase):
             meta = json.loads((sess / "session.json").read_text())
             self.assertNotIn("127.0.0.1\"", json.dumps(meta["args"]))
             self.assertEqual(meta["workspace_mm"], res["workspace_mm"])
+            self.assertEqual(json.loads((sess / "episode_0001" / "meta.json").read_text())["engagements_started"], 1)  # counted from the adapter's own records
             self.assertIn("ep=rec#1", text)
             self.assertTrue(all(r in (11, 12, 19, 21) for r, _ in self.writes(ctl)))  # recording adds reads only
             self.assertGreater(sum(1 for _, r, _ in ctl.frames if r == 42), 100)

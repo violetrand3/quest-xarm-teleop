@@ -98,6 +98,7 @@ class EpisodeRecorder:
         self._btn: dict = {}
         self._btn_t: dict = {}
         self._ep: dict | None = None
+        self._finishing: int | None = None  # episode number being saved or discarded right now
         self._ticks = 0
         mono, wall = clock(), time.time_ns()
         with (session_dir / "session.json").open("x", encoding="utf-8") as f:
@@ -134,6 +135,8 @@ class EpisodeRecorder:
             return f"error {tail}"
         if ep is not None:
             return f"rec#{ep['n']}:{(self.clock() - ep['t0']) / 1e9:.0f}s {tail}"
+        if self._finishing is not None:  # files are still being closed: not idle yet, and not counted as saved yet
+            return f"saving#{self._finishing} {tail}"
         return ("idle " if self._cams_problem() is None else "nocam ") + tail
 
     # -- camera child ------------------------------------------------------------------------------------
@@ -203,6 +206,7 @@ class EpisodeRecorder:
                             pass
                     self._tell(cmd="stop", t1=self.clock())
                     self._ep = None
+                self._finishing = None
 
     def _edge(self, name: str, v: Any, t: int) -> bool:
         prev, self._btn[name] = self._btn.get(name), v if isinstance(v, bool) else None
@@ -231,7 +235,7 @@ class EpisodeRecorder:
                 self._ep["events_f"].write(json.dumps(rec, separators=(",", ":"), default=str) + "\n")
                 if kind == "fault":
                     self._ep["faults"].append(str(rec.get("reason"))[:120])
-                elif kind == "transition" and rec.get("to") == "ACTIVE":
+                elif kind == "transition" and rec.get("new") == "ACTIVE":
                     self._ep["engagements"] += 1
             return
         a, b = self._edge("a", rec.get("btn_a"), t), self._edge("b", rec.get("btn_b"), t)
@@ -314,8 +318,9 @@ class EpisodeRecorder:
         self.log(f"episode {n} started")
 
     def _close_files(self) -> dict:
-        ep, self._ep = self._ep, None
+        ep = self._ep
         assert ep is not None
+        self._finishing, self._ep = ep["n"], None
         ep["steps_f"].close()
         ep["events_f"].close()
         return ep
@@ -345,6 +350,7 @@ class EpisodeRecorder:
         self.saved += 1
         self.episodes.append({k: meta[k] for k in ("episode", "closed_by", "duration_s", "steps", "arm_following_s", "problems")}
                              | {"frames": None if cam is None else {k: v["frames"] for k, v in cam["cams"].items()}})  # fmt: skip
+        self._finishing = None
         self.log(f"episode {ep['n']} SAVED: {dur:.1f} s, {ep['steps']} rows, closed by {closed_by}" + (f"; PROBLEMS: {problems}" if problems else ""))
 
     def _discard(self) -> None:
@@ -353,6 +359,7 @@ class EpisodeRecorder:
             self._await("discarded", 2.0)
         shutil.rmtree(ep["dir"], ignore_errors=True)
         self.discarded += 1
+        self._finishing = None
         self.log(f"episode {ep['n']} DISCARDED")
 
     def close(self) -> dict:

@@ -118,7 +118,7 @@ class EpisodeRecorderTests(unittest.TestCase):
         self.ticks(3)
         self.press("a")
         self.assertTrue(self.wait("rec#1").startswith("rec#1"), self.logs)
-        r.on_record({"k": "transition", "t": time.monotonic_ns(), "from": "ARMED", "to": "ACTIVE"})
+        r.on_record({"k": "transition", "t": time.monotonic_ns(), "old": "ARMED", "new": "ACTIVE", "reason": "valid_press_after_valid_release", "latch": []})
         self.ticks(50)
         self.press("a")
         self.assertIn("saved=1", self.wait("idle"))
@@ -132,7 +132,7 @@ class EpisodeRecorderTests(unittest.TestCase):
         self.assertEqual(set(row), set(er.FIELDS))
         self.assertEqual((row["tcp_mm"][:2], row["tcp_rpy"], row["joints"]), ([300.0, -70.0], [round(math.pi, 6), 0.0, 0.0], [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]))
         self.assertEqual(row["cmd_mm"][2], row["tcp_mm"][2] + 1.0)
-        self.assertEqual(json.loads((ep / "events.jsonl").read_text().splitlines()[0])["to"], "ACTIVE")
+        self.assertEqual(json.loads((ep / "events.jsonl").read_text().splitlines()[0])["new"], "ACTIVE")
         for name in ("wrist", "fixed"):
             fr = ei.rows(ep / f"cam_{name}.frames.jsonl")
             self.assertGreater(len(fr), 40)
