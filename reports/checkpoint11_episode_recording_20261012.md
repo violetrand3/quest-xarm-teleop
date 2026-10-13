@@ -196,3 +196,22 @@ above the bin bottom. A further step can follow once the remaining gap has been 
 - Fix: `live_teleop.py` now records the reduced-mode TCP and joint speed limits and, when reduced mode is on,
   refuses to start if `--ctrl-speed` is above the TCP limit or `--rot-speed` x 2.5 is above the joint limit
   (test with the simulated controller; 80 arm-related tests pass on linux2).
+
+## Recording session at the 240 mm floor (`rec_20261012-231149`): clean, with a pick and carry in the episode
+
+- Before it (lab log 22:13:09): the other agent cleared error 24 and switched reduced mode off again; fence on,
+  z-min 235; it reports the reduced limits as TCP 50 mm/s and joints 20 deg/s, the values read on 2026-10-01.
+  That supports reduced mode as the cause of error 24.
+- Approved in a question form about 23:12 (labmate on site, clear down to the bins, other agent paused, OK to
+  move with the camera page live; headset on the table facing away; 4 minutes). Same box and floor.
+- Session: 285 s, 14 engagements, 10731 targets, 0 halts, no latched fault, no controller error. Start-up read:
+  reduced mode off. Arm parked afterwards at x 299.0, y 185.5, z 365.4 mm, state 4, jaws open.
+- Episode 1: started by the operator with A, not stopped, so it was saved at session end
+  (`closed_by: session_end`). 145.5 s, 7168 rows, 2855 mm of travel, jaws 0.9-88.4 % closed, 4364 + 4357
+  frames at 30 fps, 174 MB, no problems. 9.5 s at the floor without contact.
+- Two jaw closures in it: the first (flange z 255 mm) closed beside the part and lifted nothing; the second
+  (at the floor, 240 mm) gripped the white part, lifted it 137 mm and carried it 169 mm sideways
+  (wrist-camera frame at the highest point shows the part between the jaws).
+- Found and fixed afterwards: `engagements_started` in `meta.json` was always 0 (wrong field name for the
+  clutch transition); corrected in the three saved episodes from their own `events.jsonl` (2, 8 and 4). The
+  recorder now reports "saving" while it closes an episode instead of "idle" (this caused one test race).
