@@ -4,15 +4,16 @@ Remote teleoperation of an xArm6 with a custom (Dynamixel) gripper from a Meta Q
 The operator is remote: the Quest is connected by USB to a local PC, and the robot is reached
 through a lab host over SSH tunnels.
 
-**Status (2026-10-01):** controller input, the link to the lab, the clutch/limits adapter and the
-gripper path work. The adapter has only driven a fake arm. The real arm command path exists
-(`scripts/xarm_command_link.py`, `xarm_live_backend.py`, `arm_first_move_test.py`) and is tested only
-against a simulated controller; it has never been run against the robot. See `reports/` for what was measured at each step.
+**Status (2026-10-12):** live teleoperation of the real arm and gripper works and records demos
+(arm pose, joints, targets, jaws and two camera videos per episode). Day-to-day use is one command,
+`scripts/teleop`; see `docs/teleop_usage.md`. Step-by-step history and measurements are in `reports/`.
 
 ## Safety
-The rig is shared. Nothing here enables motors, clears errors or moves the arm. Any hardware
-command needs someone on site, clear of the robot, with the physical stop. Read
-`reports/checkpoint6_commissioning_checklist_20261001.md` before changing that.
+The rig is shared. `scripts/teleop record` and `scripts/teleop try` MOVE THE ARM. They ask go/no-go
+questions first: someone must be on site, clear of the robot, with the physical stop in reach, and nothing
+else may be commanding the arm. The software never clears controller errors and never changes the
+controller's safety settings (fence, reduced mode); those are lab-side decisions. Ctrl-C and
+`scripts/teleop stop` are software stops, not the physical stop.
 
 ## Layout
 | Path | What |
@@ -24,6 +25,8 @@ command needs someone on site, clear of the robot, with the physical stop. Read
 | `scripts/xarm_command_link.py`, `xarm_live_backend.py` | Commanding link to the arm (four validated writes only: enable, mode, state, line move inside a hard box) and the adapter backend that uses it |
 | `scripts/arm_first_move_test.py` | First supervised movement test: one small move, queue-or-replace, and stop behaviour |
 | `scripts/lab_cam_relay.py` | Low-rate, view-only relay of the lab cameras for the remote operator |
+| `scripts/teleop`, `config/teleop_session.conf` | The one command for sessions, and its settings |
+| `scripts/live_teleop.py`, `episode_*.py` | Live teleop program (lab side) and episode recording |
 | `scripts/ops/` | Session scripts with spoken cues |
 | `tests/` | Offline tests; none of them touches hardware |
 | `patches/` | Our changes to the Quest OpenXR reader app (`oculus_reader` fork), as patches |

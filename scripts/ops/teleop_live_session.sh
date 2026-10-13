@@ -4,7 +4,8 @@
 # REC=1: episodes are recorded ON THE LAB HOST (episodes/<name>/): thumb button A starts / stops and saves, B discards.
 # The lab program runs detached and parks the arm by itself (on SIGINT, on its own duration limit, or on a fault).
 set -u
-P=~/quest-xarm-teleop; D=$P/data/checkpoint10; R=$P/run; N=$1; CONF=$2; TEL=$3; shift 3
+P=~/quest-xarm-teleop; D=${TELEOP_DATA_DIR:-$P/data/checkpoint10}; R=$P/run; N=$1; CONF=$2; TEL=$3; shift 3
+mkdir -p "$D" "$R"
 L=quest-xarm-teleop-dryrun/logs; REC=${REC:-0}
 SSHO=(-o BatchMode=yes -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10)
 S=$(adb devices | awk 'NR>1 && $2=="device"{print $1}'); [ "$(echo "$S" | grep -c .)" = 1 ] || { echo "need exactly one headset on adb"; exit 2; }
@@ -53,6 +54,8 @@ echo $! > "$R/tailc.pid"
 for i in $(seq 1 100); do grep -q "Armed in mode\|ABORTED\|Traceback\|^error" "$D/teleop_$N.console.txt" 2>/dev/null && break; sleep 0.25; done
 grep -v '^\[SDK\]\|^ROBOT_IP\|^SDK_VERSION' "$D/teleop_$N.console.txt" | sed -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/<ip>/g' | head -6 | cut -c1-300
 grep -q "Armed in mode" "$D/teleop_$N.console.txt" || { echo "the live program did not arm; ending"; finish abort; exit 3; }
+# Ctrl-C (or a kill) from here on is a clean software stop: sender and tunnel closed, the lab program told to park the arm.
+trap 'trap "" INT TERM; echo; echo "INTERRUPTED: ending the session; the lab program parks the arm"; mark "interrupted by the operator"; finish interrupted; [ "$REC" = 1 ] && bash "$P/scripts/ops/episodes_videos.sh" "$N"; exit 130' INT TERM
 ssh "${SSHO[@]}" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -L 127.0.0.1:18765:127.0.0.1:28765 linux2 > "$R/tunnel_link.txt" 2>&1 &
 echo $! > "$R/tunnel_link.pid"; for i in $(seq 1 40); do ss -ltn | grep -q '127.0.0.1:18765 ' && break; sleep 0.25; done
 ( cd "$P/scripts" && exec python3 -u quest_pose_stream_sender.py --serial "$S" --port 18765 --max-rate 30 --log "$D/tx_$N.jsonl" --source-log "$D/src_$N.jsonl" --summary "$D/tx_$N.summary.json" > "$D/tx_$N.console.txt" 2>&1 ) &
@@ -70,6 +73,7 @@ say "Suelta el botón del dedo medio."; s=$(wait_state "ARMED" 12); mark "after 
 mark "teleop window start"; say "Aprieta y mantén el dedo medio. Mueve la mano despacio."
 prev=""; end=$((SECONDS + TEL)); fault=0; pw=""; psv=0; pds=0; prf=0; warned=0
 while [ $SECONDS -lt $end ]; do
+  grep -q '^{"result"' "$D/teleop_$N.console.txt" 2>/dev/null && { mark "the lab program ended before the window did"; break; }   # e.g. "teleop stop" from another terminal
   s=$(st)
   if [ -n "$s" ] && [ "$s" != "$prev" ]; then
     mark "state $prev -> $s"
