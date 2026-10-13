@@ -106,9 +106,20 @@ viewers_iphone() { lab "curl -s -m 4 '$LAB_CAMERA_STATUS'" | python3 -c 'import 
 try: print(json.load(sys.stdin)["cameras"]["iphone"]["viewers"])
 except Exception: print(0)'; }
 
-ask() {   # ask "<question>" -> the typed answer in $ANS, also appended to the confirmation text
+ask() {   # ask "<question>" -> the typed answer in $ANS (spaces and stray control characters removed), also saved in the confirmation text
+  [ -t 0 ] && { IFS= read -r -s -t 0.05 -N 10000 _typed_ahead 2>/dev/null || true; }   # drop anything typed before the question appeared
   printf '%s ' "$1"; IFS= read -r ANS || ANS=""
+  ANS=$(printf '%s' "$ANS" | tr -d '\000-\037\177' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
   CONFIRM_TEXT="$CONFIRM_TEXT Q: $1 A (typed): \"$ANS\"."
+}
+ask_yes() {   # yes / y goes on, no / n stops; anything else is asked again (3 tries)
+  local i
+  for i in 1 2 3; do
+    ask "$1 (yes/no)"
+    case "${ANS,,}" in yes|y) return 0;; no|n) die "you answered no; nothing was started";; esac
+    echo "  I read \"$ANS\". Please type yes or no."
+  done
+  die "no clear answer; nothing was started"
 }
 
 session() {   # $1 = record | try, $2 = minutes
@@ -119,32 +130,39 @@ session() {   # $1 = record | try, $2 = minutes
   tel=$((min * 60))
   [ "$(adb devices | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] || die "need exactly one headset connected by USB with debugging allowed (adb devices)"
   rig_status; show_status "$mode" || die "not starting; see BLOCKED above"
+  CONFIRM_TEXT="Operator $(id -un)@$(hostname -s) answered at the terminal prompts of scripts/teleop on $(date '+%Y-%m-%d %H:%M:%S %Z'), for a $mode session of $min min, box $BOX_ABS mm, up to $V_MAX mm/s, rotation $ROTATION, gripper $GRIPPER, reduced mode off accepted: $ALLOW_REDUCED_MODE_OFF."
   RELOAD=0; ensure_cameras $((tel + 240))
   echo; echo "Camera view: $URL"
   while [ "$(viewers_iphone)" -lt 1 ]; do
-    printf 'The camera page is not connected. Open or reload %s, then press Enter (or type "skip" to go on without it): ' "$URL"; IFS= read -r ANS || exit 2
-    [ "$ANS" = skip ] && { echo "going on WITHOUT a camera view, by your choice"; break; }
+    ask "The camera page is not connected. Open or reload $URL, then press Enter (or type \"skip\" to go on without it):"
+    [ -t 0 ] || [ -n "$ANS" ] || exit 2
+    [ "${ANS,,}" = skip ] && { echo "going on WITHOUT a camera view, by your choice"; break; }
   done
   echo
   echo "THE ARM WILL MOVE. Box x,y,z (mm): $BOX_ABS. Up to $V_MAX mm/s, wrist rotation $ROTATION (max $ROT_MAX deg), gripper $([ "$GRIPPER" = 1 ] && echo on || echo off)."
   echo "$([ "$mode" = record ] && echo "Recording: thumb button A starts a demo and, pressed again, saves it; B discards the one in progress." || echo "No recording in this session.") Window: $min min."
-  echo "Answer each question; anything other than yes ends here."
-  CONFIRM_TEXT="Operator $(id -un)@$(hostname -s) answered at the terminal prompts of scripts/teleop on $(date '+%Y-%m-%d %H:%M:%S %Z'), for a $mode session of $min min, box $BOX_ABS mm, up to $V_MAX mm/s, rotation $ROTATION, gripper $GRIPPER, reduced mode off accepted: $ALLOW_REDUCED_MODE_OFF."
-  ask "1/3 Is someone at the rig RIGHT NOW who agrees to the arm moving and has the physical stop in reach? (yes/no)"; [ "$ANS" = yes ] || die "not confirmed; nothing was started"
-  ask "2/3 Is the space clear down to the bins, with nobody near the arm? (yes/no)"; [ "$ANS" = yes ] || die "not confirmed; nothing was started"
-  ask "3/3 Is the other agent on the lab host paused, and will nothing else command the arm or the gripper? (yes/no)"; [ "$ANS" = yes ] || die "not confirmed; nothing was started"
-  ask "Headset: 1 = on the table facing away from you, 2 = on your forehead, 3 = on the table facing you. (1/2/3)"
-  case "$ANS" in 1) yaw=0; place="on the table facing away";; 2) yaw=0; place="on the forehead";; 3) yaw=180; place="on the table facing the operator";; *) die "headset placement not given; nothing was started";; esac
-  ask "Type GO to start."; [ "$ANS" = GO ] || die "not started"
+  echo "Answer each question. yes goes on, no stops."
+  ask_yes "1/3 Is someone at the rig RIGHT NOW who agrees to the arm moving and has the physical stop in reach?"
+  ask_yes "2/3 Is the space clear down to the bins, with nobody near the arm?"
+  ask_yes "3/3 Is the other agent on the lab host paused, and will nothing else command the arm or the gripper?"
+  place=""
+  for _try in 1 2 3; do
+    ask "Headset: 1 = on the table facing away from you, 2 = on your forehead, 3 = on the table facing you. (1/2/3)"
+    case "$ANS" in 1) yaw=0; place="on the table facing away";; 2) yaw=0; place="on the forehead";; 3) yaw=180; place="on the table facing the operator";; esac
+    [ -n "$place" ] && break; echo "  I read \"$ANS\". Please type 1, 2 or 3."
+  done
+  [ -n "$place" ] || die "headset placement not given; nothing was started"
+  ask "Type GO to start (anything else cancels)."; [ "${ANS,,}" = go ] || die "you typed \"$ANS\", not GO; nothing was started"
   n=$([ "$mode" = record ] && echo rec || echo tele)_$(date +%Y%m%d-%H%M%S)
-  echo "$CONFIRM_TEXT Headset $place (operator yaw $yaw deg)." > "$D/confirm_$n.txt"
-  echo "$n" > "$R/current_session"
+  CONFIRM_TEXT="$CONFIRM_TEXT Headset $place (operator yaw $yaw deg)."
   flags=(--box-abs "$BOX_ABS" --fence-margin-mm "$FENCE_MARGIN" --scale "$SCALE" --v-max "$V_MAX" --a-max "$A_MAX" --ctrl-speed "$CTRL_SPEED" --ctrl-acc "$CTRL_ACC"
          --track-err "$TRACK_ERR" --input-fresh-ms "$INPUT_FRESH_MS" --rotation "$ROTATION" --rot-max-deg "$ROT_MAX" --rot-speed "$ROT_SPEED" --operator-yaw-deg "$yaw")
   [ "$GRIPPER" = 1 ] && flags+=(--with-gripper)
   [ "$ALLOW_REDUCED_MODE_OFF" = 1 ] && flags+=(--allow-reduced-mode-off)
   echo; echo "session $n: starting. Listen for the spoken cues. Ctrl-C ends the session (software stop)."
-  if [ -n "${TELEOP_DRY_RUN:-}" ]; then echo "DRY RUN, nothing started: REC=$([ "$mode" = record ] && echo 1 || echo 0) teleop_live_session.sh $n $D/confirm_$n.txt $tel ${flags[*]}"; return 0; fi
+  if [ -n "${TELEOP_DRY_RUN:-}" ]; then echo "confirmation that would be saved: $CONFIRM_TEXT"; echo "DRY RUN, nothing started: REC=$([ "$mode" = record ] && echo 1 || echo 0) teleop_live_session.sh $n $D/confirm_$n.txt $tel ${flags[*]}"; return 0; fi
+  echo "$CONFIRM_TEXT" > "$D/confirm_$n.txt"
+  echo "$n" > "$R/current_session"
   # Ctrl-C reaches the session script, which ends the session cleanly; this shell and the output filter must outlive it.
   trap 'echo "(Ctrl-C: waiting for the session to close)"' INT
   REC=$([ "$mode" = record ] && echo 1 || echo 0) TELEOP_DATA_DIR=$D bash "$P/scripts/ops/teleop_live_session.sh" "$n" "$D/confirm_$n.txt" "$tel" "${flags[@]}" < /dev/null 2>&1 \
