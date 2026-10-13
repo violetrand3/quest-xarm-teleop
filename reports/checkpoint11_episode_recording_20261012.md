@@ -133,3 +133,18 @@ Video at the lowest point (flange z 280.2 mm): the jaw tips are inside the clear
 part. The jaws were closed (to 88 %) only later, at flange z 324-343 mm, with nothing between them. So
 the bin is now reachable, and no grasp is seen in this session. Whether 280 is low enough to grasp a
 part lying on the bin floor is not settled: the operator pushed against the floor for 5.6 s.
+
+## Floor: request for 15 cm more (same evening)
+
+The operator found the 280 mm floor still too high and asked for 15 cm more. That is below the controller's
+own fence floor (270 mm), which this project does not write. Asked in a question form:
+
+- Labmate's measurement with the arm parked at flange z 342.6 mm (tool tilted about 13 deg): "About 15 cm"
+  from the jaw tips straight down to the bottom of the bin. So the tips would touch near flange z 193 mm
+  at that tilt, a little higher (about 200 mm) with the tool vertical; about 8 cm below the 280 mm floor.
+- Who lowers the controller's floor: "My other agent (Recommended)".
+
+Proposed first step: controller z-min 270 -> 215 mm, then this program's floor at 220 mm
+(`--fence-margin-mm 5`, new option, default 10; the arm showed no overshoot at the floor), about 2 cm
+above the bin bottom. A further step can follow once the remaining gap has been seen or measured.
+`scripts/ops/episode_to_mp4.sh <episode>` makes viewable mp4 files from an episode's camera recordings.

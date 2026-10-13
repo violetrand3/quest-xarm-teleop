@@ -414,9 +414,17 @@ class LiveTeleopProgramTests(unittest.TestCase):
             self.assertEqual((rc, res["result"]), (3, "aborted"), box)
             self.assertIn(why, res["abort_reason"])
             self.assertEqual(self.writes(ctl), [], box)
+        ctl = FakeController()  # the same floor is accepted with a smaller margin, and refused again when even that is not kept
+        rc, res, _, _, _ = self.run_live(ctl, None, ["--box-abs", "200,340,-290,260,275,575", "--fence-margin-mm", "5"], duration=5.0)
+        self.assertEqual((rc, res["workspace_mm"]["min"][2]), (0, 275.0))
+        ctl = FakeController()
+        rc, res, _, _, _ = self.run_live(ctl, None, ["--box-abs", "200,340,-290,260,274,575", "--fence-margin-mm", "5"], duration=5.0)
+        self.assertEqual((rc, self.writes(ctl)), (3, []))
+        self.assertIn("within 5 mm of the fence", res["abort_reason"])
         import live_teleop as lt
         real, sys.stdout = sys.stdout, io.StringIO()
         try:
+            self.assertEqual(lt.main(["--address", "127.0.0.1", "--fence-margin-mm", "1"]), 2)
             self.assertEqual(lt.main(["--address", "127.0.0.1", "--box-abs", "200,210,-100,100,300,500"]), 2)  # 10 mm wide
             self.assertEqual(lt.main(["--address", "127.0.0.1", "--box-abs", "200,340,-100,100,300"]), 2)
             with self.assertRaises(SystemExit):

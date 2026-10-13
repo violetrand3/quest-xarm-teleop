@@ -69,7 +69,7 @@ class Abort(RuntimeError):
     pass
 
 
-def workspace(pose: tuple, boundary: dict, box: list, absolute: bool = False) -> tuple:
+def workspace(pose: tuple, boundary: dict, box: list, absolute: bool = False, margin_mm: float = FENCE_MARGIN_MM) -> tuple:
     """The box the arm may move in (mm, base frame): distances around the start pose, or absolute limits
     (x_min, x_max, y_min, y_max, z_min, z_max) that contain the start pose. It must lie inside the
     controller's fence with a margin."""
@@ -83,8 +83,8 @@ def workspace(pose: tuple, boundary: dict, box: list, absolute: bool = False) ->
         hi = [pose[k] + box[2 * k + 1] for k in range(3)]
     for k, ax in enumerate("xyz"):
         f_lo, f_hi = boundary[f"{ax}_mm"]
-        if lo[k] < f_lo + FENCE_MARGIN_MM or hi[k] > f_hi - FENCE_MARGIN_MM:
-            raise Abort(f"the box {ax} {lo[k]:.0f}..{hi[k]:.0f} mm comes within {FENCE_MARGIN_MM:g} mm of the fence {f_lo}..{f_hi}; nothing was commanded")
+        if lo[k] < f_lo + margin_mm or hi[k] > f_hi - margin_mm:
+            raise Abort(f"the box {ax} {lo[k]:.0f}..{hi[k]:.0f} mm comes within {margin_mm:g} mm of the fence {f_lo}..{f_hi}; nothing was commanded")
     return [round(v, 2) for v in lo], [round(v, 2) for v in hi]
 
 
@@ -129,7 +129,10 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     bx = ap.add_mutually_exclusive_group()
     bx.add_argument("--box", default="50,50,50,50,10,60", help="mm around the start pose: x-,x+,y-,y+,z-,z+ (each 0..300)")
     bx.add_argument("--box-abs", help="absolute box in the arm's base frame, mm: x_min,x_max,y_min,y_max,z_min,z_max; must contain the "
-                                      "start pose and stay 10 mm inside the controller's fence")
+                                      "start pose and stay --fence-margin-mm inside the controller's fence")
+    ap.add_argument("--fence-margin-mm", type=float, default=FENCE_MARGIN_MM,
+                    help="smallest distance kept between the box and the controller's fence (3..50). Reaching the fence itself "
+                         "makes the controller raise an error, which this program never clears")
     ap.add_argument("--scale", type=float, default=0.25, help="tool displacement per hand displacement (0.05..1.0)")
     ap.add_argument("--v-max", type=float, default=30.0, help="target speed limit, mm/s (5..150)")
     ap.add_argument("--a-max", type=float, default=150.0, help="target acceleration limit, mm/s^2")
@@ -165,7 +168,7 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
         ok = (box_ok and 0.05 <= a.scale <= 1.0 and 5.0 <= a.v_max <= 150.0
               and 20.0 <= a.a_max <= 1000.0 and a.v_max <= a.ctrl_speed <= 200.0 and 50.0 <= a.ctrl_acc <= 2000.0
               and 5.0 <= a.track_err <= 30.0 and 100.0 <= a.input_fresh_ms <= 500.0 and 5.0 <= a.duration <= 1800.0
-              and 10.0 <= a.record_max_s <= 900.0 and a.record_min_free_gb >= 1.0
+              and 10.0 <= a.record_max_s <= 900.0 and a.record_min_free_gb >= 1.0 and 3.0 <= a.fence_margin_mm <= 50.0
               and 5.0 <= a.rot_max_deg <= 90.0 and 5.0 <= a.rot_speed <= 120.0 and 0.2 <= a.rot_scale <= 1.5
               and -180.0 <= a.operator_yaw_deg <= 180.0)  # fmt: skip
     except ValueError:
@@ -247,7 +250,7 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
                 out["before"]["rpy_convention_error_deg"] = round(err, 4)
                 if err > 0.2:
                     raise Abort(f"roll/pitch/yaw convention check failed ({err:.2f} deg); wrist rotation cannot be trusted; nothing was commanded")
-            lo, hi = workspace(s2.pose, boundary, box, absolute=a.box_abs is not None)
+            lo, hi = workspace(s2.pose, boundary, box, absolute=a.box_abs is not None, margin_mm=a.fence_margin_mm)
             out["workspace_mm"] = {"min": lo, "max": hi, "start": [round(v, 2) for v in s2.pose[:3]]}
         finally:
             probe.close()
