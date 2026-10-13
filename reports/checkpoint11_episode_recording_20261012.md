@@ -148,3 +148,25 @@ Proposed first step: controller z-min 270 -> 215 mm, then this program's floor a
 (`--fence-margin-mm 5`, new option, default 10; the arm showed no overshoot at the floor), about 2 cm
 above the bin bottom. A further step can follow once the remaining gap has been seen or measured.
 `scripts/ops/episode_to_mp4.sh <episode>` makes viewable mp4 files from an episode's camera recordings.
+
+## Reach test with the lower floor (`tele_20261012-203308`): the arm touched down, controller error 31
+
+- 20:29:53: the operator's other agent lowered the controller fence floor 270 -> 215 mm (controller + stepper.py,
+  other limits unchanged, collision sensitivity reported as 2, arm not moved).
+- Approved in a question form (labmate on site, clear down to the bins, other agent paused, OK to move; headset
+  on the table facing away; "2 minutes is enough. i just want to see if i can reach the lower part of the bucket.").
+  Box x 199-479, y -247...260, z 220-546 mm (`--fence-margin-mm 5`), 120 mm/s cap, no episode recording.
+- The operator's camera page was not connected when the window opened (the relay had just been restarted).
+  A spoken cue was given; the page connected about 8 s later, before the descent.
+- The operator went down slowly (10-25 mm/s). At flange z 229.2 mm (x 323, y 163, tool about 11 deg from
+  straight down) the controller raised **error 31 (collision)**, 56.3 s into the program, after 9 s of following.
+  The program latched the fault and sent state 4; it did not clear the error. The arm backed off by itself and
+  is stopped at z 248.4 mm with error 31 still set. Jaws open (525 ticks).
+- Wrist camera at contact: the white part is between the open jaws. Both jaws look intact in the frames after.
+  What was touched (bin bottom, its raised step, or the part) is not determined.
+- **The floor of 220 mm did not protect.** It was derived from the labmate's "about 15 cm" (contact expected near
+  193-200 mm); contact came at 229 mm, so the real gap was about 11.5 cm. Lesson: a floor must come from a
+  measured contact height, not an estimate. The slow descent kept the contact gentle.
+- Result for the operator's question: the reach is enough. At 245-248 mm the open jaws already straddle the part.
+- Proposed: this program's floor at 240 mm; controller floor back up from 215 to 235 mm (lab-side change).
+  The error has to be cleared on the lab side after the labmate has looked at the gripper and the bin.
