@@ -98,3 +98,5 @@ done
 if [ $fault = 1 ]; then mark "fault latched; ending"; say "Fallo. Paramos."; else mark "cue end"; say "Suelta el botón. Terminado."; fi
 sleep 1.5; mark "end"
 finish ok
+# recording sessions: copy the episodes here, make view_<camera>.mp4 files, and put those next to the recordings on the lab host too
+[ "$REC" = 1 ] && bash "$P/scripts/ops/episodes_videos.sh" "$N"
