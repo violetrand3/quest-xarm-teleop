@@ -215,3 +215,21 @@ above the bin bottom. A further step can follow once the remaining gap has been 
 - Found and fixed afterwards: `engagements_started` in `meta.json` was always 0 (wrong field name for the
   clutch transition); corrected in the three saved episodes from their own `events.jsonl` (2, 8 and 4). The
   recorder now reports "saving" while it closes an episode instead of "idle" (this caused one test race).
+
+## Demo recording session (`rec_20261012-233414`): two pick-and-place demos
+
+- Approved in a question form about 23:35 (labmate on site, clear down to the bins, other agent paused, OK to
+  move with the camera page live; headset on the table facing away; 8 minutes). Same box, floor and speeds.
+- Session: 524 s, 26 engagements, 18531 targets, 0 halts, no latched fault, no controller error; reduced mode
+  off at start-up. Arm parked afterwards at x 251.9, y 26.9, z 413.1 mm, state 4, jaws open.
+- No A press in the first four minutes; after a spoken reminder the operator recorded two episodes, both
+  closed with A:
+
+| Episode | Length | Rows | Travel | Frames (wrist / fixed) | Content (from the rows and the wrist camera) |
+|---|---|---|---|---|---|
+| 1 | 75.9 s | 3795 | 1652 mm | 2278 / 2273 | a first closure that lifted nothing, then a pick at the floor: part lifted 161 mm, carried 192 mm, set down |
+| 2 | 37.7 s | 1887 | 1095 mm | 1132 / 1130 | one pick at the floor: part lifted 199 mm, carried 172 mm, set down |
+
+- The automatic check found no problems in either. 137 MB on the lab host; 22 GB free afterwards.
+- The end-of-session video step ran for the first time inside a live session: `view_iphone.mp4` and
+  `view_zed.mp4` were made for both episodes and are next to the recordings on both machines.
