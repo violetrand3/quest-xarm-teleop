@@ -385,6 +385,45 @@ class LiveTeleopProgramTests(unittest.TestCase):
         self.assertAlmostEqual(notes["pose"][0], POSE[0] + 25.0, delta=0.6)  # the arm moves away from its base (+x)
         self.assertAlmostEqual(notes["pose"][1], POSE[1], delta=0.1)
 
+    def test_absolute_box_is_used_as_given_and_held_at_its_edges(self) -> None:
+        ctl = FakeController()  # starts at x 299.8, y 3.4, z 461.2; fence x 160..502, y -300..270, z 270..585
+
+        def drive(q: QuestFeed, notes: dict) -> None:
+            q.engage()
+            q.glide(-0.60, 90)  # asks for +150 mm in x; the box ends 40.2 mm ahead
+            q.hold(-0.60, 40)
+            notes["x"] = ctl.pose[0]
+            q.hold(-0.60, 4, grip=0.0)
+
+        rc, res, _, text, notes = self.run_live(ctl, drive, ["--box-abs", "200,340,-290,260,280,575"], duration=11.0)
+        self.assertNotIn("drive_error", notes, notes)
+        self.assertEqual((rc, res["faults"], res["halts"]), (0, [], 0))
+        self.assertEqual(res["workspace_mm"]["min"], [200.0, -290.0, 280.0])  # down to 10 mm above the fence floor
+        self.assertEqual(res["workspace_mm"]["max"], [340.0, 260.0, 575.0])
+        self.assertAlmostEqual(notes["x"], 340.0, delta=0.6)
+        self.assertLessEqual(max(struct.unpack("<10f", p[:40])[0] for r, p in self.writes(ctl) if r == 21), 340.0 + 1e-3)
+        self.assertIn("(absolute)", text)
+
+    def test_absolute_box_outside_the_fence_or_not_containing_the_arm_commands_nothing(self) -> None:
+        for box, why in (("200,340,-290,260,275,575", "fence"),  # floor 5 mm above the fence floor: inside the margin
+                         ("200,340,-290,265,280,575", "fence"),
+                         ("310,400,-100,100,300,500", "not inside the requested box"),  # the arm is at x 299.8
+                         ("200,340,-100,100,300,461.5", "not inside the requested box")):  # 0.3 mm below the top: too close
+            ctl = FakeController()
+            rc, res, _, _, _ = self.run_live(ctl, None, ["--box-abs", box], duration=5.0)
+            self.assertEqual((rc, res["result"]), (3, "aborted"), box)
+            self.assertIn(why, res["abort_reason"])
+            self.assertEqual(self.writes(ctl), [], box)
+        import live_teleop as lt
+        real, sys.stdout = sys.stdout, io.StringIO()
+        try:
+            self.assertEqual(lt.main(["--address", "127.0.0.1", "--box-abs", "200,210,-100,100,300,500"]), 2)  # 10 mm wide
+            self.assertEqual(lt.main(["--address", "127.0.0.1", "--box-abs", "200,340,-100,100,300"]), 2)
+            with self.assertRaises(SystemExit):
+                lt.main(["--address", "127.0.0.1", "--box-abs", "200,340,-100,100,300,500", "--box", "50,50,50,50,10,60"])
+        finally:
+            sys.stdout = real
+
     def test_refusals_before_anything_is_commanded(self) -> None:
         import live_teleop as lt
         real, sys.stdout = sys.stdout, io.StringIO()

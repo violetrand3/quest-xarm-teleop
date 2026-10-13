@@ -57,6 +57,7 @@ from xarm_live_backend import XArmLiveBackend
 BANNER = "ARM LIVE (REAL ARM MOVES)"
 DEFAULT_RECORD_CAMS = {"iphone": "http://127.0.0.1:8090/cam/iphone", "zed": "http://127.0.0.1:8090/cam/zed"}  # wrist, fixed
 FENCE_MARGIN_MM = 10.0
+START_INSIDE_MM = 1.0  # with --box-abs the arm must start at least this far inside the box
 LINK_MARGIN_MM = 2.0
 PRINT_INTERVAL_S = 0.5
 R_BASE_FROM_LOCAL = [[0, 0, -1], [-1, 0, 0], [0, 1, 0]]
@@ -68,10 +69,18 @@ class Abort(RuntimeError):
     pass
 
 
-def workspace(pose: tuple, boundary: dict, box: list) -> tuple:
-    """Box around the start pose (mm), which must lie inside the fence with a margin."""
-    lo = [pose[k] - box[2 * k] for k in range(3)]
-    hi = [pose[k] + box[2 * k + 1] for k in range(3)]
+def workspace(pose: tuple, boundary: dict, box: list, absolute: bool = False) -> tuple:
+    """The box the arm may move in (mm, base frame): distances around the start pose, or absolute limits
+    (x_min, x_max, y_min, y_max, z_min, z_max) that contain the start pose. It must lie inside the
+    controller's fence with a margin."""
+    if absolute:
+        lo, hi = [box[0], box[2], box[4]], [box[1], box[3], box[5]]
+        for k, ax in enumerate("xyz"):
+            if not lo[k] + START_INSIDE_MM <= pose[k] <= hi[k] - START_INSIDE_MM:
+                raise Abort(f"the arm is at {ax} = {pose[k]:.1f} mm, not inside the requested box {ax} {lo[k]:g}..{hi[k]:g}; nothing was commanded")
+    else:
+        lo = [pose[k] - box[2 * k] for k in range(3)]
+        hi = [pose[k] + box[2 * k + 1] for k in range(3)]
     for k, ax in enumerate("xyz"):
         f_lo, f_hi = boundary[f"{ax}_mm"]
         if lo[k] < f_lo + FENCE_MARGIN_MM or hi[k] > f_hi - FENCE_MARGIN_MM:
@@ -117,7 +126,10 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     ap.add_argument("--moves-real-arm", action="store_true")
     ap.add_argument("--human-confirmation", default="")
     ap.add_argument("--allow-reduced-mode-off", action="store_true", help="the operator's explicit decision; recorded")
-    ap.add_argument("--box", default="50,50,50,50,10,60", help="mm around the start pose: x-,x+,y-,y+,z-,z+ (each 0..300)")
+    bx = ap.add_mutually_exclusive_group()
+    bx.add_argument("--box", default="50,50,50,50,10,60", help="mm around the start pose: x-,x+,y-,y+,z-,z+ (each 0..300)")
+    bx.add_argument("--box-abs", help="absolute box in the arm's base frame, mm: x_min,x_max,y_min,y_max,z_min,z_max; must contain the "
+                                      "start pose and stay 10 mm inside the controller's fence")
     ap.add_argument("--scale", type=float, default=0.25, help="tool displacement per hand displacement (0.05..1.0)")
     ap.add_argument("--v-max", type=float, default=30.0, help="target speed limit, mm/s (5..150)")
     ap.add_argument("--a-max", type=float, default=150.0, help="target acceleration limit, mm/s^2")
@@ -147,8 +159,10 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     ap.add_argument("--summary", type=Path)
     a = ap.parse_args(argv)
     try:
-        box = [float(x) for x in a.box.split(",")]
-        ok = (len(box) == 6 and all(0.0 <= v <= 300.0 for v in box) and 0.05 <= a.scale <= 1.0 and 5.0 <= a.v_max <= 150.0
+        box = [float(x) for x in (a.box_abs or a.box).split(",")]
+        box_ok = (len(box) == 6 and (all(20.0 <= box[2 * k + 1] - box[2 * k] <= 800.0 for k in range(3)) if a.box_abs
+                                     else all(0.0 <= v <= 300.0 for v in box)))  # fmt: skip
+        ok = (box_ok and 0.05 <= a.scale <= 1.0 and 5.0 <= a.v_max <= 150.0
               and 20.0 <= a.a_max <= 1000.0 and a.v_max <= a.ctrl_speed <= 200.0 and 50.0 <= a.ctrl_acc <= 2000.0
               and 5.0 <= a.track_err <= 30.0 and 100.0 <= a.input_fresh_ms <= 500.0 and 5.0 <= a.duration <= 1800.0
               and 10.0 <= a.record_max_s <= 900.0 and a.record_min_free_gb >= 1.0
@@ -159,7 +173,7 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     if not ok:
         print("error: argument outside its allowed range; nothing was done", file=sys.stderr)
         return 2
-    print(f"{BANNER}. Box {a.box} mm around the start pose, scale {a.scale}, target speed <= {a.v_max:g} mm/s, "
+    print(f"{BANNER}. Box {'(absolute) ' + a.box_abs + ' mm' if a.box_abs else a.box + ' mm around the start pose'}, scale {a.scale}, target speed <= {a.v_max:g} mm/s, "
           f"controller cap {a.ctrl_speed:g} mm/s, gripper {'ON' if a.with_gripper else 'off'}, wrist rotation {a.rotation}"
           + (f" (max {a.rot_max_deg:g} deg, {a.rot_speed:g} deg/s)." if a.rotation != "off" else "."), flush=True)  # fmt: skip
     if not a.moves_real_arm:
@@ -233,7 +247,7 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
                 out["before"]["rpy_convention_error_deg"] = round(err, 4)
                 if err > 0.2:
                     raise Abort(f"roll/pitch/yaw convention check failed ({err:.2f} deg); wrist rotation cannot be trusted; nothing was commanded")
-            lo, hi = workspace(s2.pose, boundary, box)
+            lo, hi = workspace(s2.pose, boundary, box, absolute=a.box_abs is not None)
             out["workspace_mm"] = {"min": lo, "max": hi, "start": [round(v, 2) for v in s2.pose[:3]]}
         finally:
             probe.close()
