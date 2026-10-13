@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One LIVE teleop session: Quest right controller -> REAL arm on linux2. Normally started by scripts/teleop.
-# Usage: [REC=1] teleop_live_session.sh <name> <confirmation-file> <teleop seconds> [extra live_teleop.py flags]
+# Usage: [REC=1] teleop_live_session.sh <name> <confirmation-file> <teleop seconds, 0 = until Ctrl-C> [extra live_teleop.py flags]
 # REC=1: episodes are recorded ON THE LAB HOST (episodes/<name>/): thumb button A starts / stops and saves, B discards.
 # The lab program runs detached and parks the arm by itself (on SIGINT, on its own duration limit, or on a fault).
 # The console shows only what the operator needs; everything else goes to <data dir>/detail_<name>.txt.
@@ -58,8 +58,11 @@ videos() {
 }
 
 scp -q "${SSHO[@]:1}" "$CONF" "linux2:$L/confirm_$N.txt" || { echo "cannot reach linux2"; exit 2; }
+# With a window, the arm program also gets its own time limit as a second guard. Without one it ends when this side stops it,
+# or by itself when it has lost this PC for a while (its --link-lost-exit-s) or has been idle (its --idle-exit-s).
+LABDUR=0; [ "$TEL" -gt 0 ] && [ $((TEL + 90)) -le 1800 ] && LABDUR=$((TEL + 90))
 msg "Starting the arm program on linux2 ..."
-ssh "${SSHO[@]}" linux2 "cd ~/quest-xarm-teleop-dryrun && rm -f logs/done_$N && (REC=$REC nohup setsid bash scripts/ops/lab_teleop_live_run.sh $N $((TEL + 90)) $* > logs/run_$N.log 2>&1 < /dev/null &)"
+ssh "${SSHO[@]}" linux2 "cd ~/quest-xarm-teleop-dryrun && rm -f logs/done_$N && (REC=$REC CAPTURE=${CAPTURE:-1} nohup setsid bash scripts/ops/lab_teleop_live_run.sh $N $LABDUR $* > logs/run_$N.log 2>&1 < /dev/null &)"
 : > "$D/teleop_$N.console.txt"
 ssh "${SSHO[@]}" linux2 "tail -n +1 -F ~/$L/teleop_$N.console.txt 2>/dev/null" > "$D/teleop_$N.console.txt" 2>/dev/null &
 echo $! > "$R/tailc.pid"
@@ -87,11 +90,13 @@ s=$(wait_state "ARMED" 12); mark "after release cue = $s"
 [ "$s" = "ARMED" ] || { ack; sleep 1.5; s=$(wait_state "ARMED" 8); mark "after second acknowledgement = $s"; }
 [ "$s" = "ARMED" ] || { msg "Could not get ready (state $s: $(why)). Ending."; mark "abort: not armed ($s)"; finish abort; exit 4; }
 mark "teleop window start"
-msg "READY for $((TEL / 60)) min. Hold the side grip (middle finger) to move the arm, release to pause. Index trigger closes the jaws."
+msg "READY$([ "$TEL" -gt 0 ] && echo " for $((TEL / 60)) min" || echo ", no time limit: Ctrl-C ends the session"). Hold the side grip (middle finger) to move the arm, release to pause. Index trigger closes the jaws."
 [ "$REC" = 1 ] && msg "Demos: thumb button A starts one and, pressed again, saves it. B discards the one in progress."
-prev="ARMED"; end=$((SECONDS + TEL)); fault=0; pw=""; psv=0; pds=0; prf=0; warned=0
-while [ $SECONDS -lt $end ]; do
-  grep -q '^{"result"' "$D/teleop_$N.console.txt" 2>/dev/null && { mark "the lab program ended before the window did"; msg "The arm program ended."; break; }   # e.g. "teleop stop" from another terminal
+prev="ARMED"; end=$((SECONDS + TEL)); fault=0; pw=""; psv=0; pds=0; prf=0; warned=0; self=0
+while [ "$TEL" = 0 ] || [ $SECONDS -lt $end ]; do
+  if grep -q '^ENDING:\|^{"result"' "$D/teleop_$N.console.txt" 2>/dev/null; then   # "teleop stop" from another terminal, or one of its own limits
+    self=1; mark "the lab program ended by itself"; msg "The arm program is ending: $(sed -n 's/^ENDING: //p' "$D/teleop_$N.console.txt" | head -1)"; break
+  fi
   s=$(st)
   if [ -n "$s" ] && [ "$s" != "$prev" ]; then
     mark "state $prev -> $s"
@@ -114,10 +119,11 @@ while [ $SECONDS -lt $end ]; do
       psv=${sv:-0}; pds=${ds:-0}; prf=${rf:-0}; pw=$w
     fi
   fi
-  [ $warned = 0 ] && [ $((end - SECONDS)) -le 20 ] && { warned=1; msg "20 seconds left$([ "$pw" = rec ] && echo ': press A now to save the demo in progress')"; }
+  [ "$TEL" -gt 0 ] && [ $warned = 0 ] && [ $((end - SECONDS)) -le 20 ] && { warned=1; msg "20 seconds left$([ "$pw" = rec ] && echo ': press A now to save the demo in progress')"; }
   sleep 0.25
 done
-if [ $fault = 1 ]; then mark "fault latched; ending"; msg "FAULT: $(why). The arm is stopped; the session ends."; else mark "cue end"; msg "Time is up. Release the side grip."; fi
+if [ $fault = 1 ]; then mark "fault latched; ending"; msg "FAULT: $(why). The arm is stopped; the session ends."
+elif [ $self = 0 ]; then mark "cue end"; msg "Time is up. Release the side grip."; fi
 sleep 1.5; mark "end"
 finish ok
 videos

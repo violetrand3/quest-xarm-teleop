@@ -58,7 +58,6 @@ BANNER = "ARM LIVE (REAL ARM MOVES)"
 DEFAULT_RECORD_CAMS = {"iphone": "http://127.0.0.1:8090/cam/iphone", "zed": "http://127.0.0.1:8090/cam/zed"}  # wrist, fixed
 FENCE_MARGIN_MM = 10.0
 REDUCED_JOINT_FACTOR = 2.5  # wrist joints turned up to 2.4 times faster than the tool in the session of 2026-10-12 (reconstructed)
-START_INSIDE_MM = 1.0  # with --box-abs the arm must start at least this far inside the box
 LINK_MARGIN_MM = 2.0
 PRINT_INTERVAL_S = 0.5
 R_BASE_FROM_LOCAL = [[0, 0, -1], [-1, 0, 0], [0, 1, 0]]
@@ -72,13 +71,16 @@ class Abort(RuntimeError):
 
 def workspace(pose: tuple, boundary: dict, box: list, absolute: bool = False, margin_mm: float = FENCE_MARGIN_MM) -> tuple:
     """The box the arm may move in (mm, base frame): distances around the start pose, or absolute limits
-    (x_min, x_max, y_min, y_max, z_min, z_max) that contain the start pose. It must lie inside the
+    (x_min, x_max, y_min, y_max, z_min, z_max) that contain the start pose (an edge counts). It must lie inside the
     controller's fence with a margin."""
     if absolute:
         lo, hi = [box[0], box[2], box[4]], [box[1], box[3], box[5]]
         for k, ax in enumerate("xyz"):
-            if not lo[k] + START_INSIDE_MM <= pose[k] <= hi[k] - START_INSIDE_MM:
-                raise Abort(f"the arm is at {ax} = {pose[k]:.1f} mm, not inside the requested box {ax} {lo[k]:g}..{hi[k]:g}; nothing was commanded")
+            # A session that ended with the arm held at an edge leaves it a fraction of a millimetre inside; that is a valid start.
+            if not lo[k] <= pose[k] <= hi[k]:
+                out_by = lo[k] - pose[k] if pose[k] < lo[k] else pose[k] - hi[k]
+                raise Abort(f"the arm is at {ax} = {pose[k]:.2f} mm, {out_by:.2f} mm outside the requested box {ax} {lo[k]:g}..{hi[k]:g}. "
+                            "Widen the box in the settings or have the arm moved; nothing was commanded")
     else:
         lo = [pose[k] - box[2 * k] for k in range(3)]
         hi = [pose[k] + box[2 * k + 1] for k in range(3)]
@@ -152,7 +154,12 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     ap.add_argument("--with-gripper", action="store_true", help="index trigger also drives the real gripper (0..90 %% closed)")
     ap.add_argument("--gripctl", default="http://127.0.0.1:8088")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
-    ap.add_argument("--duration", type=float, default=120.0, help="seconds, then park and exit (max 1800)")
+    ap.add_argument("--duration", type=float, default=120.0, help="seconds, then park and exit (5..1800); 0 = no time limit")
+    ap.add_argument("--link-lost-exit-s", type=float, default=60.0,
+                    help="park and exit when no operator program has been connected for this long (5..600; 0 = never). "
+                         "This is what ends a session whose operator PC or connection has gone away")
+    ap.add_argument("--idle-exit-s", type=float, default=0.0,
+                    help="park and exit when the arm has not followed the hand for this long (5..7200; 0 = never)")
     ap.add_argument("--record-dir", type=Path, help="record episodes into this new directory (button A start/stop+save, B discard)")
     ap.add_argument("--record-cam", action="append", default=[], metavar="NAME=URL",
                     help="loopback MJPEG stream to save with each episode; repeatable (default: the lab camera wall's iphone and zed)")
@@ -168,7 +175,9 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
                                      else all(0.0 <= v <= 300.0 for v in box)))  # fmt: skip
         ok = (box_ok and 0.05 <= a.scale <= 1.0 and 5.0 <= a.v_max <= 150.0
               and 20.0 <= a.a_max <= 1000.0 and a.v_max <= a.ctrl_speed <= 200.0 and 50.0 <= a.ctrl_acc <= 2000.0
-              and 5.0 <= a.track_err <= 30.0 and 100.0 <= a.input_fresh_ms <= 500.0 and 5.0 <= a.duration <= 1800.0
+              and 5.0 <= a.track_err <= 30.0 and 100.0 <= a.input_fresh_ms <= 500.0 and (a.duration == 0.0 or 5.0 <= a.duration <= 1800.0)
+              and (a.link_lost_exit_s == 0.0 or 5.0 <= a.link_lost_exit_s <= 600.0) and (a.idle_exit_s == 0.0 or 5.0 <= a.idle_exit_s <= 7200.0)
+              and (a.duration > 0.0 or a.link_lost_exit_s > 0.0)  # without a time limit something else must be able to end the session
               and 10.0 <= a.record_max_s <= 900.0 and a.record_min_free_gb >= 1.0 and 3.0 <= a.fence_margin_mm <= 50.0
               and 5.0 <= a.rot_max_deg <= 90.0 and 5.0 <= a.rot_speed <= 120.0 and 0.2 <= a.rot_scale <= 1.5
               and -180.0 <= a.operator_yaw_deg <= 180.0)  # fmt: skip
@@ -363,8 +372,13 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
         print(f"{BANNER}. Armed in mode {out['armed']['mode']}. Listening on {LOOPBACK}:{server.port}. SIGUSR1 = acknowledge and re-arm.", flush=True)
         f3 = lambda p: "-" if p is None else "(%+7.1f,%+7.1f,%+7.1f)" % tuple(p)  # noqa: E731
         n2 = lambda v: "-" if v is None else f"{v:.2f}"  # noqa: E731
+        last_link = last_follow = time.monotonic_ns()
         while not stop.wait(PRINT_INTERVAL_S):
             now = time.monotonic_ns()
+            if adapter.last.get("connected"):
+                last_link = now
+            if adapter.last.get("state") == ACTIVE:
+                last_follow = now
             if rearm[0]:
                 rearm[0] = False
                 time.sleep(0.1)  # let the scheduler apply the acknowledgement first
@@ -381,8 +395,17 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
                   f"trig={n2(t.get('trig'))} | mm: req={f3(t.get('req_mm'))} lim={f3(t.get('lim_mm'))} fb={f3(t.get('fb_mm'))} rot={t.get('rot_deg')} | "
                   f"armed={'yes' if link.armed_mode is not None else 'NO'} cmds={backend.command_count} halts={backend.halt_count} "
                   f"faults={rec.counts.get('fault', 0)}" + ("" if episodes is None else f" | ep={episodes.status()}"), flush=True)  # fmt: skip
-            if now - start >= a.duration * 1e9:
+            if a.duration and now - start >= a.duration * 1e9:
+                out["ended_by"] = "time limit"
                 break
+            if a.link_lost_exit_s and now - last_link >= a.link_lost_exit_s * 1e9:
+                out["ended_by"] = f"no operator program connected for {a.link_lost_exit_s:g} s"
+                break
+            if a.idle_exit_s and now - last_follow >= a.idle_exit_s * 1e9:
+                out["ended_by"] = f"the arm did not follow the hand for {a.idle_exit_s:g} s"
+                break
+        out.setdefault("ended_by", "stop request")
+        print(f"ENDING: {out['ended_by']}", flush=True)
         out["result"] = "ok"
     except (Abort, cl.LinkError, BackendError, ValueError, OSError) as e:
         out["result"], out["abort_reason"] = "aborted", str(e)
@@ -433,7 +456,7 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
         a.summary.parent.mkdir(parents=True, exist_ok=True)
         with a.summary.open("x", encoding="utf-8") as f:
             f.write(text + "\n")
-    print(json.dumps({k: out.get(k) for k in ("result", "abort_reason", "engagements", "targets_sent", "halts", "final_state", "final_latch", "after")}, default=str), flush=True)
+    print(json.dumps({k: out.get(k) for k in ("result", "abort_reason", "ended_by", "engagements", "targets_sent", "halts", "final_state", "final_latch", "after")}, default=str), flush=True)
     if out.get("episodes"):
         print("episodes: " + json.dumps({k: out["episodes"].get(k) for k in ("dir", "saved", "discarded", "refused", "last_refusal", "error", "free_gb_after")}), flush=True)
     return 0 if out["result"] == "ok" else 3

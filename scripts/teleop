@@ -4,6 +4,7 @@
 #
 #   scripts/teleop record [minutes]   demo recording: thumb button A starts a demo and, pressed again, saves it; B discards
 #   scripts/teleop try [minutes]      the same without recording
+#                                     Without minutes a session has no time limit: it runs until Ctrl-C.
 #   scripts/teleop status             read-only look at the rig, the cameras, the headset and the disk
 #   scripts/teleop cameras            (re)start the operator's camera view and print its address
 #   scripts/teleop episodes [session] list the recorded sessions, or the demos of one session
@@ -17,6 +18,7 @@ P=~/quest-xarm-teleop
 . "$P/config/teleop_session.conf" || exit 2
 SSHO=(-o BatchMode=yes -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10)
 D=$P/data/sessions; R=$P/run; L=$LAB_DIR/logs; URL="http://127.0.0.1:$RELAY_LOCAL_PORT/"
+RELAY_LIFE_S=43200   # the camera view on the lab host closes itself after 12 h; a session start renews it when less than it needs is left
 mkdir -p "$D" "$R"
 lab() { ssh -n "${SSHO[@]}" "$LAB_HOST" "$@"; }   # -n: never let ssh swallow what the operator types
 die() { echo "STOP: $*" >&2; exit 2; }
@@ -34,6 +36,13 @@ def get(url):
 st, cam = get(sys.argv[1]), get(sys.argv[2])
 ps = subprocess.run(["ps", "-eo", "pid=,etimes=,args="], capture_output=True, text=True).stdout.splitlines()
 find = lambda s: [[int(l.split()[0]), int(l.split()[1])] for l in ps if s in l]
+def relay():
+    out = []
+    for l in ps:
+        if "lab_cam_relay.py" in l:
+            m = re.search(r"--duration (\d+)", l)
+            out.append([int(l.split()[0]), int(l.split()[1]), int(m.group(1)) if m else 0])
+    return out
 ss = subprocess.run(["ss", "-tnp"], capture_output=True, text=True).stdout.splitlines()
 conn = sorted({int(m) for l in ss if (":502 " in l or ":30002 " in l) and "127.0.0.1" not in l for m in re.findall(r"pid=(\d+)", l)})
 try:
@@ -42,7 +51,7 @@ except Exception:
     last = None
 print(json.dumps({"time": time.strftime("%H:%M:%S"), "stepper": {k: st.get(k) for k in ("pose", "state", "err", "busy", "pending", "fence", "_error")},
                   "stepper_pids": [p for p, _ in find("stepper.py")], "arm_conn_pids": conn, "live": find("scripts/live_teleop.py"),
-                  "relay": find("lab_cam_relay.py"), "viewers": {k: v.get("viewers") for k, v in (cam.get("cameras") or {}).items()},
+                  "relay": relay(), "viewers": {k: v.get("viewers") for k, v in (cam.get("cameras") or {}).items()},
                   "camera_error": cam.get("_error"), "free_gb": round(shutil.disk_usage(os.path.expanduser("~")).free / 1e9, 1), "lab_log_last": last}))
 PY
   [ -s "$R/status.json" ] || die "cannot reach $LAB_HOST or read its status ($(head -c 200 "$R/status.err"))"
@@ -80,7 +89,7 @@ if others:
     warn.append(f"another program is connected to the arm (pid {others}); make sure nothing else will command it")
 print(f"  last line of the lab's motion log: {d['lab_log_last']}")
 r = d["relay"]
-print("  camera view for the operator: " + (f"running, {max(0, 5400 - r[0][1]) // 60} min left" if r else "NOT running") + f"; viewers {d['viewers']}")
+print("  camera view for the operator: " + ((f"running, {max(0, r[0][2] - r[0][1]) // 60} min left" if r[0][2] else "running") if r else "NOT running") + f"; viewers {d['viewers']}")
 print(f"  free disk: {d['free_gb']} GB")
 if mode == "record" and d["free_gb"] < min_free:
     block.append(f"only {d['free_gb']} GB free on the lab host; recording needs {min_free:g}")
@@ -94,13 +103,13 @@ PY
 }
 
 ensure_cameras() {   # $1 = seconds the view must stay up
-  local need=$1 pid el
+  local need=$1 pid left
   pid=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["relay"]; print(r[0][0] if r else "")' "$R/status.json")
-  el=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["relay"]; print(r[0][1] if r else 0)' "$R/status.json")
-  if [ -z "$pid" ] || [ $((5400 - el)) -lt "$need" ]; then
+  left=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["relay"]; print((r[0][2] - r[0][1] if r[0][2] else 10**9) if r else 0)' "$R/status.json")
+  if [ -z "$pid" ] || [ "$left" -lt "$need" ]; then
     echo "starting the camera view on the lab host (view-only)"
     [ -n "$pid" ] && lab "kill $pid 2>/dev/null; for i in 1 2 3 4 5 6 7 8 9 10; do ss -ltn | grep -q '127.0.0.1:$RELAY_PORT ' || break; sleep 0.3; done"
-    lab "cd ~/$LAB_DIR && (nohup setsid python3 -u scripts/lab_cam_relay.py --port $RELAY_PORT --views zed,iphone --fps 8 --width 480 --quality 55 --duration 5400 > logs/relay_\$(date +%H%M%S).log 2>&1 < /dev/null &); sleep 2; ss -ltn | grep -q '127.0.0.1:$RELAY_PORT '" \
+    lab "cd ~/$LAB_DIR && (nohup setsid python3 -u scripts/lab_cam_relay.py --port $RELAY_PORT --views zed,iphone --fps 8 --width 480 --quality 55 --duration $RELAY_LIFE_S > logs/relay_\$(date +%H%M%S).log 2>&1 < /dev/null &); sleep 2; ss -ltn | grep -q '127.0.0.1:$RELAY_PORT '" \
       || die "the camera view did not start on the lab host"
     RELOAD=1
   fi
@@ -130,14 +139,15 @@ ask_yes() {   # yes / y goes on, no / n stops; anything else is asked again (3 t
 }
 
 session() {   # $1 = record | try, $2 = minutes
-  local mode=$1 min=${2:-} tel n flags head
-  [ -z "$min" ] && { [ "$mode" = record ] && min=$RECORD_MINUTES || min=$TRY_MINUTES; }
-  case "$min" in ''|*[!0-9]*) die "minutes must be a whole number";; esac
-  [ "$min" -ge 1 ] && [ "$min" -le 28 ] || die "minutes must be between 1 and 28"
-  tel=$((min * 60))
+  local mode=$1 min=${2:-} tel=0 n flags head length="no time limit, Ctrl-C ends it"
+  if [ -n "$min" ]; then
+    case "$min" in *[!0-9]*) die "minutes must be a whole number (or leave it out for no time limit)";; esac
+    [ "$min" -ge 1 ] && [ "$min" -le 600 ] || die "minutes must be between 1 and 600 (or leave it out for no time limit)"
+    tel=$((min * 60)); length="$min min"
+  fi
   [ "$(adb devices | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] || die "need exactly one headset connected by USB with debugging allowed (adb devices)"
   rig_status; show_status "$mode" || die "not starting; see BLOCKED above"
-  RELOAD=0; ensure_cameras $((tel + 240))
+  RELOAD=0; ensure_cameras $([ "$tel" -gt 0 ] && echo $((tel + 600)) || echo 21600)
   if [ "$REQUIRE_CAMERA_PAGE" = 1 ] && [ "$(viewers_iphone)" -lt 1 ]; then
     echo "Open (or reload) the camera page: $URL   waiting for it, Ctrl-C cancels ..."
     for _i in $(seq 1 180); do [ "$(viewers_iphone)" -ge 1 ] && break; sleep 1; done
@@ -147,17 +157,19 @@ session() {   # $1 = record | try, $2 = minutes
                           180) head="the headset lies on the table with its front pointing at you";;
                           *) die "OPERATOR_YAW in the settings must be 0 or 180";; esac
   echo
-  echo "THE ARM WILL MOVE: $mode session, $min min, up to $V_MAX mm/s, box (mm) $BOX_ABS."
+  echo "THE ARM WILL MOVE: $mode session, $length, up to $V_MAX mm/s, box (mm) $BOX_ABS."
   echo "All of this must be true:"
   echo "  - someone is at the rig RIGHT NOW, agrees, and has the physical stop in reach"
   echo "  - the space is clear down to the bins and nobody is near the arm"
   echo "  - nothing else will command the arm or the gripper (the other agent is paused)"
   echo "  - $head"
-  CONFIRM_TEXT="Operator $(id -un)@$(hostname -s) at the terminal prompt of scripts/teleop on $(date '+%Y-%m-%d %H:%M:%S %Z'), for a $mode session of $min min, box $BOX_ABS mm, up to $V_MAX mm/s, rotation $ROTATION, gripper $GRIPPER, reduced mode off accepted: $ALLOW_REDUCED_MODE_OFF, camera page required: $REQUIRE_CAMERA_PAGE. Shown as conditions that must all be true: someone is at the rig right now, agrees, and has the physical stop in reach; the space is clear down to the bins and nobody is near the arm; nothing else will command the arm or the gripper (the other agent is paused); $head."
+  CONFIRM_TEXT="Operator $(id -un)@$(hostname -s) at the terminal prompt of scripts/teleop on $(date '+%Y-%m-%d %H:%M:%S %Z'), for a $mode session ($length), box $BOX_ABS mm, up to $V_MAX mm/s, rotation $ROTATION, gripper $GRIPPER, reduced mode off accepted: $ALLOW_REDUCED_MODE_OFF, camera page required: $REQUIRE_CAMERA_PAGE. Shown as conditions that must all be true: someone is at the rig right now, agrees, and has the physical stop in reach; the space is clear down to the bins and nobody is near the arm; nothing else will command the arm or the gripper (the other agent is paused); $head."
   ask_yes "Is all of this true? Start?"
   n=$([ "$mode" = record ] && echo rec || echo tele)_$(date +%Y%m%d-%H%M%S)
   flags=(--box-abs "$BOX_ABS" --fence-margin-mm "$FENCE_MARGIN" --scale "$SCALE" --v-max "$V_MAX" --a-max "$A_MAX" --ctrl-speed "$CTRL_SPEED" --ctrl-acc "$CTRL_ACC"
          --track-err "$TRACK_ERR" --input-fresh-ms "$INPUT_FRESH_MS" --rotation "$ROTATION" --rot-max-deg "$ROT_MAX" --rot-speed "$ROT_SPEED" --operator-yaw-deg "$OPERATOR_YAW")
+  flags+=(--link-lost-exit-s "$LINK_LOST_END_S" --idle-exit-s $((IDLE_END_MIN * 60)))
+  [ "$mode" = record ] && flags+=(--record-max-s $((DEMO_MAX_MIN * 60)))
   [ "$GRIPPER" = 1 ] && flags+=(--with-gripper)
   [ "$ALLOW_REDUCED_MODE_OFF" = 1 ] && flags+=(--allow-reduced-mode-off)
   echo; echo "session $n. Ctrl-C ends it (software stop; the arm is parked)."
@@ -166,7 +178,7 @@ session() {   # $1 = record | try, $2 = minutes
   echo "$n" > "$R/current_session"
   # Ctrl-C reaches the session script, which ends the session cleanly; this shell and the output filter must outlive it.
   trap 'echo "(Ctrl-C: waiting for the session to close)"' INT
-  REC=$([ "$mode" = record ] && echo 1 || echo 0) TELEOP_DATA_DIR=$D MAKE_VIDEOS=$MAKE_VIDEOS bash "$P/scripts/ops/teleop_live_session.sh" "$n" "$D/confirm_$n.txt" "$tel" "${flags[@]}" < /dev/null 2>&1 \
+  REC=$([ "$mode" = record ] && echo 1 || echo 0) TELEOP_DATA_DIR=$D MAKE_VIDEOS=$MAKE_VIDEOS CAPTURE=0 bash "$P/scripts/ops/teleop_live_session.sh" "$n" "$D/confirm_$n.txt" "$tel" "${flags[@]}" < /dev/null 2>&1 \
     | ( trap '' INT; tee "$D/session_$n.txt" )
   trap - INT
   summary "$n"
@@ -185,7 +197,7 @@ if s.get("result") != "ok":
     print(f"NOT RUN: {s.get('abort_reason')}"); sys.exit(0)
 a = s.get("after") or {}
 real = [f for f in s.get("faults", []) if not f["reason"].startswith("reference_change_notice")]
-print(f"ran {s.get('elapsed_s', 0):.0f} s; the arm followed the hand in {s.get('engagements')} stretches; arm now state {a.get('state')}, error {a.get('error')}")
+print(f"ran {s.get('elapsed_s', 0):.0f} s (ended by: {s.get('ended_by', '?')}); the arm followed the hand in {s.get('engagements')} stretches; arm now state {a.get('state')}, error {a.get('error')}")
 for f in real: print(f"FAULT at {f['t_s']:.0f} s: {f['reason'][:110]}")
 if a.get("error"):
     print(f"THE ARM CONTROLLER HAS ERROR {a['error']}. It must be looked at and cleared on the lab side before the next session; this tool never clears it.")
@@ -203,12 +215,12 @@ PY
 case "${1:-}" in
   record|try) session "$1" "${2:-}";;
   status) rig_status; show_status status; echo "Headset on USB: $(adb devices | awk 'NR>1 && $2=="device"' | wc -l) (need 1)"; echo "Camera view: $URL";;
-  cameras) rig_status; RELOAD=0; ensure_cameras 1500; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')";;
+  cameras) rig_status; RELOAD=0; ensure_cameras 3600; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')";;
   episodes)
     if [ -n "${2:-}" ]; then lab "cd ~/$LAB_DIR && python3 scripts/episode_inspect.py episodes/$2"
     else lab "cd ~/$LAB_DIR/episodes 2>/dev/null && for s in */; do [ -f \"\$s/session.json\" ] && echo \"\${s%/}: \$(ls -d \$s/episode_[0-9][0-9][0-9][0-9] 2>/dev/null | wc -l) demos, \$(du -sh \$s | cut -f1)\"; done; df -h . | awk 'NR==2{print \"free disk: \"\$4}'"; fi;;
   watch) n=$(cat "$R/current_session" 2>/dev/null) || die "no session name known"; lab "tail -n 5 -F ~/$L/teleop_$n.console.txt" | sed -u -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/<ip>/g';;
   stop) n=$(cat "$R/current_session" 2>/dev/null) || die "no session name known"
         lab "kill -INT \$(cat ~/$L/pid_$n) 2>/dev/null && echo 'stop sent to the lab program of $n; it parks the arm (software stop, not the physical stop)' || echo 'no running lab program for $n'";;
-  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 1;;
+  *) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 1;;
 esac

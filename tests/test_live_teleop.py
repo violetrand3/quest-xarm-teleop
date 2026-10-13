@@ -408,13 +408,16 @@ class LiveTeleopProgramTests(unittest.TestCase):
     def test_absolute_box_outside_the_fence_or_not_containing_the_arm_commands_nothing(self) -> None:
         for box, why in (("200,340,-290,260,275,575", "fence"),  # floor 5 mm above the fence floor: inside the margin
                          ("200,340,-290,265,280,575", "fence"),
-                         ("310,400,-100,100,300,500", "not inside the requested box"),  # the arm is at x 299.8
-                         ("200,340,-100,100,300,461.5", "not inside the requested box")):  # 0.3 mm below the top: too close
+                         ("310,400,-100,100,300,500", "mm outside the requested box"),  # the arm is at x 299.8
+                         ("200,340,-100,100,300,461.0", "0.18 mm outside the requested box")):  # the arm is at z 461.18
             ctl = FakeController()
             rc, res, _, _, _ = self.run_live(ctl, None, ["--box-abs", box], duration=5.0)
             self.assertEqual((rc, res["result"]), (3, "aborted"), box)
             self.assertIn(why, res["abort_reason"])
             self.assertEqual(self.writes(ctl), [], box)
+        ctl = FakeController()  # an arm left at the very edge by the previous session (here 0.02 mm inside the top) can start again
+        rc, res, _, _, _ = self.run_live(ctl, None, ["--box-abs", "200,340,-100,100,300,461.2"], duration=5.0)
+        self.assertEqual((rc, res["result"], res["workspace_mm"]["max"][2]), (0, "ok", 461.2))
         ctl = FakeController()  # the same floor is accepted with a smaller margin, and refused again when even that is not kept
         rc, res, _, _, _ = self.run_live(ctl, None, ["--box-abs", "200,340,-290,260,275,575", "--fence-margin-mm", "5"], duration=5.0)
         self.assertEqual((rc, res["workspace_mm"]["min"][2]), (0, 275.0))
@@ -454,6 +457,37 @@ class LiveTeleopProgramTests(unittest.TestCase):
         ctl.reduced_on, ctl.reduced_tcp_mm_s = False, 50.0
         rc, res, _, _, _ = self.run_live(ctl, None, fast + ["--allow-reduced-mode-off"], duration=5.0)
         self.assertEqual((rc, res["before"]["reduced_mode_waived_by_operator"]), (0, True))
+
+    def test_without_a_time_limit_the_session_ends_when_the_operator_side_is_gone_or_idle(self) -> None:
+        ctl = FakeController()  # nobody ever connects: the program must not stay armed for ever
+        t0 = time.monotonic()
+        rc, res, _, text, _ = self.run_live(ctl, None, ["--link-lost-exit-s", "5"], duration=0)
+        self.assertEqual((rc, res["result"]), (0, "ok"))
+        self.assertIn("no operator program connected for 5 s", res["ended_by"])
+        self.assertIn("ENDING: no operator program connected", text)
+        self.assertLess(time.monotonic() - t0, 20.0)
+        self.assertEqual((ctl.mode, ctl.state), (0, 4))  # parked
+
+        ctl = FakeController()  # connected, clutch never pressed: ends on the idle limit, not on the link limit
+
+        def drive(q: QuestFeed, notes: dict) -> None:
+            for _ in range(400):
+                q.pose(grip=0.0)
+
+        rc, res, _, _, notes = self.run_live(ctl, drive, ["--link-lost-exit-s", "30", "--idle-exit-s", "6"], duration=0)
+        self.assertEqual((rc, res["ended_by"], res["engagements"]), (0, "the arm did not follow the hand for 6 s", 0))
+        self.assertEqual((ctl.mode, ctl.state), (0, 4))
+        ctl = FakeController()  # a time limit still works and says so
+        rc, res, _, _, _ = self.run_live(ctl, None, [], duration=5.0)
+        self.assertEqual(res["ended_by"], "time limit")
+        import live_teleop as lt
+        real, sys.stdout = sys.stdout, io.StringIO()
+        try:
+            self.assertEqual(lt.main(["--address", "127.0.0.1", "--duration", "0", "--link-lost-exit-s", "0"]), 2)  # nothing could end it
+            self.assertEqual(lt.main(["--address", "127.0.0.1", "--duration", "3"]), 2)
+            self.assertEqual(lt.main(["--address", "127.0.0.1", "--duration", "0"]), 0)  # plan only
+        finally:
+            sys.stdout = real
 
     def test_refusals_before_anything_is_commanded(self) -> None:
         import live_teleop as lt

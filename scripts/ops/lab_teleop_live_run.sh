@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Runs ON THE LAB HOST, detached. One live teleop session (REAL ARM).
-# Usage: [REC=1] lab_teleop_live_run.sh <name> <duration s> [extra live_teleop.py flags] ; needs logs/confirm_<name>.txt
+# Usage: [REC=1] [CAPTURE=0] lab_teleop_live_run.sh <name> <duration s, 0 = no limit> [extra live_teleop.py flags] ; needs logs/confirm_<name>.txt
 # REC=1: episodes are recorded into episodes/<name>/ (thumb button A start/stop+save, B discard); the episode videos
-#        are then the camera record. Without it, low-rate camera frames are saved for the cross-check as before.
+#        are then the camera record. Without it, low-rate camera frames are saved for a cross-check, unless CAPTURE=0
+#        or there is no time limit (frames of an open-ended session would fill the disk).
 cd ~/quest-xarm-teleop-dryrun || exit 1
 N=$1; DUR=$2; shift 2
-REC=${REC:-0}; CAP=""; RECFLAGS=()
+REC=${REC:-0}; CAPTURE=${CAPTURE:-1}; CAP=""; RECFLAGS=()
 if [ "$REC" = 1 ]; then
   RECFLAGS=(--record-dir "episodes/$N")
-else
+elif [ "$CAPTURE" = 1 ] && [ "$DUR" != 0 ]; then
   python3 scripts/lab_frame_capture.py logs/cam_$N $((DUR + 30)) 5 zed iphone > logs/cam_$N.log 2>&1 &
   CAP=$!
 fi
@@ -21,7 +22,7 @@ echo "live_teleop exit code: $?"
 if [ -n "$CAP" ]; then
   sleep 1; kill $CAP 2>/dev/null; wait $CAP 2>/dev/null
   for k in zed iphone; do python3 scripts/frames_refdiff.py logs/cam_$N/$k > logs/refdiff_${N}_$k.json 2>/dev/null; echo "frames $k: $(ls logs/cam_$N/$k 2>/dev/null | wc -l)"; done
-else
+elif [ "$REC" = 1 ]; then
   python3 scripts/episode_inspect.py "episodes/$N" > logs/episodes_$N.check.txt 2>&1; echo "episode check exit code: $?"; cat logs/episodes_$N.check.txt
   echo "episodes on disk: $(du -sh "episodes/$N" 2>/dev/null | cut -f1); free: $(df -h . | awk 'NR==2{print $4}')"
 fi
