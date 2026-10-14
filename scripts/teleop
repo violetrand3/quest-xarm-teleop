@@ -20,6 +20,7 @@ SSHO=(-o BatchMode=yes -o ControlMaster=no -o ControlPath=none -o ConnectTimeout
 D=$P/data/sessions; R=$P/run; L=$LAB_DIR/logs; URL="http://127.0.0.1:$RELAY_LOCAL_PORT/"
 RELAY_LIFE_S=43200   # the camera view on the lab host closes itself after 12 h; a session start renews it when less than it needs is left
 mkdir -p "$D" "$R"
+case "$CAMERAS" in ""|*[!a-z0-9_,]*|,*|*,|*,,*) echo "STOP: CAMERAS in the settings must be camera names separated by commas, e.g. iphone,rs_color" >&2; exit 2;; esac
 lab() { ssh -n "${SSHO[@]}" "$LAB_HOST" "$@"; }   # -n: never let ssh swallow what the operator types
 die() { echo "STOP: $*" >&2; exit 2; }
 note() { echo "  - $*"; }
@@ -40,8 +41,8 @@ def relay():
     out = []
     for l in ps:
         if "lab_cam_relay.py" in l:
-            m = re.search(r"--duration (\d+)", l)
-            out.append([int(l.split()[0]), int(l.split()[1]), int(m.group(1)) if m else 0])
+            m, v = re.search(r"--duration (\d+)", l), re.search(r"--views (\S+)", l)
+            out.append([int(l.split()[0]), int(l.split()[1]), int(m.group(1)) if m else 0, v.group(1) if v else ""])
     return out
 ss = subprocess.run(["ss", "-tnp"], capture_output=True, text=True).stdout.splitlines()
 conn = sorted({int(m) for l in ss if (":502 " in l or ":30002 " in l) and "127.0.0.1" not in l for m in re.findall(r"pid=(\d+)", l)})
@@ -103,24 +104,29 @@ PY
 }
 
 ensure_cameras() {   # $1 = seconds the view must stay up
-  local need=$1 pid left
+  local need=$1 pid left views
   pid=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["relay"]; print(r[0][0] if r else "")' "$R/status.json")
   left=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["relay"]; print((r[0][2] - r[0][1] if r[0][2] else 10**9) if r else 0)' "$R/status.json")
-  if [ -z "$pid" ] || [ "$left" -lt "$need" ]; then
+  views=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["relay"]; print(r[0][3] if r and len(r[0]) > 3 else "")' "$R/status.json")
+  if [ -z "$pid" ] || [ "$left" -lt "$need" ] || [ "$views" != "$CAMERAS" ]; then
     echo "starting the camera view on the lab host (view-only)"
     [ -n "$pid" ] && lab "kill $pid 2>/dev/null; for i in 1 2 3 4 5 6 7 8 9 10; do ss -ltn | grep -q '127.0.0.1:$RELAY_PORT ' || break; sleep 0.3; done"
-    lab "cd ~/$LAB_DIR && (nohup setsid python3 -u scripts/lab_cam_relay.py --port $RELAY_PORT --views zed,iphone --fps 8 --width 480 --quality 55 --duration $RELAY_LIFE_S > logs/relay_\$(date +%H%M%S).log 2>&1 < /dev/null &); sleep 2; ss -ltn | grep -q '127.0.0.1:$RELAY_PORT '" \
+    lab "cd ~/$LAB_DIR && (nohup setsid python3 -u scripts/lab_cam_relay.py --port $RELAY_PORT --views $CAMERAS --fps 8 --width 480 --quality 55 --duration $RELAY_LIFE_S > logs/relay_\$(date +%H%M%S).log 2>&1 < /dev/null &); sleep 2; ss -ltn | grep -q '127.0.0.1:$RELAY_PORT '" \
       || die "the camera view did not start on the lab host"
     RELOAD=1
   fi
   if ! ss -ltn | grep -q "127.0.0.1:$RELAY_LOCAL_PORT "; then
-    ssh "${SSHO[@]}" -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -L "127.0.0.1:$RELAY_LOCAL_PORT:127.0.0.1:$RELAY_PORT" "$LAB_HOST" || die "cannot open the camera tunnel"
+    # A terminal session (-tt) instead of -N: then the lab host's ssh server sends small packets at once. Over -N it held
+    # the end of each picture for about one round trip (RealSense pictures 175 ms old on arrival instead of 73; 2026-10-14).
+    ssh "${SSHO[@]}" -f -tt -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -L "127.0.0.1:$RELAY_LOCAL_PORT:127.0.0.1:$RELAY_PORT" "$LAB_HOST" "sleep infinity" \
+      > /dev/null 2> "$R/tunnel_relay.txt" < /dev/null || die "cannot open the camera tunnel ($(head -c 200 "$R/tunnel_relay.txt"))"
     RELOAD=1
   fi
 }
-viewers_iphone() { lab "curl -s -m 4 '$LAB_CAMERA_STATUS'" | python3 -c 'import json,sys
-try: print(json.load(sys.stdin)["cameras"]["iphone"]["viewers"])
-except Exception: print(0)'; }
+viewers_page() {   # viewers of the gripper camera on the camera wall: the lab's stepper page does not take it from there, the operator's page does
+  lab "curl -s -m 4 '$LAB_CAMERA_STATUS'" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin)["cameras"][sys.argv[1]]["viewers"])
+except Exception: print(0)' "${CAMERAS%%,*}"; }
 
 ask() {   # ask "<question>" -> the typed answer in $ANS (spaces and stray control characters removed), also saved in the confirmation text
   [ -t 0 ] && { IFS= read -r -s -t 0.05 -N 10000 _typed_ahead 2>/dev/null || true; }   # drop anything typed before the question appeared
@@ -148,10 +154,10 @@ session() {   # $1 = record | try, $2 = minutes
   [ "$(adb devices | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] || die "need exactly one headset connected by USB with debugging allowed (adb devices)"
   rig_status; show_status "$mode" || die "not starting; see BLOCKED above"
   RELOAD=0; ensure_cameras $([ "$tel" -gt 0 ] && echo $((tel + 600)) || echo 21600)
-  if [ "$REQUIRE_CAMERA_PAGE" = 1 ] && [ "$(viewers_iphone)" -lt 1 ]; then
+  if [ "$REQUIRE_CAMERA_PAGE" = 1 ] && [ "$(viewers_page)" -lt 1 ]; then
     echo "Open (or reload) the camera page: $URL   waiting for it, Ctrl-C cancels ..."
-    for _i in $(seq 1 180); do [ "$(viewers_iphone)" -ge 1 ] && break; sleep 1; done
-    [ "$(viewers_iphone)" -ge 1 ] || die "the camera page never connected (REQUIRE_CAMERA_PAGE=0 in the settings runs without it)"
+    for _i in $(seq 1 180); do [ "$(viewers_page)" -ge 1 ] && break; sleep 1; done
+    [ "$(viewers_page)" -ge 1 ] || die "the camera page never connected (REQUIRE_CAMERA_PAGE=0 in the settings runs without it)"
   fi
   case "$OPERATOR_YAW" in 0) head="the headset's front points the way you face (on the table facing away from you, or worn)";;
                           180) head="the headset lies on the table with its front pointing at you";;
@@ -169,7 +175,10 @@ session() {   # $1 = record | try, $2 = minutes
   flags=(--box-abs "$BOX_ABS" --fence-margin-mm "$FENCE_MARGIN" --scale "$SCALE" --v-max "$V_MAX" --a-max "$A_MAX" --ctrl-speed "$CTRL_SPEED" --ctrl-acc "$CTRL_ACC"
          --track-err "$TRACK_ERR" --input-fresh-ms "$INPUT_FRESH_MS" --rotation "$ROTATION" --rot-max-deg "$ROT_MAX" --rot-speed "$ROT_SPEED" --operator-yaw-deg "$OPERATOR_YAW")
   flags+=(--link-lost-exit-s "$LINK_LOST_END_S" --idle-exit-s $((IDLE_END_MIN * 60)))
-  [ "$mode" = record ] && flags+=(--record-max-s $((DEMO_MAX_MIN * 60)))
+  if [ "$mode" = record ]; then
+    flags+=(--record-max-s $((DEMO_MAX_MIN * 60)))
+    for c in ${CAMERAS//,/ }; do flags+=(--record-cam "$c=${LAB_CAMERA_STATUS%/api/status}/cam/$c"); done
+  fi
   [ "$GRIPPER" = 1 ] && flags+=(--with-gripper)
   [ "$ALLOW_REDUCED_MODE_OFF" = 1 ] && flags+=(--allow-reduced-mode-off)
   echo; echo "session $n. Ctrl-C ends it (software stop; the arm is parked)."
@@ -185,7 +194,7 @@ session() {   # $1 = record | try, $2 = minutes
 }
 
 summary() {
-  python3 - "$D/teleop_$1.summary.json" "$1" "$P/data/episodes" "$LAB_DIR" <<'PY'
+  python3 - "$D/teleop_$1.summary.json" "$1" "$P/data/episodes" "$LAB_DIR" "$CAMERAS" <<'PY'
 import json, sys
 try:
     s = json.load(open(sys.argv[1]))
@@ -207,7 +216,8 @@ if e:
     for x in e["episodes"]:
         print(f"  demo {x['episode']}: {x['duration_s']:.0f} s, closed by {x['closed_by']}" + (f", PROBLEMS: {x['problems']}" if x["problems"] else ""))
     if e["saved"]:
-        print(f"videos and data on this PC:   {sys.argv[3]}/{n}/episode_000N/view_iphone.mp4 (gripper camera), view_zed.mp4, steps.jsonl")
+        cams = sys.argv[5].split(",")
+        print(f"videos and data on this PC:   {sys.argv[3]}/{n}/episode_000N/view_{cams[0]}.mp4 (gripper camera), " + "".join(f"view_{c}.mp4, " for c in cams[1:]) + "steps.jsonl")
         print(f"and on the lab host:          ~/{sys.argv[4]}/episodes/{n}/episode_000N/")
 PY
 }

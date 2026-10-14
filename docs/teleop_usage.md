@@ -37,6 +37,12 @@ still recording after 5 min is saved and closed. These three values are settings
 four conditions and ask once for `yes`. What you type is saved with the session. `no` ends it with
 nothing started.
 
+Operate from that camera page: the gripper camera and the RealSense, 8 pictures a second, about 70 ms old
+when they reach this PC (measured 2026-10-14), plus the cameras' own delay. Do not operate from the lab's
+stepper page and preferably close it during a session: it shows the gripper camera as one still picture
+every 2 s, and its RealSense stream at full rate (about 1.5 MB/s) uses roughly everything the link carries.
+Which cameras are shown and recorded is the `CAMERAS` setting (the ZED is left out while it sends no picture).
+
 ## During a session
 
 There is no sound. The terminal tells you where you are:
@@ -72,7 +78,7 @@ The summary lists the demos. For each one, on this PC and on linux2:
 
 ```
 data/episodes/<session>/episode_0001/view_iphone.mp4     gripper camera, for watching
-data/episodes/<session>/episode_0001/view_zed.mp4        fixed camera
+data/episodes/<session>/episode_0001/view_rs_color.mp4   fixed RealSense camera (before 2026-10-14: view_zed.mp4)
 data/episodes/<session>/episode_0001/steps.jsonl         arm pose, joints, targets, jaws every 20 ms
 data/episodes/<session>/episode_0001/cam_*.mjpeg + .frames.jsonl   the recorded frames with their times
 ```
@@ -91,12 +97,13 @@ Action labels: `python3 scripts/episode_inspect.py <session folder> --labels 8` 
 | `FAULT: …` with a controller error in the summary | The arm is stopped. Someone looks at it; the error is cleared on the lab side |
 | `NOT STARTED. The arm program says: …` | Read the reason; the two rows above are the usual ones |
 | Camera page frozen | `scripts/teleop cameras`, then reload the page |
+| `DEMO NOT STARTED` naming a camera | That camera sends no picture (the ZED, 2026-10-14). Take it out of `CAMERAS` in the settings and start again |
 | `need exactly one headset` | Check the USB cable and allow debugging in the headset |
 
 ## Settings
 
-`config/teleop_session.conf`: the box, speeds, rotation limit, gripper, headset direction, whether to wait
-for the camera page, default lengths. Detailed logs of each session are in `data/sessions/`. The floor
+`config/teleop_session.conf`: the box, speeds, rotation limit, gripper, headset direction, the cameras,
+whether to wait for the camera page, default lengths. Detailed logs of each session are in `data/sessions/`. The floor
 (`z_min` 240 mm) was found by touching down in one bin; other bins may be shallower.
 
 ## Not done yet
