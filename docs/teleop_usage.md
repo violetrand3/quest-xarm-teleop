@@ -97,6 +97,7 @@ Action labels: `python3 scripts/episode_inspect.py <session folder> --labels 8` 
 | `FAULT: …` with a controller error in the summary | The arm is stopped. Someone looks at it; the error is cleared on the lab side |
 | `NOT STARTED. The arm program says: …` | Read the reason; the two rows above are the usual ones |
 | Camera page frozen | `scripts/teleop cameras`, then reload the page |
+| Gripper picture upside down | The phone app turned its picture 180° (it did when the wrist was tilted, 2026-10-14). The camera page turns it back by itself while the blue jaws are in view. Recorded demos keep the picture as the phone sends it |
 | `DEMO NOT STARTED` naming a camera | That camera sends no picture (the ZED, 2026-10-14). Take it out of `CAMERAS` in the settings and start again |
 | `need exactly one headset` | Check the USB cable and allow debugging in the headset |
 

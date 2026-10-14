@@ -29,14 +29,32 @@ import cv2
 import numpy as np
 
 GRACE_S = 3.0
+FLIP_FRAMES = 3   # consecutive frames that must agree before an --upright view changes its turn
+
+
+def jaws_at_top(img) -> bool | None:
+    """Gripper camera: the blue jaws are at the bottom of an upright picture.
+
+    True = upside down (jaws at the top), False = upright, None = cannot tell. On 2026-10-14 the phone app turned its
+    picture 180 degrees while the wrist was tilted; all 993 sampled frames of the earlier demos read False, the flipped
+    live frames True."""
+    small = cv2.resize(img, (160, 120), interpolation=cv2.INTER_AREA)
+    blue = cv2.inRange(cv2.cvtColor(small, cv2.COLOR_BGR2HSV), (95, 120, 50), (125, 255, 255)) > 0
+    top, bottom = float(blue[:48].mean()), float(blue[72:].mean())
+    if top > 0.02 and top > 3 * bottom:
+        return True
+    if bottom > 0.02 and bottom > 3 * top:
+        return False
+    return None
 
 
 class View(threading.Thread):
     """Pulls one camera-wall stream while watched; keeps only the newest re-encoded frame."""
 
-    def __init__(self, key: str, upstream: str, width: int, quality: int):
+    def __init__(self, key: str, upstream: str, width: int, quality: int, upright: bool = False):
         super().__init__(daemon=True)
         self.key, self.url, self.width, self.quality = key, f"{upstream}/cam/{key}", width, quality
+        self.upright, self.turned, self.votes, self.turns = upright, False, 0, 0
         self.cv = threading.Condition()
         self.frame: bytes | None = None
         self.seq = 0
@@ -64,6 +82,14 @@ class View(threading.Thread):
         img = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
         if img is None:
             return None
+        if self.upright:
+            top = jaws_at_top(img)
+            self.votes = self.votes + 1 if top is not None and top != self.turned else 0
+            if self.votes >= FLIP_FRAMES:
+                self.turned, self.votes, self.turns = not self.turned, 0, self.turns + 1
+                print(f"{time.strftime('%H:%M:%S')} {self.key}: picture {'upside down, now turned' if self.turned else 'upright again'}", flush=True)
+            if self.turned:
+                img = cv2.rotate(img, cv2.ROTATE_180)
         h, w = img.shape[:2]
         if w > self.width:
             img = cv2.resize(img, (self.width, int(h * self.width / w)), interpolation=cv2.INTER_AREA)
@@ -145,7 +171,8 @@ def make_handler(views: dict, fps: float, info: str):
                 self._send(200, "text/html; charset=utf-8", PAGE.replace("__VIEWS__", tiles).replace("__INFO__", info).encode())
             elif p == "/stats":
                 self._send(200, "application/json", json.dumps({k: {"clients": v.clients, "frames_in": v.frames_in, "frames_out": v.frames_out,
-                                                                    "bytes_out": v.bytes_out, "errors": v.errors} for k, v in views.items()}).encode())  # fmt: skip
+                                                                    "bytes_out": v.bytes_out, "errors": v.errors, "turned_180": v.turned,
+                                                                    "turns": v.turns} for k, v in views.items()}).encode())  # fmt: skip
             elif p.startswith("/cam/") and p[5:] in views:
                 v = views[p[5:]]
                 v.acquire()
@@ -188,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--port", type=int, default=28090, help="loopback port (host is always 127.0.0.1)")
     ap.add_argument("--upstream", default="http://127.0.0.1:8090", help="the existing camera wall (loopback)")
     ap.add_argument("--views", default="iphone,zed")
+    ap.add_argument("--upright", default="", help="views (comma list) of the gripper camera: turned 180 degrees when its jaws appear at the top")
     ap.add_argument("--fps", type=float, default=8.0)
     ap.add_argument("--width", type=int, default=480)
     ap.add_argument("--quality", type=int, default=55)
@@ -197,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
         print("error: upstream must be the loopback camera wall", file=sys.stderr)
         return 2
     keys = [k for k in args.views.split(",") if k]
-    views = {k: View(k, args.upstream, args.width, args.quality) for k in keys}
+    views = {k: View(k, args.upstream, args.width, args.quality, k in args.upright.split(",")) for k in keys}
     info = f"{args.fps:g} fps max, {args.width}px wide, JPEG quality {args.quality}"
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(views, args.fps, info))
     srv.daemon_threads = True

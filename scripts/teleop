@@ -41,8 +41,8 @@ def relay():
     out = []
     for l in ps:
         if "lab_cam_relay.py" in l:
-            m, v = re.search(r"--duration (\d+)", l), re.search(r"--views (\S+)", l)
-            out.append([int(l.split()[0]), int(l.split()[1]), int(m.group(1)) if m else 0, v.group(1) if v else ""])
+            m = re.search(r"--duration (\d+)", l)
+            out.append([int(l.split()[0]), int(l.split()[1]), int(m.group(1)) if m else 0, l.split("lab_cam_relay.py", 1)[1].strip()])
     return out
 ss = subprocess.run(["ss", "-tnp"], capture_output=True, text=True).stdout.splitlines()
 conn = sorted({int(m) for l in ss if (":502 " in l or ":30002 " in l) and "127.0.0.1" not in l for m in re.findall(r"pid=(\d+)", l)})
@@ -104,14 +104,16 @@ PY
 }
 
 ensure_cameras() {   # $1 = seconds the view must stay up
-  local need=$1 pid left views
+  local need=$1 pid left args
+  # --upright: the phone app turns the gripper picture 180 degrees when the wrist tilts (2026-10-14); the view turns it back
+  local want="--port $RELAY_PORT --views $CAMERAS --upright ${CAMERAS%%,*} --fps 8 --width 480 --quality 55 --duration $RELAY_LIFE_S"
   pid=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["relay"]; print(r[0][0] if r else "")' "$R/status.json")
   left=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["relay"]; print((r[0][2] - r[0][1] if r[0][2] else 10**9) if r else 0)' "$R/status.json")
-  views=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["relay"]; print(r[0][3] if r and len(r[0]) > 3 else "")' "$R/status.json")
-  if [ -z "$pid" ] || [ "$left" -lt "$need" ] || [ "$views" != "$CAMERAS" ]; then
+  args=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["relay"]; print(r[0][3] if r and len(r[0]) > 3 else "")' "$R/status.json")
+  if [ -z "$pid" ] || [ "$left" -lt "$need" ] || [ "$args" != "$want" ]; then
     echo "starting the camera view on the lab host (view-only)"
     [ -n "$pid" ] && lab "kill $pid 2>/dev/null; for i in 1 2 3 4 5 6 7 8 9 10; do ss -ltn | grep -q '127.0.0.1:$RELAY_PORT ' || break; sleep 0.3; done"
-    lab "cd ~/$LAB_DIR && (nohup setsid python3 -u scripts/lab_cam_relay.py --port $RELAY_PORT --views $CAMERAS --fps 8 --width 480 --quality 55 --duration $RELAY_LIFE_S > logs/relay_\$(date +%H%M%S).log 2>&1 < /dev/null &); sleep 2; ss -ltn | grep -q '127.0.0.1:$RELAY_PORT '" \
+    lab "cd ~/$LAB_DIR && (nohup setsid python3 -u scripts/lab_cam_relay.py $want > logs/relay_\$(date +%H%M%S).log 2>&1 < /dev/null &); sleep 2; ss -ltn | grep -q '127.0.0.1:$RELAY_PORT '" \
       || die "the camera view did not start on the lab host"
     RELOAD=1
   fi
