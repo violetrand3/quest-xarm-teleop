@@ -57,6 +57,8 @@ from xarm_live_backend import XArmLiveBackend
 BANNER = "ARM LIVE (REAL ARM MOVES)"
 DEFAULT_RECORD_CAMS = {"iphone": "http://127.0.0.1:8090/cam/iphone", "zed": "http://127.0.0.1:8090/cam/zed"}  # wrist, fixed
 FENCE_MARGIN_MM = 10.0
+MAX_STRETCH_MM = 50.0  # an arm left this far outside an absolute box still starts; the box takes it in
+MIN_BOX_MM = 20.0
 REDUCED_JOINT_FACTOR = 2.5  # wrist joints turned up to 2.4 times faster than the tool in the session of 2026-10-12 (reconstructed)
 LINK_MARGIN_MM = 2.0
 PRINT_INTERVAL_S = 0.5
@@ -70,25 +72,49 @@ class Abort(RuntimeError):
 
 
 def workspace(pose: tuple, boundary: dict, box: list, absolute: bool = False, margin_mm: float = FENCE_MARGIN_MM) -> tuple:
-    """The box the arm may move in (mm, base frame): distances around the start pose, or absolute limits
-    (x_min, x_max, y_min, y_max, z_min, z_max) that contain the start pose (an edge counts). It must lie inside the
-    controller's fence with a margin."""
-    if absolute:
-        lo, hi = [box[0], box[2], box[4]], [box[1], box[3], box[5]]
-        for k, ax in enumerate("xyz"):
-            # A session that ended with the arm held at an edge leaves it a fraction of a millimetre inside; that is a valid start.
-            if not lo[k] <= pose[k] <= hi[k]:
-                out_by = lo[k] - pose[k] if pose[k] < lo[k] else pose[k] - hi[k]
-                raise Abort(f"the arm is at {ax} = {pose[k]:.2f} mm, {out_by:.2f} mm outside the requested box {ax} {lo[k]:g}..{hi[k]:g}. "
-                            "Widen the box in the settings or have the arm moved; nothing was commanded")
-    else:
+    """The box the arm may move in (mm, base frame) and a list of the adjustments made to it: distances
+    around the start pose, which must lie inside the controller's fence with a margin, or absolute limits
+    (x_min, x_max, y_min, y_max, z_min, z_max). An absolute box is fitted to the session instead of refusing it:
+    cut back to the fence less the margin, and stretched to take in the start pose when the arm was left up to
+    MAX_STRETCH_MM outside it (by the lab's programs or another session), except below the floor. Neither lets the arm
+    go anywhere the margin forbids, and stretching only opens the strip between the box and where the arm already is."""
+    notes = []
+    if not absolute:
         lo = [pose[k] - box[2 * k] for k in range(3)]
         hi = [pose[k] + box[2 * k + 1] for k in range(3)]
+        for k, ax in enumerate("xyz"):
+            f_lo, f_hi = boundary[f"{ax}_mm"]
+            if lo[k] < f_lo + margin_mm or hi[k] > f_hi - margin_mm:
+                raise Abort(f"the box {ax} {lo[k]:.0f}..{hi[k]:.0f} mm comes within {margin_mm:g} mm of the fence {f_lo}..{f_hi}; nothing was commanded")
+        return [round(v, 2) for v in lo], [round(v, 2) for v in hi], notes
+    lo, hi = [box[0], box[2], box[4]], [box[1], box[3], box[5]]
     for k, ax in enumerate("xyz"):
         f_lo, f_hi = boundary[f"{ax}_mm"]
-        if lo[k] < f_lo + margin_mm or hi[k] > f_hi - margin_mm:
-            raise Abort(f"the box {ax} {lo[k]:.0f}..{hi[k]:.0f} mm comes within {margin_mm:g} mm of the fence {f_lo}..{f_hi}; nothing was commanded")
-    return [round(v, 2) for v in lo], [round(v, 2) for v in hi]
+        if not f_lo + margin_mm <= pose[k] <= f_hi - margin_mm:
+            raise Abort(f"the arm is at {ax} = {pose[k]:.2f} mm, closer than {margin_mm:g} mm to the controller's fence {ax} {f_lo}..{f_hi}. "
+                        "Have it moved back toward the middle (the lab page's 'Next stage toward START'); nothing was commanded")
+        if lo[k] < f_lo + margin_mm:
+            notes.append(f"{ax} min {lo[k]:g} -> {f_lo + margin_mm:g} ({margin_mm:g} mm inside the fence {f_lo})")
+            lo[k] = f_lo + margin_mm
+        if hi[k] > f_hi - margin_mm:
+            notes.append(f"{ax} max {hi[k]:g} -> {f_hi - margin_mm:g} ({margin_mm:g} mm inside the fence {f_hi})")
+            hi[k] = f_hi - margin_mm
+        # A session that ended with the arm held at an edge leaves it a fraction of a millimetre inside; that needs nothing.
+        out_by = lo[k] - pose[k] if pose[k] < lo[k] else pose[k] - hi[k]
+        if out_by > 0 and k == 2 and pose[k] < lo[k]:  # the floor keeps the jaws off the table and trays: never lowered
+            raise Abort(f"the arm is at z = {pose[k]:.2f} mm, {out_by:.2f} mm below the box floor {lo[k]:g}. Have it raised (the lab page's "
+                        "'Next stage toward START'); nothing was commanded")
+        if out_by > MAX_STRETCH_MM:
+            raise Abort(f"the arm is at {ax} = {pose[k]:.2f} mm, {out_by:.2f} mm outside the box {ax} {lo[k]:g}..{hi[k]:g} "
+                        f"(up to {MAX_STRETCH_MM:g} mm is taken in). Have it moved back toward the middle (the lab page's "
+                        "'Next stage toward START') or widen the box in the settings; nothing was commanded")
+        if out_by > 0:
+            end = "min" if pose[k] < lo[k] else "max"
+            notes.append(f"{ax} {end} {lo[k] if end == 'min' else hi[k]:g} -> {pose[k]:.2f} (the arm starts {out_by:.2f} mm outside the box)")
+            lo[k], hi[k] = min(lo[k], pose[k]), max(hi[k], pose[k])
+        if hi[k] - lo[k] < MIN_BOX_MM:
+            raise Abort(f"inside the fence less {margin_mm:g} mm, the box {ax} {lo[k]:g}..{hi[k]:g} is under {MIN_BOX_MM:g} mm wide; nothing was commanded")
+    return [round(v, 2) for v in lo], [round(v, 2) for v in hi], notes
 
 
 def mapping_for_operator(yaw_deg: float) -> list:
@@ -131,8 +157,9 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     ap.add_argument("--allow-reduced-mode-off", action="store_true", help="the operator's explicit decision; recorded")
     bx = ap.add_mutually_exclusive_group()
     bx.add_argument("--box", default="50,50,50,50,10,60", help="mm around the start pose: x-,x+,y-,y+,z-,z+ (each 0..300)")
-    bx.add_argument("--box-abs", help="absolute box in the arm's base frame, mm: x_min,x_max,y_min,y_max,z_min,z_max; must contain the "
-                                      "start pose and stay --fence-margin-mm inside the controller's fence")
+    bx.add_argument("--box-abs", help="absolute box in the arm's base frame, mm: x_min,x_max,y_min,y_max,z_min,z_max. Cut back to "
+                                      "--fence-margin-mm inside the controller's fence, and stretched to take in a start pose up to "
+                                      f"{MAX_STRETCH_MM:g} mm outside it")
     ap.add_argument("--fence-margin-mm", type=float, default=FENCE_MARGIN_MM,
                     help="smallest distance kept between the box and the controller's fence (3..50). Reaching the fence itself "
                          "makes the controller raise an error, which this program never clears")
@@ -277,12 +304,14 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
                 out["before"]["rpy_convention_error_deg"] = round(err, 4)
                 if err > 0.2:
                     raise Abort(f"roll/pitch/yaw convention check failed ({err:.2f} deg); wrist rotation cannot be trusted; nothing was commanded")
-            lo, hi = workspace(s2.pose, boundary, box, absolute=a.box_abs is not None, margin_mm=a.fence_margin_mm)
-            out["workspace_mm"] = {"min": lo, "max": hi, "start": [round(v, 2) for v in s2.pose[:3]]}
+            lo, hi, fitted = workspace(s2.pose, boundary, box, absolute=a.box_abs is not None, margin_mm=a.fence_margin_mm)
+            out["workspace_mm"] = {"min": lo, "max": hi, "start": [round(v, 2) for v in s2.pose[:3]], "fitted": fitted}
         finally:
             probe.close()
         cfg = parse_config(build_config(lo, hi, a))
         out["config"] = cfg.raw
+        for n in fitted:
+            print(f"box fitted: {n}", flush=True)
         print(f"workspace (base frame, mm): x {lo[0]}..{hi[0]}, y {lo[1]}..{hi[1]}, z {lo[2]}..{hi[2]}; start {out['workspace_mm']['start']}", flush=True)
 
         # 2. the commanding link, boxed to that workspace

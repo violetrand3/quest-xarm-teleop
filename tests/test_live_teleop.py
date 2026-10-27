@@ -405,26 +405,40 @@ class LiveTeleopProgramTests(unittest.TestCase):
         self.assertLessEqual(max(struct.unpack("<10f", p[:40])[0] for r, p in self.writes(ctl) if r == 21), 340.0 + 1e-3)
         self.assertIn("(absolute)", text)
 
-    def test_absolute_box_outside_the_fence_or_not_containing_the_arm_commands_nothing(self) -> None:
-        for box, why in (("200,340,-290,260,275,575", "fence"),  # floor 5 mm above the fence floor: inside the margin
-                         ("200,340,-290,265,280,575", "fence"),
-                         ("310,400,-100,100,300,500", "mm outside the requested box"),  # the arm is at x 299.8
-                         ("200,340,-100,100,300,461.0", "0.18 mm outside the requested box")):  # the arm is at z 461.18
+    def test_absolute_box_is_fitted_to_the_fence_and_to_an_arm_left_outside_it(self) -> None:
+        """Rig, 2026-10-27: sessions refused to start for an arm 9.8 mm outside the box, and for a box floor the lab's new fence floor had overtaken."""
+        cases = (("200,340,-290,260,275,575", [], ([200.0, -290.0, 280.0], [340.0, 260.0, 575.0]), "z min 275 -> 280"),  # floor cut back to 10 mm above the fence
+                 ("200,340,-290,265,280,575", [], ([200.0, -290.0, 280.0], [340.0, 260.0, 575.0]), "y max 265 -> 260"),
+                 ("310,400,-100,100,300,500", [], ([299.83, -100.0, 300.0], [400.0, 100.0, 500.0]), "x min 310 -> 299.83"),  # the arm is at x 299.83
+                 ("200,340,-100,100,300,461.0", [], ([200.0, -100.0, 300.0], [340.0, 100.0, 461.18]), "0.18 mm outside"),  # the arm is at z 461.18
+                 ("200,340,-100,100,300,461.2", [], ([200.0, -100.0, 300.0], [340.0, 100.0, 461.2]), None),  # left at the very edge: nothing to fit
+                 ("200,340,-290,260,275,575", ["--fence-margin-mm", "5"], ([200.0, -290.0, 275.0], [340.0, 260.0, 575.0]), None))
+        for box, extra, (lo, hi), note in cases:
             ctl = FakeController()
+            rc, res, _, text, _ = self.run_live(ctl, None, ["--box-abs", box, *extra], duration=5.0)
+            self.assertEqual((rc, res["result"]), (0, "ok"), box)
+            self.assertEqual((res["workspace_mm"]["min"], res["workspace_mm"]["max"]), (lo, hi), box)
+            if note is None:
+                self.assertEqual(res["workspace_mm"]["fitted"], [], box)
+            else:
+                self.assertIn(note, " ".join(res["workspace_mm"]["fitted"]), box)
+                self.assertIn("box fitted: ", text)
+
+    def test_arm_far_outside_the_box_or_at_the_fence_commands_nothing(self) -> None:
+        for pose, box, why in (([299.8, 3.4, 461.2], "360,400,-100,100,300,500", "60.20 mm outside the box"),
+                               ([165.0, 3.4, 461.2], "200,340,-100,100,300,500", "closer than 10 mm to the controller's fence"),  # fence x-min 160
+                               ([299.8, 3.4, 290.0], "200,340,-100,100,300,500", "10.00 mm below the box floor 300"),
+                               ([299.8, 3.4, 461.2], "200,340,-100,100,300,500", None)):
+            ctl = FakeController(pose=[*pose, POSE[3], POSE[4], POSE[5]])
             rc, res, _, _, _ = self.run_live(ctl, None, ["--box-abs", box], duration=5.0)
+            if why is None:
+                self.assertEqual(rc, 0)
+                continue
             self.assertEqual((rc, res["result"]), (3, "aborted"), box)
             self.assertIn(why, res["abort_reason"])
             self.assertEqual(self.writes(ctl), [], box)
-        ctl = FakeController()  # an arm left at the very edge by the previous session (here 0.02 mm inside the top) can start again
-        rc, res, _, _, _ = self.run_live(ctl, None, ["--box-abs", "200,340,-100,100,300,461.2"], duration=5.0)
-        self.assertEqual((rc, res["result"], res["workspace_mm"]["max"][2]), (0, "ok", 461.2))
-        ctl = FakeController()  # the same floor is accepted with a smaller margin, and refused again when even that is not kept
-        rc, res, _, _, _ = self.run_live(ctl, None, ["--box-abs", "200,340,-290,260,275,575", "--fence-margin-mm", "5"], duration=5.0)
-        self.assertEqual((rc, res["workspace_mm"]["min"][2]), (0, 275.0))
-        ctl = FakeController()
-        rc, res, _, _, _ = self.run_live(ctl, None, ["--box-abs", "200,340,-290,260,274,575", "--fence-margin-mm", "5"], duration=5.0)
-        self.assertEqual((rc, self.writes(ctl)), (3, []))
-        self.assertIn("within 5 mm of the fence", res["abort_reason"])
+
+    def test_absolute_box_arguments_out_of_range_are_refused(self) -> None:
         import live_teleop as lt
         real, sys.stdout = sys.stdout, io.StringIO()
         try:

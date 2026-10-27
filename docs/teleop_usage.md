@@ -92,8 +92,8 @@ Action labels: `python3 scripts/episode_inspect.py <session folder> --labels 8` 
 |---|---|
 | `BLOCKED: the arm controller has error …` | Have it checked and cleared on the lab side, then start again |
 | `ABORTED: reduced mode is ON with a TCP speed limit…` | Reduced mode was switched on at the controller. Have it switched off, or lower the speeds in the settings |
-| `ABORTED: the box … comes within … of the fence` | The controller's fence was changed. Adjust `BOX_ABS` or have the fence restored |
-| `ABORTED: the arm is at … outside the requested box` | The arm was moved out of the box by another program. Widen `BOX_ABS` or have it moved back |
+| `box fitted: …` at the start | Not an error. The box was cut back to stay `FENCE_MARGIN` mm inside the controller's fence, or stretched to where the arm was left (up to 50 mm outside it, never below the floor). The session runs |
+| `ABORTED: the arm is at …` (far outside the box, below its floor, or near the controller's fence) | The arm was left far away by another program. Press "Next stage toward START" on the lab page, then start again |
 | `FAULT: …` with a controller error in the summary | The arm is stopped. Someone looks at it; the error is cleared on the lab side |
 | `NOT STARTED. The arm program says: …` | Read the reason; the two rows above are the usual ones |
 | Camera page frozen | `scripts/teleop cameras`, then reload the page |

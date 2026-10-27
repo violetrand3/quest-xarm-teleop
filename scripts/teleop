@@ -165,13 +165,13 @@ session() {   # $1 = record | try, $2 = minutes
                           180) head="the headset lies on the table with its front pointing at you";;
                           *) die "OPERATOR_YAW in the settings must be 0 or 180";; esac
   echo
-  echo "THE ARM WILL MOVE: $mode session, $length, up to $V_MAX mm/s, box (mm) $BOX_ABS."
+  echo "THE ARM WILL MOVE: $mode session, $length, up to $V_MAX mm/s, box (mm) $BOX_ABS (kept $FENCE_MARGIN mm inside the fence; takes in the arm if it starts up to 50 mm outside)."
   echo "All of this must be true:"
   echo "  - someone is at the rig RIGHT NOW, agrees, and has the physical stop in reach"
   echo "  - the space is clear down to the bins and nobody is near the arm"
   echo "  - nothing else will command the arm or the gripper (the other agent is paused)"
   echo "  - $head"
-  CONFIRM_TEXT="Operator $(id -un)@$(hostname -s) at the terminal prompt of scripts/teleop on $(date '+%Y-%m-%d %H:%M:%S %Z'), for a $mode session ($length), box $BOX_ABS mm, up to $V_MAX mm/s, rotation $ROTATION, gripper $GRIPPER, reduced mode off accepted: $ALLOW_REDUCED_MODE_OFF, camera page required: $REQUIRE_CAMERA_PAGE. Shown as conditions that must all be true: someone is at the rig right now, agrees, and has the physical stop in reach; the space is clear down to the bins and nobody is near the arm; nothing else will command the arm or the gripper (the other agent is paused); $head."
+  CONFIRM_TEXT="Operator $(id -un)@$(hostname -s) at the terminal prompt of scripts/teleop on $(date '+%Y-%m-%d %H:%M:%S %Z'), for a $mode session ($length), box $BOX_ABS mm (kept $FENCE_MARGIN mm inside the fence, taking in an arm up to 50 mm outside it), up to $V_MAX mm/s, rotation $ROTATION, gripper $GRIPPER, reduced mode off accepted: $ALLOW_REDUCED_MODE_OFF, camera page required: $REQUIRE_CAMERA_PAGE. Shown as conditions that must all be true: someone is at the rig right now, agrees, and has the physical stop in reach; the space is clear down to the bins and nobody is near the arm; nothing else will command the arm or the gripper (the other agent is paused); $head."
   ask_yes "Is all of this true? Start?"
   n=$([ "$mode" = record ] && echo rec || echo tele)_$(date +%Y%m%d-%H%M%S)
   flags=(--box-abs "$BOX_ABS" --fence-margin-mm "$FENCE_MARGIN" --scale "$SCALE" --v-max "$V_MAX" --a-max "$A_MAX" --ctrl-speed "$CTRL_SPEED" --ctrl-acc "$CTRL_ACC"
