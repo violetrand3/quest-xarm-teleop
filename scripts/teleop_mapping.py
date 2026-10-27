@@ -90,10 +90,11 @@ class GripperFollower:
         self.open_pct, self.closed_pct = float(open_pct), float(closed_pct)
         self.following = False
         self._last: float | None = None
+        self._prev_want: float | None = None  # the trigger's previous position while waiting for pickup
 
     def release(self) -> None:
         """Arm disengaged or input lost: stop following. No opening or closing request is made."""
-        self.following, self._last = False, None
+        self.following, self._last, self._prev_want = False, None, None
 
     def update(self, trigger: float | None, feedback_pct: float | None, dt_s: float) -> tuple:
         """-> (status, GripperProposal | None)."""
@@ -103,8 +104,14 @@ class GripperFollower:
             return "trigger_missing", None
         if not self.following:
             if feedback_pct is None:
+                self._prev_want = None
                 return "no_gripper_feedback", None
-            if abs(want - feedback_pct) > self.tol:
+            # Pickup when the trigger is near the jaw position OR has passed it since the last update: the headset sends
+            # about 25 values a second and a normal squeeze crosses the pickup window between two of them (2026-10-27).
+            # Following starts from the jaw position and is rate limited, so a crossing never makes the jaws jump.
+            prev, self._prev_want = self._prev_want, want
+            crossed = prev is not None and (prev - feedback_pct) * (want - feedback_pct) <= 0
+            if abs(want - feedback_pct) > self.tol and not crossed:
                 return "waiting_pickup", None
             self.following, self._last = True, float(feedback_pct)
         step = self.rate * max(0.0, dt_s)

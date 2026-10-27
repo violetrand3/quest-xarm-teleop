@@ -285,6 +285,30 @@ class AdapterExecutorTests(unittest.TestCase):
         self.assertAlmostEqual(ex.submitted[-1], 58.5 + 25.0, delta=1.5)
         self.assertEqual(out["gripper_fb_pct"], 58.5)
 
+    def test_fast_squeeze_past_the_jaw_position_picks_up_without_a_jump(self) -> None:
+        r, ex, _ = self.rig()  # jaws at 58.5 %, pickup window 50.5..66.5 % (trigger 0.51..0.74)
+        r.engage()
+        r.step(P0, 1.0, trigger=0.0)
+        out = r.step(P0, 1.0, trigger=0.39)  # 42.3 %: still below the jaws, outside the window
+        self.assertEqual((out["gripper"], ex.submitted), ("waiting_pickup", []))
+        out = r.step(P0, 1.0, trigger=1.0)  # 85 %: jumped past the jaws between two samples (as on the rig, 2026-10-27)
+        self.assertEqual(out["gripper"], "following")
+        self.assertLessEqual(ex.submitted[0], 58.5 + 50.0 * 0.02 + 1e-6)  # starts at the jaws, rate limited
+        for _ in range(10):
+            r.step(P0, 1.0, trigger=1.0)
+        steps = [b - a for a, b in zip([58.5] + ex.submitted, ex.submitted)]
+        self.assertLessEqual(max(steps), 50.0 * 0.02 + 1e-6)
+
+    def test_no_crossing_is_counted_across_a_clutch_release(self) -> None:
+        r, ex, _ = self.rig()
+        r.engage()
+        r.step(P0, 1.0, trigger=0.0)  # below the jaws
+        r.step(P0, 0.0, trigger=0.0)  # clutch released
+        r.step(P0, 0.0, trigger=1.0)
+        r.engage()
+        out = r.step(P0, 1.0, trigger=1.0)  # above the jaws, but the "below" was from before the release
+        self.assertEqual((out["gripper"], ex.submitted), ("waiting_pickup", []))
+
     def test_clutch_release_cancels_and_sends_nothing_more(self) -> None:
         r, ex, _ = self.rig()
         r.engage()
