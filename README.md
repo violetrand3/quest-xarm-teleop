@@ -4,9 +4,10 @@ Remote teleoperation of an xArm6 with a custom (Dynamixel) gripper from a Meta Q
 The operator is remote: the Quest is connected by USB to a local PC, and the robot is reached
 through a lab host over SSH tunnels.
 
-**Status (2026-10-12):** live teleoperation of the real arm and gripper works and records demos
+**Status (2026-10-28):** live teleoperation of the real arm and gripper works and records demos
 (arm pose, joints, targets, jaws and two camera videos per episode). Day-to-day use is one command,
-`scripts/teleop`; see `docs/teleop_usage.md`. Step-by-step history and measurements are in `reports/`.
+`scripts/teleop`. **New here: `docs/getting_started.md`**, then `docs/teleop_usage.md`. Step-by-step
+history and measurements are in `reports/`.
 
 ## Safety
 The rig is shared. `scripts/teleop record` and `scripts/teleop try` MOVE THE ARM. They ask go/no-go
@@ -27,7 +28,7 @@ controller's safety settings (fence, reduced mode); those are lab-side decisions
 | `scripts/lab_cam_relay.py` | Low-rate, view-only relay of the lab cameras for the remote operator |
 | `scripts/teleop`, `config/teleop_session.conf` | The one command for sessions, and its settings |
 | `scripts/live_teleop.py`, `episode_*.py` | Live teleop program (lab side) and episode recording |
-| `scripts/ops/` | Session scripts with spoken cues |
+| `scripts/ops/` | `teleop_live_session.sh`, `lab_teleop_live_run.sh` and `episode*.sh` are used by `scripts/teleop`; the others are earlier test sessions, kept with their reports |
 | `tests/` | Offline tests; none of them touches hardware |
 | `patches/` | Our changes to the Quest OpenXR reader app (`oculus_reader` fork), as patches |
 | `reports/`, `docs/` | Step-by-step reports and protocol documentation |

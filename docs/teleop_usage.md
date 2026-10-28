@@ -1,10 +1,10 @@
 # Using the teleop
 
 Everything is run from the PC the Quest is plugged into. The command starts and stops the lab-host
-(linux2) side by itself; nothing has to be started there by hand.
+(linux2) side by itself; nothing has to be started there by hand. Setting up a new PC: `getting_started.md`.
 
 ```
-cd ~/quest-xarm-teleop
+cd quest-xarm-teleop         # wherever you cloned it
 scripts/teleop record        # demo recording session; runs until you press Ctrl-C
 ```
 
@@ -14,7 +14,7 @@ scripts/teleop record        # demo recording session; runs until you press Ctrl
    you**, the way you face (or wear it). If it faces you instead, set `OPERATOR_YAW=180` in the settings;
    with the wrong value forward/back and left/right are swapped.
 2. Someone is at the rig with the physical stop in reach, and nobody is near the arm.
-3. Your other agent on linux2 is paused. Nothing else may command the arm or the gripper.
+3. Nothing else is commanding the arm or the gripper: no policy or agent running from the lab's stepper page.
 4. `scripts/teleop status` shows the arm with `error [0, 0]`. An error has to be cleared on the lab side.
 
 ## Commands
@@ -28,6 +28,7 @@ scripts/teleop record        # demo recording session; runs until you press Ctrl
 | `scripts/teleop episodes [session]` | Lists recorded sessions, or checks the demos of one |
 | `scripts/teleop watch` | Follows the lab program's console during a session (second terminal) |
 | `scripts/teleop stop` | Ends the running session from a second terminal (software stop) |
+| `scripts/teleop sync` | Installs this checkout's programs on the lab host (see `getting_started.md`) |
 
 A session has no time limit unless you give minutes. It ends when you press Ctrl-C, and by itself when
 the arm program has lost this PC for 60 s, or when the arm has not followed the hand for 15 min. A demo
