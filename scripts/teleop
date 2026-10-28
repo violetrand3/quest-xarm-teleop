@@ -10,11 +10,12 @@
 #   scripts/teleop episodes [session] list the recorded sessions, or the demos of one session
 #   scripts/teleop watch              follow the lab program's console of the running session
 #   scripts/teleop stop               end the running session now (a SOFTWARE stop; the lab program parks the arm)
+#   scripts/teleop sync               install this checkout's programs on the lab host (refused while a session runs)
 #
 # Settings: config/teleop_session.conf.  THE ARM MOVES in "record" and "try": they ask the go/no-go questions first
 # and save what you typed with the session. Ctrl-C during a session ends it cleanly.
 set -u
-P=~/quest-xarm-teleop
+P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)   # this checkout, wherever it is
 . "$P/config/teleop_session.conf" || exit 2
 SSHO=(-o BatchMode=yes -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10)
 D=$P/data/sessions; R=$P/run; L=$LAB_DIR/logs; URL="http://127.0.0.1:$RELAY_LOCAL_PORT/"
@@ -24,6 +25,34 @@ case "$CAMERAS" in ""|*[!a-z0-9_,]*|,*|*,|*,,*) echo "STOP: CAMERAS in the setti
 lab() { ssh -n "${SSHO[@]}" "$LAB_HOST" "$@"; }   # -n: never let ssh swallow what the operator types
 die() { echo "STOP: $*" >&2; exit 2; }
 note() { echo "  - $*"; }
+for t in adb ssh rsync ss python3; do command -v "$t" > /dev/null || die "'$t' is not installed on this PC (see docs/getting_started.md)"; done
+
+# -- the lab host runs its own copy of scripts/ (in ~/$LAB_DIR); it must be the same as this checkout's ------------
+sync_files() {   # what "sync" installs: the programs, tests, docs and configs; not the settings file, which only this PC reads
+  { git -C "$P" ls-files -- scripts tests config docs 2>/dev/null || (cd "$P" && find scripts tests config docs -type f); } \
+    | grep -v -e '__pycache__' -e '^config/teleop_session.conf$'; }
+version_here() { git -C "$P" log -1 --format='%h %cs' 2>/dev/null || echo "not a git checkout"
+  [ -n "$(git -C "$P" status --porcelain -- scripts 2>/dev/null)" ] && echo " + changes not committed"; }
+lab_differs() {   # prints the scripts that differ on the lab host (nothing = the same)
+  (cd "$P" && sync_files | grep '^scripts/' | xargs sha256sum) \
+    | ssh "${SSHO[@]}" "$LAB_HOST" "cd ~/$LAB_DIR 2>/dev/null && sha256sum -c --quiet 2>/dev/null || true; [ -d ~/$LAB_DIR ] || echo 'NO_LAB_DIR: FAILED'" \
+    | sed -n 's/: FAILED.*//p'; }
+lab_check() {   # stops when the lab host would run different programs than this checkout
+  local d; d=$(lab_differs)
+  [ -z "$d" ] && return 0
+  echo "The lab host's copy of the programs (~/$LAB_DIR) is not the same as this checkout:"
+  echo "  this checkout:   $(version_here | tr -d '\n')"
+  echo "  lab host's copy: $(lab "cat ~/$LAB_DIR/SYNCED_FROM.txt 2>/dev/null" || echo '?')"
+  echo "  differing: $(echo "$d" | head -5 | tr '\n' ' ')$([ "$(echo "$d" | wc -l)" -gt 5 ] && echo "and $(($(echo "$d" | wc -l) - 5)) more")"
+  die "if this checkout is the newer one, run: scripts/teleop sync   (if the lab's is newer, update this checkout first, e.g. git pull)"
+}
+lab_sync() {
+  lab "pgrep -f '[s]cripts/live_teleop.py' > /dev/null" && die "a teleop session is running on the lab host; sync after it ends"
+  (cd "$P" && sync_files | rsync -a --delay-updates --files-from=- -e "ssh ${SSHO[*]}" ./ "$LAB_HOST:$LAB_DIR/") || die "copying to the lab host failed"
+  lab "mkdir -p ~/$LAB_DIR/logs ~/$LAB_DIR/episodes && echo '$(version_here | tr -d '\n'), installed by $(id -un)@$(hostname -s) on $(date '+%Y-%m-%d %H:%M')' > ~/$LAB_DIR/SYNCED_FROM.txt"
+  [ -z "$(lab_differs)" ] || die "the lab host's copy still differs after copying"
+  echo "The lab host now runs this checkout ($(version_here | tr -d '\n'))."
+}
 
 # -- read-only status of the lab host, as one JSON object in $R/status.json ---------------------------------------
 rig_status() {
@@ -55,7 +84,7 @@ print(json.dumps({"time": time.strftime("%H:%M:%S"), "stepper": {k: st.get(k) fo
                   "relay": relay(), "viewers": {k: v.get("viewers") for k, v in (cam.get("cameras") or {}).items()},
                   "camera_error": cam.get("_error"), "free_gb": round(shutil.disk_usage(os.path.expanduser("~")).free / 1e9, 1), "lab_log_last": last}))
 PY
-  [ -s "$R/status.json" ] || die "cannot reach $LAB_HOST or read its status ($(head -c 200 "$R/status.err"))"
+  [ -s "$R/status.json" ] || die "cannot reach $LAB_HOST or read its status ($(head -c 200 "$R/status.err")). 'ssh $LAB_HOST' must work without a password; LAB_HOST is set in config/teleop_session.conf"
 }
 val() { python3 -c 'import json,sys
 d = json.load(open(sys.argv[1]))
@@ -154,6 +183,8 @@ session() {   # $1 = record | try, $2 = minutes
     tel=$((min * 60)); length="$min min"
   fi
   [ "$(adb devices | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] || die "need exactly one headset connected by USB with debugging allowed (adb devices)"
+  adb shell pm list packages org.questxarm.reader | grep -q . || die "the headset does not have the teleop app (org.questxarm.reader); see docs/getting_started.md"
+  lab_check
   rig_status; show_status "$mode" || die "not starting; see BLOCKED above"
   RELOAD=0; ensure_cameras $([ "$tel" -gt 0 ] && echo $((tel + 600)) || echo 21600)
   if [ "$REQUIRE_CAMERA_PAGE" = 1 ] && [ "$(viewers_page)" -lt 1 ]; then
@@ -226,7 +257,11 @@ PY
 
 case "${1:-}" in
   record|try) session "$1" "${2:-}";;
-  status) rig_status; show_status status; echo "Headset on USB: $(adb devices | awk 'NR>1 && $2=="device"' | wc -l) (need 1)"; echo "Camera view: $URL";;
+  status) rig_status; show_status status; echo "Headset on USB: $(adb devices | awk 'NR>1 && $2=="device"' | wc -l) (need 1)"
+          [ "$(adb devices | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] && echo "Teleop app on the headset: $(adb shell pm list packages org.questxarm.reader | grep -q . && echo yes || echo 'NO (see docs/getting_started.md)')"
+          d=$(lab_differs); echo "Lab host's programs: $([ -z "$d" ] && echo 'same as this checkout' || echo "DIFFERENT from this checkout ($(echo "$d" | wc -l) files); see scripts/teleop sync")"
+          echo "Camera view: $URL";;
+  sync) lab_sync;;
   cameras) rig_status; RELOAD=0; ensure_cameras 3600; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')";;
   episodes)
     if [ -n "${2:-}" ]; then lab "cd ~/$LAB_DIR && python3 scripts/episode_inspect.py episodes/$2"
@@ -234,5 +269,5 @@ case "${1:-}" in
   watch) n=$(cat "$R/current_session" 2>/dev/null) || die "no session name known"; lab "tail -n 5 -F ~/$L/teleop_$n.console.txt" | sed -u -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/<ip>/g';;
   stop) n=$(cat "$R/current_session" 2>/dev/null) || die "no session name known"
         lab "kill -INT \$(cat ~/$L/pid_$n) 2>/dev/null && echo 'stop sent to the lab program of $n; it parks the arm (software stop, not the physical stop)' || echo 'no running lab program for $n'";;
-  *) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 1;;
+  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 1;;
 esac

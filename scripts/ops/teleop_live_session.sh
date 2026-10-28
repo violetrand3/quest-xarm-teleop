@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# One LIVE teleop session: Quest right controller -> REAL arm on linux2. Normally started by scripts/teleop.
+# One LIVE teleop session: Quest right controller -> REAL arm on the lab host. Normally started by scripts/teleop.
 # Usage: [REC=1] teleop_live_session.sh <name> <confirmation-file> <teleop seconds, 0 = until Ctrl-C> [extra live_teleop.py flags]
 # REC=1: episodes are recorded ON THE LAB HOST (episodes/<name>/): thumb button A starts / stops and saves, B discards.
 # The lab program runs detached and parks the arm by itself (on SIGINT, on its own duration limit, or on a fault).
 # The console shows only what the operator needs; everything else goes to <data dir>/detail_<name>.txt.
 set -u
-P=~/quest-xarm-teleop; D=${TELEOP_DATA_DIR:-$P/data/checkpoint10}; R=$P/run; N=$1; CONF=$2; TEL=$3; shift 3
+P=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd); . "$P/config/teleop_session.conf" || exit 2; H=$LAB_HOST; D=${TELEOP_DATA_DIR:-$P/data/checkpoint10}; R=$P/run; N=$1; CONF=$2; TEL=$3; shift 3
 mkdir -p "$D" "$R"
-L=quest-xarm-teleop-dryrun/logs; REC=${REC:-0}; DET=$D/detail_$N.txt
+L=$LAB_DIR/logs; REC=${REC:-0}; DET=$D/detail_$N.txt
 SSHO=(-n -o BatchMode=yes -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10)
 S=$(adb devices | awk 'NR>1 && $2=="device"{print $1}'); [ "$(echo "$S" | grep -c .)" = 1 ] || { echo "need exactly one headset on adb"; exit 2; }
 msg() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$1"; }                                                         # for the operator
@@ -36,17 +36,17 @@ while time.monotonic()-t0<maxs:
 sys.exit(1)
 PY
 }
-ack() { ssh "${SSHO[@]}" linux2 "kill -USR1 \$(cat ~/$L/pid_$N)" >> "$DET" 2>&1; }
+ack() { ssh "${SSHO[@]}" "$H" "kill -USR1 \$(cat ~/$L/pid_$N)" >> "$DET" 2>&1; }
 finish() {
   T=$(cat "$R/tx.pid" 2>/dev/null); kill -INT "$T" 2>/dev/null; for i in $(seq 1 60); do kill -0 "$T" 2>/dev/null || break; sleep 0.25; done
   sed -i "s/$S/[REDACTED]/g" "$D/tx_$N.console.txt" 2>/dev/null
   T=$(cat "$R/tunnel_link.pid" 2>/dev/null); ps -o args= -p "$T" 2>/dev/null | grep -q -- "-L 127.0.0.1:18765:127.0.0.1:28765" && kill "$T"
-  ssh "${SSHO[@]}" linux2 "kill -INT \$(cat ~/$L/pid_$N) 2>/dev/null; for i in \$(seq 1 60); do [ -f ~/$L/done_$N ] && break; sleep 0.5; done; [ -f ~/$L/done_$N ] && echo 'lab program finished and parked' || echo 'LAB PROGRAM NOT FINISHED'; cat ~/$L/run_$N.log" >> "$DET" 2>&1
+  ssh "${SSHO[@]}" "$H" "kill -INT \$(cat ~/$L/pid_$N) 2>/dev/null; for i in \$(seq 1 60); do [ -f ~/$L/done_$N ] && break; sleep 0.5; done; [ -f ~/$L/done_$N ] && echo 'lab program finished and parked' || echo 'LAB PROGRAM NOT FINISHED'; cat ~/$L/run_$N.log" >> "$DET" 2>&1
   if grep -q 'lab program finished and parked' "$DET"; then msg "The arm program has ended and parked the arm."
   else msg "WARNING: the arm program did not confirm that it ended. Look at the arm; use the physical stop if it is moving."; fi
   T=$(cat "$R/tailc.pid" 2>/dev/null); kill "$T" 2>/dev/null
-  if [ "$REC" = 1 ]; then scp -q "${SSHO[@]:1}" "linux2:$L/teleop_$N.*" "linux2:$L/teleop_link_$N.jsonl" "linux2:$L/episodes_$N.check.txt" "$D/" >> "$DET" 2>&1
-  else scp -q "${SSHO[@]:1}" "linux2:$L/teleop_$N.*" "linux2:$L/teleop_link_$N.jsonl" "linux2:$L/refdiff_${N}_*.json" "$D/" >> "$DET" 2>&1; fi
+  if [ "$REC" = 1 ]; then scp -q "${SSHO[@]:1}" "$H:$L/teleop_$N.*" "$H:$L/teleop_link_$N.jsonl" "$H:$L/episodes_$N.check.txt" "$D/" >> "$DET" 2>&1
+  else scp -q "${SSHO[@]:1}" "$H:$L/teleop_$N.*" "$H:$L/teleop_link_$N.jsonl" "$H:$L/refdiff_${N}_*.json" "$D/" >> "$DET" 2>&1; fi
   adb -s "$S" shell am force-stop org.questxarm.reader >> "$DET" 2>&1; echo "DONE $N ($1)" >> "$DET"
 }
 videos() {
@@ -57,14 +57,14 @@ videos() {
   return 0
 }
 
-scp -q "${SSHO[@]:1}" "$CONF" "linux2:$L/confirm_$N.txt" || { echo "cannot reach linux2"; exit 2; }
+scp -q "${SSHO[@]:1}" "$CONF" "$H:$L/confirm_$N.txt" || { echo "cannot reach $H"; exit 2; }
 # With a window, the arm program also gets its own time limit as a second guard. Without one it ends when this side stops it,
 # or by itself when it has lost this PC for a while (its --link-lost-exit-s) or has been idle (its --idle-exit-s).
 LABDUR=0; [ "$TEL" -gt 0 ] && [ $((TEL + 90)) -le 1800 ] && LABDUR=$((TEL + 90))
-msg "Starting the arm program on linux2 ..."
-ssh "${SSHO[@]}" linux2 "cd ~/quest-xarm-teleop-dryrun && rm -f logs/done_$N && (REC=$REC CAPTURE=${CAPTURE:-1} nohup setsid bash scripts/ops/lab_teleop_live_run.sh $N $LABDUR $* > logs/run_$N.log 2>&1 < /dev/null &)"
+msg "Starting the arm program on $H ..."
+ssh "${SSHO[@]}" "$H" "cd ~/$LAB_DIR && rm -f logs/done_$N && (REC=$REC CAPTURE=${CAPTURE:-1} nohup setsid bash scripts/ops/lab_teleop_live_run.sh $N $LABDUR $* > logs/run_$N.log 2>&1 < /dev/null &)"
 : > "$D/teleop_$N.console.txt"
-ssh "${SSHO[@]}" linux2 "tail -n +1 -F ~/$L/teleop_$N.console.txt 2>/dev/null" > "$D/teleop_$N.console.txt" 2>/dev/null &
+ssh "${SSHO[@]}" "$H" "tail -n +1 -F ~/$L/teleop_$N.console.txt 2>/dev/null" > "$D/teleop_$N.console.txt" 2>/dev/null &
 echo $! > "$R/tailc.pid"
 for i in $(seq 1 100); do grep -q "Armed in mode\|ABORTED\|Traceback\|^error" "$D/teleop_$N.console.txt" 2>/dev/null && break; sleep 0.25; done
 if ! grep -q "Armed in mode" "$D/teleop_$N.console.txt"; then
@@ -74,7 +74,7 @@ fi
 msg "Arm armed. $(grep -m1 '^workspace' "$D/teleop_$N.console.txt" | cut -c1-200)"
 # Ctrl-C (or a kill) from here on is a clean software stop: sender and tunnel closed, the lab program told to park the arm.
 trap 'trap "" INT TERM; echo; msg "INTERRUPTED: ending the session."; mark "interrupted by the operator"; finish interrupted; videos; exit 130' INT TERM
-ssh "${SSHO[@]:1}" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -L 127.0.0.1:18765:127.0.0.1:28765 linux2 > "$R/tunnel_link.txt" 2>&1 < /dev/null &
+ssh "${SSHO[@]:1}" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -L 127.0.0.1:18765:127.0.0.1:28765 "$H" > "$R/tunnel_link.txt" 2>&1 < /dev/null &
 echo $! > "$R/tunnel_link.pid"; for i in $(seq 1 40); do ss -ltn | grep -q '127.0.0.1:18765 ' && break; sleep 0.25; done
 ( cd "$P/scripts" && exec python3 -u quest_pose_stream_sender.py --serial "$S" --port 18765 --max-rate 30 --log "$D/tx_$N.jsonl" --source-log "$D/src_$N.jsonl" --summary "$D/tx_$N.summary.json" > "$D/tx_$N.console.txt" 2>&1 ) &
 echo $! > "$R/tx.pid"; sleep 2

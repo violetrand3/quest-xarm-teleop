@@ -4,7 +4,7 @@
 # REC=1: episodes are recorded into episodes/<name>/ (thumb button A start/stop+save, B discard); the episode videos
 #        are then the camera record. Without it, low-rate camera frames are saved for a cross-check, unless CAPTURE=0
 #        or there is no time limit (frames of an open-ended session would fill the disk).
-cd ~/quest-xarm-teleop-dryrun || exit 1
+cd "$(dirname "$(readlink -f "$0")")/../.." || exit 1   # the lab copy, wherever it is
 N=$1; DUR=$2; shift 2
 REC=${REC:-0}; CAPTURE=${CAPTURE:-1}; CAP=""; RECFLAGS=()
 if [ "$REC" = 1 ]; then
