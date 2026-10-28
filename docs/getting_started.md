@@ -16,19 +16,54 @@ opens the tunnels it needs.
 
 ## What you need
 
-- **A Linux PC.** The launcher uses `ss`, `setsid` and GNU tools, so macOS does not work as is.
+- **A Linux PC, or Windows with WSL2** (see below). The launcher uses `ss`, `setsid` and GNU tools, so
+  macOS does not work as is.
 - **Tools on the PATH:** `python3` (3.10 or newer, standard library only), `ssh`, `rsync` and `adb` (Android
   platform-tools). `scripts/teleop` names any of them that is missing.
 - **SSH to the lab host as `dev` without a password prompt** (key login). Check it with `ssh linux2 true`.
   If your SSH config uses another name for that machine, set `LAB_HOST` in `config/teleop_session.conf`.
-- **The Quest headset** with developer mode on, and the teleop app `org.questxarm.reader` installed. The
-  lab's headset already has it. The app is our fork of oculus_reader with the changes in `patches/`. Its APK
-  is not in this repository, so ask for it before using another headset.
+- **A Meta Quest 3S** with developer mode on and the teleop app installed (below).
+
+## The headset app
+
+The app is `org.questxarm.reader`, build `s4a-ff0da2692500`: our fork of oculus_reader with the changes in
+`patches/`. The APK is attached to the repository's GitHub release `quest-app-s4a-ff0da2692500`, not
+committed. Its SHA-256 starts with `57f2936ccf175626`.
+
+1. Turn on developer mode for the headset in the Meta Horizon phone app (Devices, then Headset settings,
+   then Developer mode). This needs a Meta developer account, which is free.
+2. Connect the headset by USB. In the headset, allow USB debugging ("Always allow from this computer").
+   `adb devices` must then list it as `device`.
+3. Install the app: `adb install org.questxarm.reader-debug-s4a-ff0da2692500.apk`.
+
+Nothing else is needed on the headset. `scripts/teleop` starts the app itself at the beginning of each
+session.
+
+## On Windows: WSL2
+
+`scripts/teleop` is a bash program, so on Windows it runs inside WSL2 (Ubuntu). This setup has not been
+tried yet. If a step does not work as described here, please report it.
+
+1. Install WSL2 with Ubuntu (`wsl --install` in an administrator PowerShell). In Ubuntu, run
+   `sudo apt install python3 rsync openssh-client iproute2 git`.
+2. Use the **Windows** adb for the headset, because WSL cannot see USB devices by itself. Install Android
+   platform-tools on Windows, then in Ubuntu make `adb` call it:
+   ```
+   mkdir -p ~/.local/bin
+   printf '#!/bin/sh\nexec "/mnt/c/<path to>/platform-tools/adb.exe" "$@"\n' > ~/.local/bin/adb
+   chmod +x ~/.local/bin/adb      # a new terminal has ~/.local/bin on the PATH; check with: adb devices
+   ```
+3. SSH from **inside Ubuntu**: put your key in Ubuntu's `~/.ssh` and check `ssh linux2 true`. If the name
+   does not resolve there (Tailscale names often don't inside WSL), add a `Host linux2` entry with the
+   address you use on Windows to `~/.ssh/config`.
+4. Clone the repository inside Ubuntu (for example in `~`), not on `C:`.
+5. Open the camera page in your Windows browser at the address `scripts/teleop` prints
+   (`http://127.0.0.1:18091/`). WSL2 passes such local addresses through to Windows.
 
 ## First time
 
 ```
-git clone <the repository> && cd quest-xarm-teleop
+git clone git@github.com:shezitt/quest-xarm-teleop.git && cd quest-xarm-teleop
 scripts/teleop status
 ```
 

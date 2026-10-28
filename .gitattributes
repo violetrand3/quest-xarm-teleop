@@ -1,0 +1,5 @@
+# Linux line endings everywhere: the scripts run under bash, also from a Windows (WSL) checkout
+* text=auto eol=lf
+*.apk binary
+*.jpg binary
+*.png binary
