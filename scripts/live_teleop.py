@@ -61,6 +61,7 @@ FENCE_MARGIN_MM = 10.0
 MAX_STRETCH_MM = 50.0  # an arm left this far outside an absolute box still starts; the box takes it in
 MIN_BOX_MM = 20.0
 WRIST_LIMIT_DEG = 360.0  # xArm6 joints 4 and 6 turn -360..360
+WRIST_J5_ZONE_DEG, WRIST_J46_ZONE_DEG, WRIST_J46_STOP_DEG = 15.0, 45.0, 15.0  # in-session wrist guard (teleop_limits.WristGuard)
 WRIST_SPARE_DEG = 90.0  # moving across the box can turn them this much (keeping the tool's direction), on top of the session's own turn
 REDUCED_JOINT_FACTOR = 2.5  # wrist joints turned up to 2.4 times faster than the tool in the session of 2026-10-12 (reconstructed)
 LINK_MARGIN_MM = 2.0
@@ -151,6 +152,7 @@ def build_config(lo_mm: list, hi_mm: list, a: argparse.Namespace) -> dict:
                    "max_target_feedback_error_m": a.track_err / 1000.0},
         "scheduler": {"period_ms": 20, "max_tick_dt_ms": 100, "monitor_period_ms": 25, "stall_ms": 150},
         "gripper": {"pickup_tolerance_pct": 8, "max_rate_pct_s": 50},
+        "wrist": {"j5_zone_deg": WRIST_J5_ZONE_DEG, "j46_zone_deg": WRIST_J46_ZONE_DEG, "j46_stop_deg": WRIST_J46_STOP_DEG},
     }  # fmt: skip
 
 
@@ -354,6 +356,7 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
         link = cl.XArmCommandLink(api_class, cmd_class, address, tuple(v - LINK_MARGIN_MM for v in lo), tuple(v + LINK_MARGIN_MM for v in hi),
                                   a.ctrl_speed, a.ctrl_acc, ref_rpy=tuple(s2.pose[3:6]), **link_rot)  # fmt: skip
         link.connect()
+        link.read_joints = True  # one more read-only request per tick: the wrist guard needs the joint angles (and episodes record them)
         backend = XArmLiveBackend(link, a.ctrl_speed, a.ctrl_acc)
         channel = InputChannel()
         if a.with_gripper:
@@ -369,7 +372,6 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
         if a.record_dir is not None:
             from episode_recorder import EpisodeRecorder  # no hardware access of its own
 
-            link.read_joints = True  # one more read-only request per tick, so every row also has the joint angles
 
             def extras() -> dict:
                 s0 = backend.last_state  # type: ignore[union-attr]
@@ -453,6 +455,7 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
                         print(f"re-arm refused: {e}", flush=True)
             t = adapter.last
             why = f" [{t['blocked'][:120]}]" if t.get("blocked") else ""  # 60 cut "controller error 23" to "error 2" (2026-10-31)
+            why += f" [wrist {t['wrist']}]" if t.get("wrist") else ""
             inp = "DISCONNECTED" if not t.get("connected") else "AVAILABLE" if t.get("avail") else "UNAVAILABLE"
             print(f"{(now - start) / 1e9:7.1f}s {BANNER} | {t['state']}{why} | input={inp} gen={t.get('gen')} grip={n2(t.get('grip'))} "
                   f"trig={n2(t.get('trig'))} | mm: req={f3(t.get('req_mm'))} lim={f3(t.get('lim_mm'))} fb={f3(t.get('fb_mm'))} rot={t.get('rot_deg')} | "

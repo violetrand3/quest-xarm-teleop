@@ -47,6 +47,7 @@ class ToolFeedback:
     synthetic: bool
     source: str
     q_xyzw: tuple | None = None  # tool rotation in the backend frame as a unit quaternion; None = not provided
+    joints_deg: tuple | None = None  # J1..J6, degrees; None = not provided
 
 
 @dataclass(frozen=True)

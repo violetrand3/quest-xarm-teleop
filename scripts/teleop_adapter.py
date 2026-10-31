@@ -31,7 +31,7 @@ from typing import Any, Callable, TextIO
 
 from teleop_backend import DRY_RUN_BANNER, BackendError, RobotBackend, ToolFeedback
 from teleop_input import ACTIVE, ARMED, FAULT_LATCHED, WAIT_RELEASE, Engagement, InputChannel
-from teleop_limits import Limits, RateLimiter
+from teleop_limits import Limits, RateLimiter, WristGuard
 from teleop_mapping import AnchoredTranslation, ConfigError, GripperFollower
 from teleop_rotation import RotationConfig, RotationFollower
 
@@ -48,6 +48,7 @@ _SCHEMA = {
 _OPTIONAL = {"limits": {"workspace_edge"}}  # "fault" (default): leaving the workspace latches a fault; "clamp": hold at the edge
 # Optional top-level section "rotation" (absent = the tool orientation is frozen at each engagement, as before).
 _ROTATION = {"mode", "scale", "max_angle_deg", "w_max_deg_s", "max_error_deg", "max_step_deg"}
+_WRIST = {"j5_zone_deg", "j46_zone_deg", "j46_stop_deg"}  # optional top-level section "wrist": teleop_limits.WristGuard
 _ROTATION_TILT_TURN = {"tilt_max_deg", "turn_max_deg"}  # optional, together: they replace max_angle_deg (teleop_rotation.limit_tilt_turn)
 
 
@@ -72,6 +73,7 @@ class TeleopConfig:
     pickup_tolerance_pct: float
     gripper_max_rate_pct_s: float
     rotation: RotationConfig | None = None
+    wrist: tuple | None = None  # (j5_zone_deg, j46_zone_deg, j46_stop_deg) for teleop_limits.WristGuard; None = no guard
 
 
 def _parse_rotation(r: Any) -> RotationConfig:
@@ -93,8 +95,12 @@ def _parse_rotation(r: Any) -> RotationConfig:
 
 
 def parse_config(d: Any) -> TeleopConfig:
-    if not isinstance(d, dict) or set(d) - {"rotation"} != {"label", "approved_for_live", *_SCHEMA}:
-        raise ConfigError(f"config must have exactly: label, approved_for_live, {', '.join(sorted(_SCHEMA))} (and optionally rotation)")
+    if not isinstance(d, dict) or set(d) - {"rotation", "wrist"} != {"label", "approved_for_live", *_SCHEMA}:
+        raise ConfigError(f"config must have exactly: label, approved_for_live, {', '.join(sorted(_SCHEMA))} (and optionally rotation, wrist)")
+    w = d.get("wrist")
+    if w is not None and (not isinstance(w, dict) or set(w) != _WRIST or not all(
+            isinstance(w[k], (int, float)) and not isinstance(w[k], bool) and 0 < w[k] <= 90 for k in _WRIST) or w["j46_stop_deg"] >= w["j46_zone_deg"]):
+        raise ConfigError(f"wrist must have exactly: {', '.join(sorted(_WRIST))}, each 0..90 deg, with j46_stop_deg < j46_zone_deg")
     for sec, keys in _SCHEMA.items():
         if not isinstance(d[sec], dict) or not (keys <= set(d[sec]) <= keys | _OPTIONAL.get(sec, set())):
             raise ConfigError(f"config section {sec!r} must have exactly: {', '.join(sorted(keys))}")
@@ -135,7 +141,8 @@ def parse_config(d: Any) -> TeleopConfig:
         AnchoredTranslation(d["mapping"]["scale"], d["mapping"]["R_backend_from_local"]), str(d["mapping"]["label"]),
         d["mapping"]["verified"], limits, ms("scheduler", "period_ms"), ms("scheduler", "max_tick_dt_ms"),
         ms("scheduler", "monitor_period_ms"), ms("scheduler", "stall_ms"), pos("gripper", "pickup_tolerance_pct"),
-        pos("gripper", "max_rate_pct_s"), _parse_rotation(d["rotation"]) if "rotation" in d else None)  # fmt: skip
+        pos("gripper", "max_rate_pct_s"), _parse_rotation(d["rotation"]) if "rotation" in d else None,
+        None if w is None else (float(w["j5_zone_deg"]), float(w["j46_zone_deg"]), float(w["j46_stop_deg"])))  # fmt: skip
 
 
 def load_config(path: Path) -> TeleopConfig:
@@ -192,6 +199,7 @@ class TeleopAdapter:
         self.limiter = RateLimiter(cfg.limits.v_max_m_s, cfg.limits.a_max_m_s2)
         self.follower = GripperFollower(cfg.pickup_tolerance_pct, cfg.gripper_max_rate_pct_s)
         self.rot = RotationFollower(cfg.rotation, cfg.mapping.R) if cfg.rotation is not None else None
+        self.wrist = WristGuard(*cfg.wrist) if cfg.wrist is not None else None
         self.p_req: tuple | None = None
         self.last: dict = {"state": self.eng.state}  # newest tick record, for display
         self.ticks = 0
@@ -317,7 +325,17 @@ class TeleopAdapter:
                         orientation = self.backend.orientation_from_q(q_lim)
                     except BackendError as e:
                         why = "command_failed:" + str(e)[:80]
-            if why is None:
+            send = True
+            if why is None and self.wrist is not None:
+                q_now = None if self.rot is None else fb.q_xyzw
+                why, send = self.wrist.check(fb.joints_deg, (fb.p_m, q_now), limited, None if self.rot is None else self.rot.q_lim)
+                latch = True
+                if why is None and not send:  # held: the limited targets stay where the arm was last sent
+                    self.limiter.reset(self.wrist.last[0])
+                    limited = self.limiter.p
+                    if self.rot is not None and self.wrist.last[1] is not None:
+                        self.rot.q_lim = self.wrist.last[1]
+            if why is None and send:
                 try:
                     self.backend.command_target(limited, orientation)
                     commanded, cmd_ori = limited, orientation
@@ -362,6 +380,8 @@ class TeleopAdapter:
                     if self.rot is not None:
                         self.rot.engage(view.sample.q_xyzw, fb.q_xyzw)  # rotation target starts AT the tool's orientation
                     self.limiter.reset(fb.p_m)  # limited target starts AT the tool: zero jump
+                    if self.wrist is not None:
+                        self.wrist.last = (tuple(fb.p_m), fb.q_xyzw if self.rot is not None else None)
                     self.p_req = tuple(fb.p_m)
                     self._transition(now, old, "valid_press_after_valid_release")
                     try:
@@ -388,6 +408,7 @@ class TeleopAdapter:
             "ori": None if eng.ref is None else list(eng.ref.orientation),
             "cmd_ori": None if cmd_ori is None else list(cmd_ori),  # orientation sent with cmd_mm in this tick
             "btn_a": None if s is None else s.a, "btn_b": None if s is None else s.b,
+            "wrist": None if self.wrist is None or eng.state != ACTIVE else self.wrist.note,
             "rot_deg": None if self.rot is None else self.rot.angles_deg()[0], "rot_req_deg": None if self.rot is None else self.rot.angles_deg()[1],
             "fb_q": None if fb is None or fb.q_xyzw is None else [round(v, 6) for v in fb.q_xyzw],
             "gripper": grip_status, "gripper_pct": None if proposal is None else proposal.pct_closed,

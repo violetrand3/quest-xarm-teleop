@@ -92,7 +92,7 @@ s=$(wait_state "ARMED" 12); mark "after release cue = $s"
 mark "teleop window start"
 msg "READY$([ "$TEL" -gt 0 ] && echo " for $((TEL / 60)) min" || echo ", no time limit: Ctrl-C ends the session"). Hold the side grip (middle finger) to move the arm, release to pause. Index trigger closes the jaws."
 [ "$REC" = 1 ] && msg "Demos: thumb button A starts one and, pressed again, saves it. B discards the one in progress."
-prev="ARMED"; end=$((SECONDS + TEL)); fault=0; pw=""; psv=0; pds=0; prf=0; warned=0; self=0
+prev="ARMED"; end=$((SECONDS + TEL)); fault=0; pw=""; psv=0; pds=0; prf=0; warned=0; self=0; pwh=""
 while [ "$TEL" = 0 ] || [ $SECONDS -lt $end ]; do
   if grep -q '^ENDING:\|^{"result"' "$D/teleop_$N.console.txt" 2>/dev/null; then   # "teleop stop" from another terminal, or one of its own limits
     self=1; mark "the lab program ended by itself"; msg "The arm program is ending: $(sed -n 's/^ENDING: //p' "$D/teleop_$N.console.txt" | head -1)"; break
@@ -107,6 +107,9 @@ while [ "$TEL" = 0 ] || [ $SECONDS -lt $end ]; do
     esac
     prev=$s
   fi
+  wh=$(last | sed -n 's/.*\[wrist held: \([^]]*\)\].*/\1/p')   # the wrist guard is holding the arm
+  [ -n "$wh" ] && [ -z "$pwh" ] && { mark "wrist held: $wh"; msg "  WRIST HELD ($wh): move your hand back the way it came, or tilt the gripper away from straight down"; }
+  pwh=$wh
   if [ "$REC" = 1 ]; then
     e=$(epf)
     if [ -n "$e" ]; then

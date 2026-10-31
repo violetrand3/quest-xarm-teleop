@@ -121,3 +121,66 @@ class RateLimiter:
         self.v = (v[0], v[1], v[2])
         self.p = tuple(self.p[k] + v[k] * dt_s for k in range(3))
         return self.p
+
+
+def _q_deg(a: Sequence[float] | None, b: Sequence[float] | None) -> float:
+    if a is None or b is None:
+        return 0.0
+    d = min(1.0, abs(sum(a[k] * b[k] for k in range(4))))
+    return math.degrees(2.0 * math.acos(d))
+
+
+class WristGuard:
+    """Keeps the wrist away from its turning point and from the limits of joints 4 and 6, using the joint
+    angles read every tick (2026-10-31: pointing straight down close to the base took joint 5 to 10 deg;
+    joints 4 and 6 spun nearly a full turn each and joint 4 stopped the arm at its 360 deg limit, error 23,
+    which only someone at the rig can clear).
+
+    Joint 5 near 0 lines up axes 4 and 6, and the controller then spins both for a small change of the tool.
+    This program does not know the arm's geometry, so it cannot predict joint angles; it reacts to the ones it
+    reads. In the warning zone (joint 5 within j5_zone of 0, or joint 4 or 6 within j46_zone of +-360) a target
+    is sent only if it leads back toward the last pose MEASURED outside the zone (the arm reaches each target a
+    little after it is sent, so the last target sent from outside can already be inside); otherwise the arm is
+    held where it is. Joint 4 or 6 closer than j46_stop to its limit anyway is a fault, raised before the
+    controller's own limit."""
+
+    LIMIT_DEG = 360.0  # joints 4 and 6
+    MM_PER_DEG = 2.0  # how a turn of the tool counts against a movement when comparing poses
+
+    def __init__(self, j5_zone_deg: float, j46_zone_deg: float, j46_stop_deg: float):
+        self.j5_zone, self.j46_zone, self.j46_stop = j5_zone_deg, j46_zone_deg, j46_stop_deg
+        self.safe: tuple | None = None  # (p_m, q) of the arm when its joints were last read outside the zone
+        self.last: tuple | None = None  # (p_m, q) of the last target sent
+        self.note = ""
+
+    def margin(self, j: Sequence[float]) -> float:
+        """Below 1: in the warning zone."""
+        return min(abs(j[4]) / self.j5_zone, (self.LIMIT_DEG - abs(j[3])) / self.j46_zone, (self.LIMIT_DEG - abs(j[5])) / self.j46_zone)
+
+    def _d(self, a: tuple, b: tuple) -> float:
+        return dist(a[0], b[0]) * 1000.0 + self.MM_PER_DEG * _q_deg(a[1], b[1])
+
+    def check(self, joints_deg: Sequence[float] | None, fb: tuple, p_m: Sequence[float], q: Sequence[float] | None) -> tuple:
+        """(fault reason or None, send this target?) for the target (p_m, q), given the joints and the pose fb = (p_m, q)
+        read in the same tick. A target that is sent is remembered."""
+        if joints_deg is None:
+            return "wrist_guard:no joint angles from the backend", False
+        j = joints_deg
+        for k in (3, 5):
+            if self.LIMIT_DEG - abs(j[k]) < self.j46_stop:
+                return f"wrist_limit:joint {k + 1} at {j[k]:.1f}deg, within {self.j46_stop:g}deg of its limit", False
+        target = (tuple(p_m), None if q is None else tuple(q))
+        m = self.margin(j)
+        if m >= 1.0:
+            send, self.note, self.safe = True, "", (tuple(fb[0]), None if fb[1] is None else tuple(fb[1]))
+        elif self.safe is None or self.last is None:
+            send, self.note = True, ""  # entered the zone before any target was sent outside it: nothing to lead back to
+        else:
+            send = self._d(target, self.safe) < self._d(self.last, self.safe) - 1e-6
+            worst = min(((abs(j[4]) / self.j5_zone, f"joint 5 at {j[4]:.0f}deg, near the wrist's turning point"),
+                         ((self.LIMIT_DEG - abs(j[3])) / self.j46_zone, f"joint 4 at {j[3]:.0f}deg, near its limit"),
+                         ((self.LIMIT_DEG - abs(j[5])) / self.j46_zone, f"joint 6 at {j[5]:.0f}deg, near its limit")))[1]
+            self.note = ("leading back: " if send else "held: ") + worst
+        if send:
+            self.last = target
+        return None, send

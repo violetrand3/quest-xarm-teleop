@@ -21,6 +21,7 @@ until the supervised first-movement test has measured them.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import xarm_command_link as cl
@@ -63,7 +64,7 @@ class XArmLiveBackend(RobotBackend):
             raise BackendError(f"controller error {s.error} / warning {s.warn} (never cleared automatically)")
         return ToolFeedback((s.pose[0] / 1000.0, s.pose[1] / 1000.0, s.pose[2] / 1000.0), tuple(s.pose[3:6]),
                             self.ORIENTATION_REPR, self.frame, s.t_mono_ns, False, "xarm get_position",
-                            rpy_to_q(s.pose[3], s.pose[4], s.pose[5]))  # fmt: skip
+                            rpy_to_q(s.pose[3], s.pose[4], s.pose[5]), None if s.joints is None else tuple(math.degrees(v) for v in s.joints))  # fmt: skip
 
     def orientation_from_q(self, q_xyzw: tuple) -> tuple:
         return q_to_rpy(q_xyzw)  # roll, pitch, yaw in rad; the convention is checked against the controller at session start
