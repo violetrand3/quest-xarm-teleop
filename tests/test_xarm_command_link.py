@@ -195,6 +195,29 @@ class CommandLinkTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.cl.XArmCommandLink(api, cmd, "127.0.0.1", (0, 0, 0), (1, 1, 1), 1.0, 1.0, ref_rpy=(0.0, 0.0, 0.0))
 
+    def test_tilt_and_turn_limits_at_the_wire(self) -> None:
+        import teleop_rotation as tr
+        ctl = FakeController()  # starts tilted 15.1 deg from straight down
+        undo = LoopbackSdkTests.remap(ctl)
+        api, cmd, _ = self.cl.load_sdk()
+        L = self.cl.XArmCommandLink(api, cmd, "127.0.0.1", (250, -50, 400), (350, 50, 520), 20.0, 200.0, ref_rpy=tuple(POSE[3:6]),
+                                    max_rot_rad=math.pi, tilt_max_rad=math.radians(20.0), turn_max_rad=math.radians(10.0))  # fmt: skip
+        self.addCleanup(lambda: (L.close(), undo(), time.sleep(0.05), ctl.close()))
+        L.connect()
+        s = L.arm_motion(7)
+        q0 = tr.rpy_to_q(*s.pose[3:6])
+        turn = lambda deg: tuple(s.pose[:3]) + tuple(tr.q_to_rpy(tr.q_mul(tr.q_from_rotvec((0.0, 0.0, math.radians(deg))), q0)))  # noqa: E731
+        tilt = lambda pitch: tuple(s.pose[:3]) + (s.pose[3], math.radians(pitch), s.pose[5])  # noqa: E731
+        L.move_line(turn(8.0), 20.0, 200.0)  # turned 8 deg about the vertical: allowed
+        L.move_line(tilt(-18.0), 20.0, 200.0)  # tilted 18 deg: allowed
+        for bad in (turn(12.0), turn(-12.0), tilt(-25.0)):
+            with self.assertRaises(self.cl.LinkError):
+                L.move_line(bad, 20.0, 200.0)
+        self.assertEqual([r for r, _ in writes(ctl)].count(21), 2)
+        with self.assertRaises(ValueError):
+            self.cl.XArmCommandLink(api, cmd, "127.0.0.1", (0, 0, 0), (1, 1, 1), 1.0, 1.0, ref_rpy=(0.0, 0.0, 0.0), max_rot_rad=1.0,
+                                    tilt_max_rad=0.5)  # fmt: skip
+
     def test_unarmed_and_after_halt_nothing_moves(self) -> None:
         ctl = FakeController()
         L = self.link(ctl)

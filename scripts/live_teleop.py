@@ -52,6 +52,7 @@ from teleop_adapter import ACTIVE, Recorder, TeleopAdapter, parse_config
 from teleop_backend import BackendError
 from teleop_input import ChannelReceiverState, InputChannel
 from teleop_mapping import GripperFollower
+from teleop_rotation import rpy_to_q, tilt_from_down
 from xarm_live_backend import XArmLiveBackend
 
 BANNER = "ARM LIVE (REAL ARM MOVES)"
@@ -59,6 +60,8 @@ DEFAULT_RECORD_CAMS = {"iphone": "http://127.0.0.1:8090/cam/iphone", "zed": "htt
 FENCE_MARGIN_MM = 10.0
 MAX_STRETCH_MM = 50.0  # an arm left this far outside an absolute box still starts; the box takes it in
 MIN_BOX_MM = 20.0
+WRIST_LIMIT_DEG = 360.0  # xArm6 joints 4 and 6 turn -360..360
+WRIST_SPARE_DEG = 90.0  # moving across the box can turn them this much (keeping the tool's direction), on top of the session's own turn
 REDUCED_JOINT_FACTOR = 2.5  # wrist joints turned up to 2.4 times faster than the tool in the session of 2026-10-12 (reconstructed)
 LINK_MARGIN_MM = 2.0
 PRINT_INTERVAL_S = 0.5
@@ -90,6 +93,8 @@ def workspace(pose: tuple, boundary: dict, box: list, absolute: bool = False, ma
     lo, hi = [box[0], box[2], box[4]], [box[1], box[3], box[5]]
     for k, ax in enumerate("xyz"):
         f_lo, f_hi = boundary[f"{ax}_mm"]
+        lo[k] = f_lo + margin_mm if lo[k] is None else lo[k]  # a side given as "fence" follows the controller's fence
+        hi[k] = f_hi - margin_mm if hi[k] is None else hi[k]
         if not f_lo + margin_mm <= pose[k] <= f_hi - margin_mm:
             raise Abort(f"the arm is at {ax} = {pose[k]:.2f} mm, closer than {margin_mm:g} mm to the controller's fence {ax} {f_lo}..{f_hi}. "
                         "Have it moved back toward the middle (the lab page's 'Next stage toward START'); nothing was commanded")
@@ -130,6 +135,8 @@ def mapping_for_operator(yaw_deg: float) -> list:
 def build_config(lo_mm: list, hi_mm: list, a: argparse.Namespace) -> dict:
     rot = {} if a.rotation == "off" else {"rotation": {"mode": a.rotation, "scale": a.rot_scale, "max_angle_deg": a.rot_max_deg,
                                                        "w_max_deg_s": a.rot_speed, "max_error_deg": 10.0, "max_step_deg": 90.0}}  # fmt: skip
+    if rot and a.tilt_max_deg is not None:
+        rot["rotation"].update(tilt_max_deg=a.tilt_max_deg, turn_max_deg=a.turn_max_deg)
     return {
         **rot,
         "label": "LIVE teleop, small box around the start pose; values chosen for a first supervised session",
@@ -159,7 +166,7 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     bx.add_argument("--box", default="50,50,50,50,10,60", help="mm around the start pose: x-,x+,y-,y+,z-,z+ (each 0..300)")
     bx.add_argument("--box-abs", help="absolute box in the arm's base frame, mm: x_min,x_max,y_min,y_max,z_min,z_max. Cut back to "
                                       "--fence-margin-mm inside the controller's fence, and stretched to take in a start pose up to "
-                                      f"{MAX_STRETCH_MM:g} mm outside it")
+                                      f"{MAX_STRETCH_MM:g} mm outside it. A side given as 'fence' is the fence less the margin")
     ap.add_argument("--fence-margin-mm", type=float, default=FENCE_MARGIN_MM,
                     help="smallest distance kept between the box and the controller's fence (3..50). Reaching the fence itself "
                          "makes the controller raise an error, which this program never clears")
@@ -173,6 +180,9 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     ap.add_argument("--rotation", choices=["off", "yaw", "full"], default="off",
                     help="off: tool orientation frozen at each engagement. yaw: turning the hand about 'up' turns the tool about base z. full: all axes")
     ap.add_argument("--rot-max-deg", type=float, default=30.0, help="limit from the tool orientation at session start (5..90)")
+    ap.add_argument("--tilt-max-deg", type=float, help="with --turn-max-deg, instead of --rot-max-deg: tilt limit from pointing straight "
+                                                        "down (5..85; a start tilted further keeps its own tilt as the limit)")
+    ap.add_argument("--turn-max-deg", type=float, help="turn limit about the vertical, from the tool orientation at session start (5..180)")
     ap.add_argument("--rot-speed", type=float, default=40.0, help="rotation speed limit, deg/s (5..120)")
     ap.add_argument("--rot-scale", type=float, default=1.0, help="tool rotation per hand rotation (0.2..1.5)")
     ap.add_argument("--operator-yaw-deg", type=float, default=0.0,
@@ -197,9 +207,11 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
     ap.add_argument("--summary", type=Path)
     a = ap.parse_args(argv)
     try:
-        box = [float(x) for x in (a.box_abs or a.box).split(",")]
-        box_ok = (len(box) == 6 and (all(20.0 <= box[2 * k + 1] - box[2 * k] <= 800.0 for k in range(3)) if a.box_abs
-                                     else all(0.0 <= v <= 300.0 for v in box)))  # fmt: skip
+        box = [None if a.box_abs and x.strip() == "fence" else float(x) for x in (a.box_abs or a.box).split(",")]
+        box_ok = (len(box) == 6 and (all(None in box[2 * k:2 * k + 2] or 20.0 <= box[2 * k + 1] - box[2 * k] <= 800.0 for k in range(3))
+                                     if a.box_abs else all(0.0 <= v <= 300.0 for v in box)))  # fmt: skip
+        tilt_turn = a.tilt_max_deg is not None
+        box_ok = box_ok and (a.turn_max_deg is not None) == tilt_turn and (not tilt_turn or (5.0 <= a.tilt_max_deg <= 85.0 and 5.0 <= a.turn_max_deg <= 180.0))
         ok = (box_ok and 0.05 <= a.scale <= 1.0 and 5.0 <= a.v_max <= 150.0
               and 20.0 <= a.a_max <= 1000.0 and a.v_max <= a.ctrl_speed <= 200.0 and 50.0 <= a.ctrl_acc <= 2000.0
               and 5.0 <= a.track_err <= 30.0 and 100.0 <= a.input_fresh_ms <= 500.0 and (a.duration == 0.0 or 5.0 <= a.duration <= 1800.0)
@@ -215,7 +227,9 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
         return 2
     print(f"{BANNER}. Box {'(absolute) ' + a.box_abs + ' mm' if a.box_abs else a.box + ' mm around the start pose'}, scale {a.scale}, target speed <= {a.v_max:g} mm/s, "
           f"controller cap {a.ctrl_speed:g} mm/s, gripper {'ON' if a.with_gripper else 'off'}, wrist rotation {a.rotation}"
-          + (f" (max {a.rot_max_deg:g} deg, {a.rot_speed:g} deg/s)." if a.rotation != "off" else "."), flush=True)  # fmt: skip
+          + ("." if a.rotation == "off" else f" (max {a.rot_max_deg:g} deg, {a.rot_speed:g} deg/s)." if a.tilt_max_deg is None
+             else f" (tilt <= {a.tilt_max_deg:g} deg from straight down, turn <= {a.turn_max_deg:g} deg either way, {a.rot_speed:g} deg/s)."),
+          flush=True)  # fmt: skip
     if not a.moves_real_arm:
         print("plan only: --moves-real-arm not given; no connection was made", flush=True)
         return 0
@@ -296,6 +310,7 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
                     raise Abort(f"reduced mode is ON with a joint speed limit of {red_joint:g} deg/s; turning the tool at {a.rot_speed:g} deg/s can need "
                                 f"{REDUCED_JOINT_FACTOR:g} times that at the wrist joints. Use --rot-speed at or below {red_joint / REDUCED_JOINT_FACTOR:.0f}, "
                                 "or have reduced mode changed on the controller; nothing was commanded")
+            probe.read_joints = True
             s2 = (time.sleep(0.5), probe.read())[1]
             if max(abs(u - v) for u, v in zip(s.pose[:3], s2.pose[:3])) > 0.2:
                 raise Abort("the arm is moving; nothing was commanded")
@@ -304,6 +319,15 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
                 out["before"]["rpy_convention_error_deg"] = round(err, 4)
                 if err > 0.2:
                     raise Abort(f"roll/pitch/yaw convention check failed ({err:.2f} deg); wrist rotation cannot be trusted; nothing was commanded")
+            # 2026-10-28: the lab's program had left joint 6 at 359.9 deg; the first 1 deg turn stopped the arm with error 23
+            turn = 0.0 if a.rotation == "off" else a.turn_max_deg if a.turn_max_deg is not None else a.rot_max_deg
+            out["before"]["joints_deg"] = None if s2.joints is None else [round(math.degrees(v), 2) for v in s2.joints]
+            for j in (3, 5):
+                deg = math.degrees(s2.joints[j]) if s2.joints is not None else 0.0
+                if WRIST_LIMIT_DEG - abs(deg) < turn + WRIST_SPARE_DEG:
+                    raise Abort(f"the wrist is wound up: joint {j + 1} is at {deg:.1f} deg, {WRIST_LIMIT_DEG - abs(deg):.1f} deg from its limit of "
+                                f"{'-' if deg < 0 else ''}{WRIST_LIMIT_DEG:g} deg, and this session can need {turn + WRIST_SPARE_DEG:.0f} deg. "
+                                f"Have it turned a full turn back toward 0 (UFactory Studio, joint control, with someone at the rig); nothing was commanded")
             lo, hi, fitted = workspace(s2.pose, boundary, box, absolute=a.box_abs is not None, margin_mm=a.fence_margin_mm)
             out["workspace_mm"] = {"min": lo, "max": hi, "start": [round(v, 2) for v in s2.pose[:3]], "fitted": fitted}
         finally:
@@ -314,11 +338,21 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
             print(f"box fitted: {n}", flush=True)
         print(f"workspace (base frame, mm): x {lo[0]}..{hi[0]}, y {lo[1]}..{hi[1]}, z {lo[2]}..{hi[2]}; start {out['workspace_mm']['start']}", flush=True)
 
+        if a.rotation == "off":
+            link_rot = {"max_rot_rad": math.radians(1.0)}
+        elif a.tilt_max_deg is None:
+            link_rot = {"max_rot_rad": math.radians(a.rot_max_deg + 3.0)}
+        else:  # the follower's limits, plus 3 deg; a start tilted further keeps its own tilt as the limit
+            tilt0 = math.degrees(tilt_from_down(rpy_to_q(*s2.pose[3:6])))
+            link_rot = {"max_rot_rad": math.pi, "tilt_max_rad": math.radians(max(a.tilt_max_deg, tilt0) + 3.0),
+                        "turn_max_rad": math.radians(a.turn_max_deg + 3.0)}
+            out["before"]["tilt_from_down_deg"] = round(tilt0, 2)
+            print(f"wrist: tilt up to {max(a.tilt_max_deg, tilt0):.0f} deg from straight down (now {tilt0:.0f}), turn up to "
+                  f"{a.turn_max_deg:g} deg either way about the vertical, at up to {a.rot_speed:g} deg/s", flush=True)
         # 2. the commanding link, boxed to that workspace
         # the link also refuses any target rotated further from the start orientation than the session allows
         link = cl.XArmCommandLink(api_class, cmd_class, address, tuple(v - LINK_MARGIN_MM for v in lo), tuple(v + LINK_MARGIN_MM for v in hi),
-                                  a.ctrl_speed, a.ctrl_acc, ref_rpy=tuple(s2.pose[3:6]),
-                                  max_rot_rad=math.radians(a.rot_max_deg + 3.0 if a.rotation != "off" else 1.0))  # fmt: skip
+                                  a.ctrl_speed, a.ctrl_acc, ref_rpy=tuple(s2.pose[3:6]), **link_rot)  # fmt: skip
         link.connect()
         backend = XArmLiveBackend(link, a.ctrl_speed, a.ctrl_acc)
         channel = InputChannel()

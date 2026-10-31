@@ -48,6 +48,7 @@ _SCHEMA = {
 _OPTIONAL = {"limits": {"workspace_edge"}}  # "fault" (default): leaving the workspace latches a fault; "clamp": hold at the edge
 # Optional top-level section "rotation" (absent = the tool orientation is frozen at each engagement, as before).
 _ROTATION = {"mode", "scale", "max_angle_deg", "w_max_deg_s", "max_error_deg", "max_step_deg"}
+_ROTATION_TILT_TURN = {"tilt_max_deg", "turn_max_deg"}  # optional, together: they replace max_angle_deg (teleop_rotation.limit_tilt_turn)
 
 
 @dataclass(frozen=True)
@@ -74,16 +75,21 @@ class TeleopConfig:
 
 
 def _parse_rotation(r: Any) -> RotationConfig:
-    if not isinstance(r, dict) or set(r) != _ROTATION or r["mode"] not in ("yaw", "full"):
+    if not isinstance(r, dict) or set(r) - _ROTATION_TILT_TURN != _ROTATION or r["mode"] not in ("yaw", "full"):
         raise ConfigError(f"rotation must have exactly: {', '.join(sorted(_ROTATION))}, with mode 'yaw' or 'full'")
-    for k in _ROTATION - {"mode"}:
+    tt = _ROTATION_TILT_TURN & set(r)
+    if tt and tt != _ROTATION_TILT_TURN:
+        raise ConfigError("rotation.tilt_max_deg and rotation.turn_max_deg go together")
+    for k in (_ROTATION | tt) - {"mode"}:
         if isinstance(r[k], bool) or not isinstance(r[k], (int, float)) or not r[k] > 0:
             raise ConfigError(f"rotation.{k} must be a positive number")
     if r["scale"] > 2.0 or r["max_angle_deg"] > 120.0:
         raise ConfigError("rotation.scale must be <= 2 and rotation.max_angle_deg <= 120")
+    if tt and (r["tilt_max_deg"] > 90.0 or r["turn_max_deg"] > 180.0):
+        raise ConfigError("rotation.tilt_max_deg must be <= 90 and rotation.turn_max_deg <= 180")
     rad = math.radians
     return RotationConfig(r["mode"], float(r["scale"]), rad(r["max_angle_deg"]), rad(r["w_max_deg_s"]), rad(r["max_error_deg"]),
-                          rad(r["max_step_deg"]))  # fmt: skip
+                          rad(r["max_step_deg"]), *((rad(r["tilt_max_deg"]), rad(r["turn_max_deg"])) if tt else ()))  # fmt: skip
 
 
 def parse_config(d: Any) -> TeleopConfig:

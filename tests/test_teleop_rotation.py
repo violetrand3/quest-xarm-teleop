@@ -208,5 +208,92 @@ class AdapterRotationTests(unittest.TestCase):
         self.assertLess(math.degrees(tr.q_angle(self.tool_q(r), tr.IDENTITY)), 19.0)
 
 
+
+DOWN = (1.0, 0.0, 0.0, 0.0)  # the tool pointing straight down: 180 deg about x
+
+
+def leaning(deg: float, toward_deg: float = 0.0) -> tuple:
+    """The tool tilted deg from straight down, leaning toward the backend direction toward_deg (from +x, about +z)."""
+    t = math.radians(toward_deg)
+    return tr.q_mul(tr.q_from_rotvec((-math.sin(t) * D(deg), math.cos(t) * D(deg), 0.0)), DOWN)
+
+
+class TiltTurnLimitTests(unittest.TestCase):
+    """Tilt from straight down and turn about the vertical (2026-10-31: a pose left tilted 54 deg by the lab's
+    program could not be straightened within 30 deg of it, and lying tubes need the jaws turned up to 90 deg)."""
+
+    def test_tilt_and_turn_are_measured_as_intended(self) -> None:
+        self.assertAlmostEqual(math.degrees(tr.tilt_from_down(DOWN)), 0.0, places=6)
+        self.assertAlmostEqual(math.degrees(tr.tilt_from_down(tr.rpy_to_q(D(180), 0.0, D(37)))), 0.0, places=6)  # turning keeps it down
+        self.assertAlmostEqual(math.degrees(tr.tilt_from_down(leaning(54, 120))), 54.0, places=6)
+        self.assertAlmostEqual(math.degrees(tr.tilt_from_down(tr.rpy_to_q(D(180), D(-25), 0.0))), 25.0, places=6)  # the lab's "pitch -25"
+        self.assertAlmostEqual(math.degrees(tr.turn_about_vertical(tr.q_mul(about("z", 40), DOWN), DOWN)), 40.0, places=6)
+        self.assertAlmostEqual(math.degrees(tr.turn_about_vertical(tr.q_mul(about("z", -70), leaning(30)), leaning(30))), -70.0, places=6)
+        self.assertAlmostEqual(math.degrees(tr.turn_about_vertical(leaning(50, 90), DOWN)), 0.0, places=6)  # tilting is not turning
+
+    def test_limit_holds_both_and_leaves_allowed_orientations_alone(self) -> None:
+        rnd = random.Random(7)
+        for _ in range(2000):
+            q = tr.q_norm(tuple(rnd.gauss(0, 1) for _ in range(4)))
+            ref = leaning(rnd.uniform(0, 60), rnd.uniform(-180, 180))
+            out = tr.limit_tilt_turn(q, ref, D(60), D(90))
+            self.assertLessEqual(tr.tilt_from_down(out), D(60) + 1e-9)
+            self.assertLessEqual(abs(tr.turn_about_vertical(out, ref)), D(90) + 1e-9)
+            if tr.tilt_from_down(q) <= D(60) and abs(tr.turn_about_vertical(q, ref)) <= D(90):
+                self.assertLess(tr.q_angle(out, q), 1e-9)
+            a, b = tr.tool_axis(q), tr.tool_axis(tr.limit_tilt_turn(q, ref, D(60), math.pi))  # the tilt limit alone
+            if D(1) < tr.tilt_from_down(q) < D(179):  # held back toward down, still leaning the same way
+                self.assertAlmostEqual(math.atan2(a[1], a[0]), math.atan2(b[1], b[0]), places=6)
+
+    def test_turn_is_held_without_changing_the_tilt(self) -> None:
+        ref = leaning(30, 45)
+        out = tr.limit_tilt_turn(tr.q_mul(about("z", 130), ref), ref, D(60), D(90))
+        self.assertAlmostEqual(math.degrees(tr.turn_about_vertical(out, ref)), 90.0, places=6)
+        self.assertAlmostEqual(math.degrees(tr.tilt_from_down(out)), 30.0, places=6)
+        self.assertLess(tr.q_angle(out, tr.q_mul(about("z", 90), ref)), 1e-9)
+
+
+class AdapterTiltTurnTests(AdapterRotationTests):
+    def rig(self, start: tuple) -> Rig:
+        r = Rig(rcfg("full", tilt_max_deg=60, turn_max_deg=90), rotation=True)
+        r.backend._q = start
+        r.engage()
+        return r
+
+    def test_config(self) -> None:
+        self.assertAlmostEqual(rcfg("full", tilt_max_deg=60, turn_max_deg=90).rotation.turn_max_rad, D(90))
+        self.assertIsNone(rcfg("full").rotation.tilt_max_rad)
+        for bad in ({"tilt_max_deg": 60}, {"tilt_max_deg": 100, "turn_max_deg": 90}, {"tilt_max_deg": 60, "turn_max_deg": 200},
+                    {"tilt_max_deg": 0, "turn_max_deg": 90}):
+            with self.assertRaises(ta.ConfigError):
+                rcfg(**bad)
+
+    def test_a_tool_left_tilted_54_deg_can_be_straightened_and_turned_90_deg(self) -> None:
+        start = leaning(54, 0)  # leaning toward +x; LOCAL +x is the backend's -y, so a hand turn about LOCAL +x tilts about -y
+        r = self.rig(start)
+        out = self.turn(r, "x", 54, 30, hold=120)
+        self.assertEqual(out["state"], ta.ACTIVE, r.rec.faults)
+        self.assertLess(math.degrees(tr.tilt_from_down(self.tool_q(r))), 0.01)  # straight down: 54 deg from the start
+        out = self.turn(r, "y", 120, 40, hold=200, start=about("x", 54))  # then turns the hand 120 deg about up
+        self.assertEqual(out["state"], ta.ACTIVE, r.rec.faults)
+        self.assertAlmostEqual(math.degrees(tr.turn_about_vertical(self.tool_q(r), start)), 90.0, places=3)  # held at 90
+        self.assertLess(math.degrees(tr.tilt_from_down(self.tool_q(r))), 0.01)
+
+    def test_tilt_is_held_at_60_deg_from_down(self) -> None:
+        r = self.rig(DOWN)
+        out = self.turn(r, "x", 85, 40, hold=150)
+        self.assertEqual(out["state"], ta.ACTIVE, r.rec.faults)
+        self.assertAlmostEqual(math.degrees(tr.tilt_from_down(self.tool_q(r))), 60.0, places=3)
+
+    def test_a_start_tilted_beyond_the_limit_is_kept_not_snapped(self) -> None:
+        r = self.rig(leaning(70, 0))
+        for _ in range(40):
+            out = r.step(P0, 1.0, q=tr.IDENTITY)
+        self.assertEqual(out["state"], ta.ACTIVE, r.rec.faults)
+        self.assertLess(tr.q_angle(self.tool_q(r), leaning(70, 0)), 1e-6)  # no jump to 60
+        self.turn(r, "x", -15, 15, hold=60)  # tilting further is held at the start's 70
+        self.assertAlmostEqual(math.degrees(tr.tilt_from_down(self.tool_q(r))), 70.0, places=2)
+
+
 if __name__ == "__main__":
     unittest.main()

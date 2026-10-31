@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import xarm_readonly_preflight as ro
-from teleop_rotation import q_angle, q_from_rotvec, rpy_to_q
+from teleop_rotation import q_angle, q_from_rotvec, rpy_to_q, tilt_from_down, turn_about_vertical
 
 MODE_POSITION, MODE_ONLINE = 0, 7
 MOVE_LINE_BYTES = bytes([0, 0, 0])  # coord = base, not axis-angle, execute (not check-only)
@@ -61,9 +61,11 @@ class ArmState:
 
 
 def make_write_rules(box_min_mm: tuple, box_max_mm: tuple, max_speed_mm_s: float, max_acc_mm_s2: float,
-                     ref_rpy: tuple | None = None, max_rot_rad: float | None = None) -> dict:
+                     ref_rpy: tuple | None = None, max_rot_rad: float | None = None,
+                     tilt_max_rad: float | None = None, turn_max_rad: float | None = None) -> dict:
     """ref_rpy + max_rot_rad (optional): a line target whose orientation is further than max_rot_rad from the
-    reference orientation is refused too."""
+    reference orientation is refused too. tilt_max_rad + turn_max_rad (optional, with ref_rpy): so is one tilted
+    further than tilt_max_rad from straight down or turned further than turn_max_rad about the vertical from it."""
     q_ref = None if ref_rpy is None else rpy_to_q(*ref_rpy)
 
     def move_ok(p: bytes) -> bool:
@@ -74,8 +76,12 @@ def make_write_rules(box_min_mm: tuple, box_max_mm: tuple, max_speed_mm_s: float
             return False
         if not all(box_min_mm[k] <= v[k] <= box_max_mm[k] for k in range(3)):
             return False
-        if q_ref is not None and q_angle(q_ref, rpy_to_q(v[3], v[4], v[5])) > max_rot_rad:
-            return False
+        if q_ref is not None:
+            q = rpy_to_q(v[3], v[4], v[5])
+            if q_angle(q_ref, q) > max_rot_rad:
+                return False
+            if tilt_max_rad is not None and (tilt_from_down(q) > tilt_max_rad or abs(turn_about_vertical(q, q_ref)) > turn_max_rad):
+                return False
         return 0.0 < v[6] <= max_speed_mm_s + 1e-6 and 0.0 < v[7] <= max_acc_mm_s2 + 1e-6 and v[8] == 0.0 and v[9] == -1.0
 
     return {11: ("MOTION_EN(enable all)", lambda p: p == bytes([8, 1])),
@@ -88,10 +94,13 @@ class XArmCommandLink:
     def __init__(self, api_class: Any, cmd_tcp_class: Any, address: str, box_min_mm: tuple, box_max_mm: tuple,
                  max_speed_mm_s: float, max_acc_mm_s2: float, io_timeout_s: float = 0.5,
                  connect_timeout_s: float = 8.0, clock: Callable[[], int] = time.monotonic_ns,
-                 ref_rpy: tuple | None = None, max_rot_rad: float | None = None):  # fmt: skip
+                 ref_rpy: tuple | None = None, max_rot_rad: float | None = None,
+                 tilt_max_rad: float | None = None, turn_max_rad: float | None = None):  # fmt: skip
         if (ref_rpy is None) != (max_rot_rad is None):
             raise ValueError("ref_rpy and max_rot_rad go together")
-        self.ref_rpy, self.max_rot_rad = ref_rpy, max_rot_rad
+        if (tilt_max_rad is None) != (turn_max_rad is None) or (tilt_max_rad is not None and ref_rpy is None):
+            raise ValueError("tilt_max_rad and turn_max_rad go together, with ref_rpy")
+        self.ref_rpy, self.max_rot_rad, self.tilt_max_rad, self.turn_max_rad = ref_rpy, max_rot_rad, tilt_max_rad, turn_max_rad
         import re
         if not re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", address):
             raise ValueError("address must be a dotted IPv4 address")
@@ -120,7 +129,7 @@ class XArmCommandLink:
     def connect(self) -> None:
         self._undo = ro.install_wire_guard(self.cmd_tcp_class, self.ledger,
                                            make_write_rules(self.box_min, self.box_max, self.max_speed, self.max_acc,
-                                                            self.ref_rpy, self.max_rot_rad))  # fmt: skip
+                                                            self.ref_rpy, self.max_rot_rad, self.tilt_max_rad, self.turn_max_rad))  # fmt: skip
         self.ledger.add("api_call", name="XArmAPI.__init__(do_not_open=True)")
         self.api = self.api_class(self.address, is_radian=True, do_not_open=True, enable_report=True, report_type="rich",
                                   timed_comm=False, enable_heartbeat=False, baud_checkset=False, check_robot_sn=False,

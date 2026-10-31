@@ -17,6 +17,12 @@ How the tool follows the hand (RotationFollower):
 then q_target is held within max_angle of the tool orientation at the FIRST engagement of the session
 (so repeated clutching cannot ratchet the tool further and further), and the commanded orientation
 moves toward it at no more than w_max.
+
+With tilt_max and turn_max set, those two replace max_angle (limit_tilt_turn): the tool's tilt is measured
+from pointing straight down (its z axis along the backend's -z) and held within tilt_max, or within the tilt
+at the first engagement when that is larger; its turn about the vertical is measured from the orientation at
+the first engagement and held within +-turn_max. A pose left tilted by another program can then always be
+straightened, and the jaws can be turned across an object lying in any direction.
 """
 
 from __future__ import annotations
@@ -117,6 +123,42 @@ def mat_vec(R: Sequence[Sequence[float]], v: Sequence[float]) -> tuple:
     return tuple(R[i][0] * v[0] + R[i][1] * v[1] + R[i][2] * v[2] for i in range(3))
 
 
+def tool_axis(q: Sequence[float]) -> tuple:
+    """The tool's z axis (the way the jaws point) in the backend frame: the third column of R(q)."""
+    x, y, z, w = q_norm(q)
+    return (2.0 * (x * z + w * y), 2.0 * (y * z - w * x), 1.0 - 2.0 * (x * x + y * y))
+
+
+def tilt_from_down(q: Sequence[float]) -> float:
+    """Angle between the tool's z axis and straight down (the backend's -z), radians, 0..pi."""
+    return math.acos(max(-1.0, min(1.0, -tool_axis(q)[2])))
+
+
+def turn_about_vertical(q: Sequence[float], q_ref: Sequence[float]) -> float:
+    """Signed turn about the backend's vertical from q_ref to q (the twist of q * q_ref^-1 about z), radians, -pi..pi."""
+    t = q_twist(q_mul(q, q_conj(q_ref)), (0.0, 0.0, 1.0))
+    a = 2.0 * math.atan2(t[2], t[3])
+    return a - 2.0 * math.pi if a > math.pi else a + 2.0 * math.pi if a < -math.pi else a
+
+
+def limit_tilt_turn(q: Sequence[float], q_ref: Sequence[float], tilt_max: float, turn_max: float) -> tuple:
+    """Hold q within tilt_max of straight down (tilted back toward down along the shortest way, which keeps the
+    direction it leans in) and then within +-turn_max of q_ref about the vertical. Turning about the vertical does
+    not change the tilt, so both hold together."""
+    q = q_norm(q)
+    a = tool_axis(q)
+    t = math.acos(max(-1.0, min(1.0, -a[2])))
+    if t > tilt_max:
+        k = (-a[1], a[0], 0.0)  # a x down: turning about it moves the tool's axis toward down
+        n = math.sqrt(k[0] * k[0] + k[1] * k[1])
+        k = (1.0, 0.0, 0.0) if n < 1e-9 else (k[0] / n, k[1] / n, 0.0)
+        q = q_norm(q_mul(q_from_rotvec(tuple(v * (t - tilt_max) for v in k)), q))
+    th = turn_about_vertical(q, q_ref)
+    if abs(th) > turn_max:
+        q = q_norm(q_mul(q_from_rotvec((0.0, 0.0, math.copysign(turn_max, th) - th)), q))
+    return q
+
+
 @dataclass(frozen=True)
 class RotationConfig:
     mode: str  # "yaw": only the hand's rotation about "up" turns the tool about the backend's z; "full": all three axes
@@ -125,6 +167,8 @@ class RotationConfig:
     w_max_rad_s: float
     max_error_rad: float  # commanded vs reported tool orientation
     max_step_rad: float  # between two consecutive accepted controller samples
+    tilt_max_rad: float | None = None  # with turn_max_rad: replaces max_angle_rad (see limit_tilt_turn)
+    turn_max_rad: float | None = None
 
 
 class RotationFollower:
@@ -132,6 +176,7 @@ class RotationFollower:
         self.cfg, self.R = cfg, R_backend_from_local
         self.up_local = tuple(R_backend_from_local[2][k] for k in range(3))  # R^T * (0, 0, 1): the LOCAL direction mapped to backend +z
         self.q_ref: tuple | None = None  # tool orientation at the first engagement; the angle limit is measured from it
+        self.tilt_lim: float | None = None  # tilt_max, or the tilt at the first engagement when that is larger
         self.q_ctrl0 = self.q_tool0 = self.last_q = self.q_req = self.q_lim = None
 
     def clear(self) -> None:
@@ -141,6 +186,8 @@ class RotationFollower:
         q_ctrl, q_tool = q_norm(q_ctrl), q_norm(q_tool)
         if self.q_ref is None:
             self.q_ref = q_tool
+            if self.cfg.tilt_max_rad is not None:
+                self.tilt_lim = max(self.cfg.tilt_max_rad, tilt_from_down(q_tool) + 1e-6)
         self.q_ctrl0, self.q_tool0, self.last_q, self.q_req, self.q_lim = q_ctrl, q_tool, q_ctrl, q_tool, q_tool
 
     def on_sample(self, q_ctrl: Sequence[float] | None) -> str | None:
@@ -157,11 +204,14 @@ class RotationFollower:
             d = q_twist(d, self.up_local)
         r = mat_vec(self.R, q_to_rotvec(d))
         q = q_norm(q_mul(q_from_rotvec(tuple(self.cfg.scale * v for v in r)), self.q_tool0))
-        rel = q_to_rotvec(q_mul(q, q_conj(self.q_ref)))
-        a = math.sqrt(sum(v * v for v in rel))
-        if a > self.cfg.max_angle_rad:  # hold at the limit, on the same axis
-            k = self.cfg.max_angle_rad / a
-            q = q_norm(q_mul(q_from_rotvec(tuple(v * k for v in rel)), self.q_ref))
+        if self.tilt_lim is not None:
+            q = limit_tilt_turn(q, self.q_ref, self.tilt_lim, self.cfg.turn_max_rad)
+        else:
+            rel = q_to_rotvec(q_mul(q, q_conj(self.q_ref)))
+            a = math.sqrt(sum(v * v for v in rel))
+            if a > self.cfg.max_angle_rad:  # hold at the limit, on the same axis
+                k = self.cfg.max_angle_rad / a
+                q = q_norm(q_mul(q_from_rotvec(tuple(v * k for v in rel)), self.q_ref))
         self.q_req = q
         return None
 

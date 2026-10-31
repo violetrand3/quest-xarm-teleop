@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
 import signal
 import socket
@@ -449,6 +450,42 @@ class LiveTeleopProgramTests(unittest.TestCase):
                 lt.main(["--address", "127.0.0.1", "--box-abs", "200,340,-100,100,300,500", "--box", "50,50,50,50,10,60"])
         finally:
             sys.stdout = real
+
+    def test_a_wound_up_wrist_commands_nothing(self) -> None:
+        """Rig, 2026-10-28: the lab's program had left joint 6 at 359.9 deg; the first 1 deg turn stopped the arm with error 23."""
+        import fake_xarm_controller as fx
+        saved = fx.JOINTS
+        self.addCleanup(lambda: setattr(fx, "JOINTS", saved))
+        for j6, extra, why in ((359.93, [], "joint 6 is at 359.9 deg, 0.1 deg from its limit of 360"),
+                               (-300.0, [], "joint 6 is at -300.0 deg, 60.0 deg from its limit of -360"),  # 90 deg needed even without rotation
+                               (230.0, ["--rotation", "full", "--tilt-max-deg", "60", "--turn-max-deg", "90"], "this session can need 180 deg"),
+                               (170.0, ["--rotation", "full", "--tilt-max-deg", "60", "--turn-max-deg", "90"], None)):
+            fx.JOINTS = saved[:5] + [math.radians(j6), 0.0]
+            ctl = FakeController()
+            rc, res, _, _, _ = self.run_live(ctl, None, extra, duration=5.0)
+            if why is None:
+                self.assertEqual((rc, res["result"]), (0, "ok"))
+                self.assertAlmostEqual(res["before"]["joints_deg"][5], 170.0, places=2)
+                continue
+            self.assertEqual((rc, res["result"]), (3, "aborted"), j6)
+            self.assertIn("the wrist is wound up", res["abort_reason"])
+            self.assertIn(why, res["abort_reason"])
+            self.assertEqual(self.writes(ctl), [], j6)
+
+    def test_floor_following_the_fence_and_tilt_turn_limits(self) -> None:
+        ctl = FakeController()  # fence z 270..585; the tool starts tilted 15.1 deg from straight down
+        rc, res, _, text, _ = self.run_live(ctl, None, ["--box-abs", "200,340,-290,260,fence,575", "--rotation", "full",
+                                                        "--tilt-max-deg", "60", "--turn-max-deg", "90", "--rot-speed", "25"], duration=5.0)  # fmt: skip
+        self.assertEqual((rc, res["result"]), (0, "ok"))
+        self.assertEqual(res["workspace_mm"]["min"], [200.0, -290.0, 280.0])  # 10 mm above the fence floor, by itself
+        self.assertAlmostEqual(res["before"]["tilt_from_down_deg"], 15.1, delta=0.2)
+        self.assertEqual(res["config"]["rotation"]["tilt_max_deg"], 60.0)
+        self.assertIn("wrist: tilt up to 60 deg from straight down (now 15), turn up to 90 deg", text)
+        for bad in (["--box-abs", "fence,340,-290,260,280,575", "--tilt-max-deg", "60"],  # tilt without turn
+                    ["--box", "fence,50,50,50,10,60"]):  # "fence" only in an absolute box
+            ctl = FakeController()
+            rc, _, _, _, _ = self.run_live(ctl, None, bad, duration=5.0)
+            self.assertEqual(rc, 2, bad)
 
     def test_reduced_mode_speed_limits_below_the_session_speeds_command_nothing(self) -> None:
         """Rig, 2026-10-12: reduced mode had been switched on (TCP 50 mm/s) and a 120 mm/s session ended in controller error 24."""
