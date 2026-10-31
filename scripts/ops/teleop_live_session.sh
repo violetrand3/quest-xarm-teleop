@@ -37,6 +37,41 @@ sys.exit(1)
 PY
 }
 ack() { ssh "${SSHO[@]}" "$H" "kill -USR1 \$(cat ~/$L/pid_$N)" >> "$DET" 2>&1; }
+errtxt() { case "$1" in   # what the common controller errors mean and what clears them
+  1|2|3) echo "an emergency stop was pressed or triggered; release it only when whoever pressed it says so";;
+  22|31) echo "a collision was detected; look at what was hit before clearing";;
+  23) echo "a joint is at its limit; after Clear, turn that wrist joint a full turn back toward 0 in joint control";;
+  24) echo "the arm was asked to move faster than the controller allows";;
+  35) echo "the arm touched the controller's fence";;
+  *) echo "see UFactory Studio for what it means";; esac; }
+# A fault stops the arm but not the session (2026-10-31: having to start the whole session again was the annoying part).
+# The operator has the cause dealt with, a controller error cleared in UFactory Studio, then presses Enter: the lab program
+# acknowledges and re-arms (refused while the controller still reports an error; it never clears errors itself), and the
+# arm moves again only after the side grip is released and pressed. 0 = continued, 1 = the session is over.
+fault_wait() {
+  local w code n0 r i
+  w=$(why | sed 's/^acknowledgement required: //'); code=$(echo "$w" | sed -n 's/.*controller error \([0-9]*\).*/\1/p')
+  mark "fault: $w"
+  msg "FAULT: $w. The arm is stopped."
+  [ -n "$code" ] && msg "  The controller has error $code: $(errtxt "$code"). Clear it in UFactory Studio (scripts/teleop studio, in another terminal)."
+  case "$w" in wrist_limit:*) msg "  This program stopped the arm before a wrist joint reached its limit. In UFactory Studio (scripts/teleop studio), turn that joint a full turn back toward 0.";; esac
+  msg "  Press Enter here to continue the session, or Ctrl-C to end it."
+  IFS= read -r -s -t 0.05 -N 10000 _ < /dev/tty 2>/dev/null || true   # drop anything typed before the question appeared
+  while [ "$TEL" = 0 ] || [ $SECONDS -lt $end ]; do
+    grep -q '^ENDING:\|^{"result"' "$D/teleop_$N.console.txt" 2>/dev/null && return 1
+    IFS= read -r -t 0.25 _ < /dev/tty || continue
+    n0=$(wc -l < "$D/teleop_$N.console.txt"); mark "operator: continue after the fault"; ack
+    for i in $(seq 1 16); do
+      sleep 0.25; tail -n +$((n0 + 1)) "$D/teleop_$N.console.txt" | grep -q 're-armed by the operator\|re-arm refused' && break
+    done
+    r=$(tail -n +$((n0 + 1)) "$D/teleop_$N.console.txt" | sed -n 's/^re-arm refused: //p' | head -1 | sed -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/<ip>/g' | cut -c1-200)
+    [ -n "$r" ] && { msg "  Not yet: $r. Press Enter again once it is cleared."; continue; }
+    sleep 0.5
+    [ "$(st)" = FAULT_LATCHED ] && { msg "  Still stopped: $(why). Press Enter again once it is cleared."; continue; }
+    mark "continued after the fault"; msg "  Continuing. Release the side grip, then hold it to move."; return 0
+  done
+  return 1
+}
 finish() {
   T=$(cat "$R/tx.pid" 2>/dev/null); kill -INT "$T" 2>/dev/null; for i in $(seq 1 60); do kill -0 "$T" 2>/dev/null || break; sleep 0.25; done
   sed -i "s/$S/[REDACTED]/g" "$D/tx_$N.console.txt" 2>/dev/null
@@ -102,7 +137,7 @@ while [ "$TEL" = 0 ] || [ $SECONDS -lt $end ]; do
     mark "state $prev -> $s"
     case "$s" in
       ACTIVE) msg "  arm following";;
-      FAULT_LATCHED) fault=1; break;;
+      FAULT_LATCHED) if { : < /dev/tty; } 2>/dev/null && fault_wait; then s=$(st); else fault=1; break; fi;;
       *) [ "$prev" = "ACTIVE" ] && msg "  paused";;
     esac
     prev=$s
@@ -125,7 +160,7 @@ while [ "$TEL" = 0 ] || [ $SECONDS -lt $end ]; do
   [ "$TEL" -gt 0 ] && [ $warned = 0 ] && [ $((end - SECONDS)) -le 20 ] && { warned=1; msg "20 seconds left$([ "$pw" = rec ] && echo ': press A now to save the demo in progress')"; }
   sleep 0.25
 done
-if [ $fault = 1 ]; then mark "fault latched; ending"; msg "FAULT: $(why). The arm is stopped; the session ends."
+if [ $fault = 1 ]; then mark "fault latched; ending"; msg "The session ends after the fault ($(why)). The arm is stopped."
 elif [ $self = 0 ]; then mark "cue end"; msg "Time is up. Release the side grip."; fi
 sleep 1.5; mark "end"
 finish ok

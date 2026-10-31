@@ -11,6 +11,7 @@
 #   scripts/teleop watch              follow the lab program's console of the running session
 #   scripts/teleop stop               end the running session now (a SOFTWARE stop; the lab program parks the arm)
 #   scripts/teleop sync               install this checkout's programs on the lab host (refused while a session runs)
+#   scripts/teleop studio             open UFactory Studio, the arm's own control page (clearing errors, turning joints)
 #
 # Settings: config/teleop_session.conf.  THE ARM MOVES in "record" and "try": they ask the go/no-go questions first
 # and save what you typed with the session. Ctrl-C during a session ends it cleanly.
@@ -19,6 +20,7 @@ P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)   # this checkout, wherever
 . "$P/config/teleop_session.conf" || exit 2
 SSHO=(-o BatchMode=yes -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10)
 D=$P/data/sessions; R=$P/run; L=$LAB_DIR/logs; URL="http://127.0.0.1:$RELAY_LOCAL_PORT/"
+STUDIO_LOCAL_PORT=${STUDIO_LOCAL_PORT:-18333}   # local port of the tunnel to UFactory Studio
 RELAY_LIFE_S=43200   # the camera view on the lab host closes itself after 12 h; a session start renews it when less than it needs is left
 mkdir -p "$D" "$R"
 case "$CAMERAS" in ""|*[!a-z0-9_,]*|,*|*,|*,,*) echo "STOP: CAMERAS in the settings must be camera names separated by commas, e.g. iphone,rs_color" >&2; exit 2;; esac
@@ -262,6 +264,15 @@ case "${1:-}" in
           d=$(lab_differs); echo "Lab host's programs: $([ -z "$d" ] && echo 'same as this checkout' || echo "DIFFERENT from this checkout ($(echo "$d" | wc -l) files); see scripts/teleop sync")"
           echo "Camera view: $URL";;
   sync) lab_sync;;
+  studio)   # the arm's own web page, through the lab host; the arm's address is read there and never printed or saved
+    if ! ss -ltn | grep -q "127.0.0.1:$STUDIO_LOCAL_PORT "; then
+      ip=$(lab "grep -oE 'XArmAPI\\(\"[0-9.]+\"' /home/dev/robotdash/stepper.py | grep -oE '[0-9]+(\\.[0-9]+){3}' | head -1")
+      [ -n "$ip" ] || die "could not read the arm's address on $LAB_HOST"
+      ssh "${SSHO[@]}" -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -L "127.0.0.1:$STUDIO_LOCAL_PORT:$ip:18333" "$LAB_HOST" \
+        > /dev/null 2> "$R/tunnel_studio.txt" < /dev/null || die "cannot open the tunnel to UFactory Studio ($(head -c 200 "$R/tunnel_studio.txt" | sed -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/<ip>/g'))"
+    fi
+    echo "UFactory Studio, the arm's own control page: http://127.0.0.1:$STUDIO_LOCAL_PORT/"
+    echo "Clear an error there with someone at the rig watching the arm. Close the page when done: it can move the arm too.";;
   cameras) rig_status; RELOAD=0; ensure_cameras 3600; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')";;
   episodes)
     if [ -n "${2:-}" ]; then lab "cd ~/$LAB_DIR && python3 scripts/episode_inspect.py episodes/$2"
@@ -269,5 +280,5 @@ case "${1:-}" in
   watch) n=$(cat "$R/current_session" 2>/dev/null) || die "no session name known"; lab "tail -n 5 -F ~/$L/teleop_$n.console.txt" | sed -u -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/<ip>/g';;
   stop) n=$(cat "$R/current_session" 2>/dev/null) || die "no session name known"
         lab "kill -INT \$(cat ~/$L/pid_$n) 2>/dev/null && echo 'stop sent to the lab program of $n; it parks the arm (software stop, not the physical stop)' || echo 'no running lab program for $n'";;
-  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 1;;
+  *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 1;;
 esac

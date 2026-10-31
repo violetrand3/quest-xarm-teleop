@@ -29,6 +29,7 @@ scripts/teleop record        # demo recording session; runs until you press Ctrl
 | `scripts/teleop watch` | Follows the lab program's console during a session (second terminal) |
 | `scripts/teleop stop` | Ends the running session from a second terminal (software stop) |
 | `scripts/teleop sync` | Installs this checkout's programs on the lab host (see `getting_started.md`) |
+| `scripts/teleop studio` | Opens UFactory Studio, the arm's own control page, at `http://127.0.0.1:18333/`: clearing a controller error, turning a wrist joint back |
 
 A session has no time limit unless you give minutes. It ends when you press Ctrl-C, and by itself when
 the arm program has lost this PC for 60 s, or when the arm has not followed the hand for 15 min. A demo
@@ -59,7 +60,7 @@ There is no sound. The terminal tells you where you are:
 | `DEMO NOT STARTED: …` | A camera is not delivering, or the disk is nearly full |
 | `The arm program is ending: …` | It stopped by itself; the line says why (connection lost, idle, stopped from another terminal) |
 | `20 seconds left` | Only with a time limit: save the demo in progress now |
-| `FAULT: …` | A fault ended the session; the arm is stopped; read the summary |
+| `FAULT: …` | The arm is stopped, but the session goes on. The next lines say what to do; then press Enter to continue (Ctrl-C ends the session) |
 | `Time is up. Release the side grip.` | Only with a time limit |
 
 | Control (right controller) | Effect |
@@ -104,6 +105,18 @@ data/episodes/<session>/episode_0001/cam_*.mjpeg + .frames.jsonl   the recorded 
 On linux2 the same folders are under `~/quest-xarm-teleop-dryrun/episodes/<session>/`.
 Action labels: `python3 scripts/episode_inspect.py <session folder> --labels 8` (see the report).
 
+## When the arm stops with a fault
+
+The session keeps running. The terminal shows the reason and, for a controller error, what it means.
+1. Someone at the rig deals with the cause (whatever was hit, an emergency stop, a wound wrist).
+2. Clear a controller error in UFactory Studio: `scripts/teleop studio` in a second terminal, then **Clear**
+   on that page. For error 23 (a joint at its limit) also turn that wrist joint a full turn back toward 0
+   in its joint control. Close the page afterwards: it can move the arm too.
+3. Press **Enter** in the session's terminal. If the controller still has an error, it says so; otherwise
+   release the side grip and hold it again to move. A demo that was recording goes on recording.
+
+This program never clears a controller error itself.
+
 ## When something goes wrong
 
 | What you see | What to do |
@@ -114,7 +127,7 @@ Action labels: `python3 scripts/episode_inspect.py <session folder> --labels 8` 
 | `ABORTED: the arm is at …` (far outside the box, below its floor, or near the controller's fence) | The arm was left far away by another program. Press "Next stage toward START" on the lab page, then start again |
 | `FAULT: … wrist_limit:joint …` | The wrist still got within 15° of a joint limit; the program stopped the arm before the controller did. No error to clear, but the next start will ask for the wrist to be turned back |
 | `ABORTED: the wrist is wound up: joint …` | Another program left a wrist joint a full turn from 0, close to its limit. Someone at the rig turns it back a full turn in UFactory Studio (joint control), then start again |
-| `FAULT: …` with a controller error in the summary | The arm is stopped. Someone looks at it; the error is cleared on the lab side |
+| `FAULT: …` with a controller error | See "When the arm stops with a fault" above |
 | `NOT STARTED. The arm program says: …` | Read the reason; the two rows above are the usual ones |
 | Camera page frozen | `scripts/teleop cameras`, then reload the page |
 | Gripper picture upside down | The phone app turned its picture 180° (it did when the wrist was tilted, 2026-10-14). The camera page turns it back by itself while the blue jaws are in view. Recorded demos keep the picture as the phone sends it |
