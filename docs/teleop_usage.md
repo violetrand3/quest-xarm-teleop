@@ -125,7 +125,7 @@ This program never clears a controller error itself.
 | `ABORTED: reduced mode is ON with a TCP speed limit…` | Reduced mode was switched on at the controller. Have it switched off, or lower the speeds in the settings |
 | `box fitted: …` at the start | Not an error. The box was cut back to stay `FENCE_MARGIN` mm inside the controller's fence, or stretched to where the arm was left (up to 50 mm outside it, never below the floor). The session runs |
 | `ABORTED: the arm is at …` (far outside the box, below its floor, or near the controller's fence) | The arm was left far away by another program. Press "Next stage toward START" on the lab page, then start again |
-| `FAULT: … wrist_limit:joint …` | The wrist still got within 15° of a joint limit; the program stopped the arm before the controller did. No error to clear, but the next start will ask for the wrist to be turned back |
+| `FAULT: … wrist_limit:joint …` | The wrist still got within 15° of a joint limit; this program stopped the arm before the controller did, so there is no error to clear. Turn that joint a full turn back toward 0 in UFactory Studio, then press Enter |
 | `ABORTED: the wrist is wound up: joint …` | Another program left a wrist joint a full turn from 0, close to its limit. Someone at the rig turns it back a full turn in UFactory Studio (joint control), then start again |
 | `FAULT: …` with a controller error | See "When the arm stops with a fault" above |
 | `NOT STARTED. The arm program says: …` | Read the reason; the two rows above are the usual ones |
