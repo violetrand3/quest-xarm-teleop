@@ -60,6 +60,8 @@ DEFAULT_RECORD_CAMS = {"iphone": "http://127.0.0.1:8090/cam/iphone", "zed": "htt
 FENCE_MARGIN_MM = 10.0
 MAX_STRETCH_MM = 50.0  # an arm left this far outside an absolute box still starts; the box takes it in
 MIN_BOX_MM = 20.0
+STRETCH_SLACK_MM = 1.0  # a stretched side goes this far past the start pose (2026-10-31: stretched exactly to it and rounded, the box
+                        # ended 0.002 mm short of the arm, and the first press was refused as 'outside the workspace')
 WRIST_LIMIT_DEG = 360.0  # xArm6 joints 4 and 6 turn -360..360
 WRIST_J5_ZONE_DEG, WRIST_J46_ZONE_DEG, WRIST_J46_STOP_DEG = 15.0, 45.0, 15.0  # in-session wrist guard (teleop_limits.WristGuard)
 WRIST_SPARE_DEG = 90.0  # moving across the box can turn them this much (keeping the tool's direction), on top of the session's own turn
@@ -116,11 +118,14 @@ def workspace(pose: tuple, boundary: dict, box: list, absolute: bool = False, ma
                         "'Next stage toward START') or widen the box in the settings; nothing was commanded")
         if out_by > 0:
             end = "min" if pose[k] < lo[k] else "max"
-            notes.append(f"{ax} {end} {lo[k] if end == 'min' else hi[k]:g} -> {pose[k]:.2f} (the arm starts {out_by:.2f} mm outside the box)")
-            lo[k], hi[k] = min(lo[k], pose[k]), max(hi[k], pose[k])
+            new = max(f_lo + margin_mm, pose[k] - STRETCH_SLACK_MM) if end == "min" else min(f_hi - margin_mm, pose[k] + STRETCH_SLACK_MM)
+            notes.append(f"{ax} {end} {lo[k] if end == 'min' else hi[k]:g} -> {new:.2f} (the arm starts {out_by:.2f} mm outside the box)")
+            lo[k], hi[k] = min(lo[k], new), max(hi[k], new)
         if hi[k] - lo[k] < MIN_BOX_MM:
             raise Abort(f"inside the fence less {margin_mm:g} mm, the box {ax} {lo[k]:g}..{hi[k]:g} is under {MIN_BOX_MM:g} mm wide; nothing was commanded")
-    return [round(v, 2) for v in lo], [round(v, 2) for v in hi], notes
+    # rounded outward, so rounding can never put the start pose outside; never past the fence margin, which is checked above
+    return ([max(math.floor(v * 100.0) / 100.0, boundary[f"{ax}_mm"][0] + margin_mm) for v, ax in zip(lo, "xyz")],
+            [min(math.ceil(v * 100.0) / 100.0, boundary[f"{ax}_mm"][1] - margin_mm) for v, ax in zip(hi, "xyz")], notes)
 
 
 def mapping_for_operator(yaw_deg: float) -> list:

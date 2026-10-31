@@ -410,20 +410,38 @@ class LiveTeleopProgramTests(unittest.TestCase):
         """Rig, 2026-10-27: sessions refused to start for an arm 9.8 mm outside the box, and for a box floor the lab's new fence floor had overtaken."""
         cases = (("200,340,-290,260,275,575", [], ([200.0, -290.0, 280.0], [340.0, 260.0, 575.0]), "z min 275 -> 280"),  # floor cut back to 10 mm above the fence
                  ("200,340,-290,265,280,575", [], ([200.0, -290.0, 280.0], [340.0, 260.0, 575.0]), "y max 265 -> 260"),
-                 ("310,400,-100,100,300,500", [], ([299.83, -100.0, 300.0], [400.0, 100.0, 500.0]), "x min 310 -> 299.83"),  # the arm is at x 299.83
-                 ("200,340,-100,100,300,461.0", [], ([200.0, -100.0, 300.0], [340.0, 100.0, 461.18]), "0.18 mm outside"),  # the arm is at z 461.18
+                 ("310,400,-100,100,300,500", [], ([298.83, -100.0, 300.0], [400.0, 100.0, 500.0]), "x min 310 -> 298.83"),  # the arm is at x 299.83: 1 mm past it
+                 ("200,340,-100,100,300,461.0", [], ([200.0, -100.0, 300.0], [340.0, 100.0, 462.18]), "0.18 mm outside"),  # the arm is at z 461.18
                  ("200,340,-100,100,300,461.2", [], ([200.0, -100.0, 300.0], [340.0, 100.0, 461.2]), None),  # left at the very edge: nothing to fit
                  ("200,340,-290,260,275,575", ["--fence-margin-mm", "5"], ([200.0, -290.0, 275.0], [340.0, 260.0, 575.0]), None))
         for box, extra, (lo, hi), note in cases:
             ctl = FakeController()
             rc, res, _, text, _ = self.run_live(ctl, None, ["--box-abs", box, *extra], duration=5.0)
             self.assertEqual((rc, res["result"]), (0, "ok"), box)
-            self.assertEqual((res["workspace_mm"]["min"], res["workspace_mm"]["max"]), (lo, hi), box)
+            for got, want in zip(res["workspace_mm"]["min"] + res["workspace_mm"]["max"], lo + hi):
+                self.assertAlmostEqual(got, want, delta=0.011, msg=box)  # edges are rounded outward to 0.01 mm
             if note is None:
                 self.assertEqual(res["workspace_mm"]["fitted"], [], box)
             else:
                 self.assertIn(note, " ".join(res["workspace_mm"]["fitted"]), box)
                 self.assertIn("box fitted: ", text)
+
+    def test_an_arm_left_outside_the_box_can_be_driven_at_once(self) -> None:
+        """Rig, 2026-10-31: the box was stretched to x 189.19 for an arm at 189.188, and the first press was refused."""
+        ctl = FakeController(pose=[299.8277, 3.43, 461.18, POSE[3], POSE[4], POSE[5]])
+
+        def drive(q: QuestFeed, notes: dict) -> None:
+            q.engage()
+            q.glide(-0.06, 30)  # 15 mm away from the base (scale 0.25)
+            q.hold(-0.06, 20)
+            notes["x"] = ctl.pose[0]
+            q.hold(-0.06, 4, grip=0.0)
+
+        rc, res, _, _, notes = self.run_live(ctl, drive, ["--box-abs", "310,400,-100,100,300,500"], duration=8.0)
+        self.assertNotIn("drive_error", notes, notes)
+        self.assertEqual((rc, res["faults"]), (0, []))
+        self.assertLessEqual(res["workspace_mm"]["min"][0], 299.8277 - 1.0)
+        self.assertAlmostEqual(notes["x"], 299.8277 + 15.0, delta=0.6)
 
     def test_arm_far_outside_the_box_or_at_the_fence_commands_nothing(self) -> None:
         for pose, box, why in (([299.8, 3.4, 461.2], "360,400,-100,100,300,500", "60.20 mm outside the box"),
