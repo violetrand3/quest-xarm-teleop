@@ -452,7 +452,7 @@ def main(argv: list[str] | None = None, sdk: tuple | None = None) -> int:
                     except BackendError as e:
                         print(f"re-arm refused: {e}", flush=True)
             t = adapter.last
-            why = f" [{t['blocked'][:60]}]" if t.get("blocked") else ""
+            why = f" [{t['blocked'][:120]}]" if t.get("blocked") else ""  # 60 cut "controller error 23" to "error 2" (2026-10-31)
             inp = "DISCONNECTED" if not t.get("connected") else "AVAILABLE" if t.get("avail") else "UNAVAILABLE"
             print(f"{(now - start) / 1e9:7.1f}s {BANNER} | {t['state']}{why} | input={inp} gen={t.get('gen')} grip={n2(t.get('grip'))} "
                   f"trig={n2(t.get('trig'))} | mm: req={f3(t.get('req_mm'))} lim={f3(t.get('lim_mm'))} fb={f3(t.get('fb_mm'))} rot={t.get('rot_deg')} | "
