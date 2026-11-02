@@ -383,7 +383,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: cannot connect to {LOOPBACK}:{args.port} (is the tunnel up?): {e}", file=sys.stderr)
         return 3
     log = args.log.open("x", encoding="utf-8") if args.log else None
-    source_log = args.source_log.open("x", encoding="utf-8") if args.source_log else None
+    source_log = args.source_log.open("x", encoding="utf-8", buffering=1) if args.source_log else None
     sender_run = new_id()
     slot = PoseSlot(args.expect_build, args.stale_ms, source_log)
     session = PoseSenderSession(sock, slot, sender_run, max_rate_hz=args.max_rate, log=log)
