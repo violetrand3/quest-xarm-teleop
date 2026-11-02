@@ -74,11 +74,22 @@ lab_differs() {   # prints the lab-side programs that differ on the lab host (no
     | ssh "${SSHO[@]}" "$LAB_HOST" "if cd ~/$LAB_DIR 2>/dev/null; then sha256sum -c --quiet 2>/dev/null || true; else cat > /dev/null; echo 'NO_LAB_DIR: FAILED'; fi" \
     | sed -n 's/: FAILED.*//p'; }
 lab_version() { lab "cat ~/$LAB_DIR/SYNCED_FROM.txt 2>/dev/null"; }   # e.g. "452b17c 2026-11-02, installed by dev@pc on ..."
-lab_order() {   # how the lab copy's commit relates to this checkout: older, newer, same, unknown
-  local v h; v=$1; h=${v%% *}
-  case "$v" in *"not committed"*|"") echo unknown; return;; esac
-  git -C "$P" rev-parse -q --verify "$h^{commit}" > /dev/null || git -C "$P" fetch -q origin 2>/dev/null
-  git -C "$P" rev-parse -q --verify "$h^{commit}" > /dev/null || { echo unknown; return; }
+lab_same_as() {   # the lab-side programs on the lab host are exactly those of commit $1
+  local f; f=$(lab_files) || return 1
+  (cd "$P" && for x in $f; do   # a program this checkout has but that commit did not have yet is not compared
+     git cat-file -e "$1:$x" 2>/dev/null && echo "$(git show "$1:$x" | sha256sum | cut -d' ' -f1)  $x"; done) \
+    | ssh "${SSHO[@]}" "$LAB_HOST" "cd ~/$LAB_DIR 2>/dev/null && sha256sum -c --quiet > /dev/null 2>&1"; }
+lab_order() {   # how the lab copy relates to this checkout: older, newer, same, unknown
+  local v h c; v=$1; h=${v%% *}
+  if [ -z "$v" ] || [[ "$v" == *"not committed"* ]] || ! git -C "$P" rev-parse -q --verify "$h^{commit}" > /dev/null; then
+    # the note does not name a commit (or names one with changes): recognise the files themselves, e.g. a version on GitHub
+    git -C "$P" fetch -q origin 2>/dev/null
+    h=""
+    for c in '@{u}' HEAD ${v:+"${v%% *}"}; do
+      git -C "$P" rev-parse -q --verify "$c^{commit}" > /dev/null && lab_same_as "$c" && { h=$(git -C "$P" rev-parse "$c"); break; }
+    done
+    [ -n "$h" ] || { echo unknown; return; }
+  fi
   if [ "$(git -C "$P" rev-parse "$h")" = "$(git -C "$P" rev-parse HEAD)" ]; then echo same
   elif git -C "$P" merge-base --is-ancestor "$h" HEAD; then echo older
   elif git -C "$P" merge-base --is-ancestor HEAD "$h"; then echo newer
