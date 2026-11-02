@@ -9,7 +9,7 @@ P=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd); . "$P/config/teleop_ses
 mkdir -p "$D" "$R"
 L=$LAB_DIR/logs; REC=${REC:-0}; DET=$D/detail_$N.txt
 SSHO=(-n -o BatchMode=yes -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10)
-S=$(adb devices | awk 'NR>1 && $2=="device"{print $1}'); [ "$(echo "$S" | grep -c .)" = 1 ] || { echo "need exactly one headset on adb"; exit 2; }
+S=$(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"{print $1}'); [ "$(echo "$S" | grep -c .)" = 1 ] || { echo "need exactly one headset on adb"; exit 2; }
 msg() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$1"; }                                                         # for the operator
 mark() { python3 -c 'import time,sys;print(time.monotonic_ns(), sys.argv[1])' "$1" >> "$D/marks_$N.txt"; }  # timeline, log only
 last() { tail -n 1 "$D/teleop_$N.console.txt" 2>/dev/null; }

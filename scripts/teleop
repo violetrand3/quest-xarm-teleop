@@ -250,7 +250,7 @@ session() {   # $1 = record | try, $2 = minutes
     [ "$min" -ge 1 ] && [ "$min" -le 600 ] || die "minutes must be between 1 and 600 (or leave it out for no time limit)"
     tel=$((min * 60)); length="$min min"
   fi
-  [ "$(adb devices | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] || die "need exactly one headset connected by USB with debugging allowed (adb devices)"
+  [ "$(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] || die "need exactly one headset connected by USB with debugging allowed (adb devices)"
   adb shell pm list packages org.questxarm.reader | grep -q . || die "the headset does not have the teleop app (org.questxarm.reader); see docs/getting_started.md"
   lab_check
   rig_status; show_status "$mode" || die "not starting; see BLOCKED above"
@@ -325,8 +325,8 @@ PY
 
 case "${1:-}" in
   record|try) session "$1" "${2:-}";;
-  status) rig_status; show_status status; echo "Headset on USB: $(adb devices | awk 'NR>1 && $2=="device"' | wc -l) (need 1)"
-          [ "$(adb devices | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] && echo "Teleop app on the headset: $(adb shell pm list packages org.questxarm.reader | grep -q . && echo yes || echo 'NO (see docs/getting_started.md)')"
+  status) rig_status; show_status status; echo "Headset on USB: $(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"' | wc -l) (need 1)"
+          [ "$(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] && echo "Teleop app on the headset: $(adb shell pm list packages org.questxarm.reader | grep -q . && echo yes || echo 'NO (see docs/getting_started.md)')"
           d=$(lab_differs); echo "Lab host's programs: $([ -z "$d" ] && echo 'same as this checkout' || echo "DIFFERENT from this checkout ($(echo "$d" | wc -l) files); see scripts/teleop sync")"
           echo "Camera view: $URL";;
   sync) lab_sync "${2:-}";;

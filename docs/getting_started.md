@@ -53,6 +53,8 @@ tried yet. If a step does not work as described here, please report it.
    printf '#!/bin/sh\nexec "/mnt/c/<path to>/platform-tools/adb.exe" "$@"\n' > ~/.local/bin/adb
    chmod +x ~/.local/bin/adb      # a new terminal has ~/.local/bin on the PATH; check with: adb devices
    ```
+   adb.exe ends its lines with CRLF (`\r\n`). The launcher allows for that, so the wrapper does not need to
+   change them (with a launcher older than 2026-11-02 it counted 0 headsets).
 3. SSH from **inside Ubuntu**: put your key in Ubuntu's `~/.ssh` and check `ssh linux2 true`. If the name
    does not resolve there (Tailscale names often don't inside WSL), add a `Host linux2` entry with the
    address you use on Windows to `~/.ssh/config`.
