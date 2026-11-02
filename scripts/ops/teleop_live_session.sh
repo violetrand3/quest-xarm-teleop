@@ -18,24 +18,6 @@ why() { last | sed -n 's/^[^|]*| [A-Z_]* \[\([^]]*\)\].*/\1/p'; }
 epf() { last | sed -n 's/.* | ep=\(.*\)$/\1/p'; }   # e.g. "rec#2:14s saved=1 disc=0 ref=0"
 num() { echo "$1" | sed -n "s/.*$2=\([0-9]*\).*/\1/p"; }
 wait_state() { local end=$((SECONDS + $2)); while [ $SECONDS -lt $end ]; do s=$(st); for w in $1; do [ "$s" = "$w" ] && { echo "$s"; return 0; }; done; sleep 0.2; done; echo "$(st)"; return 1; }
-wait_avail() { python3 - "$D/src_$N.jsonl" "$1" "$2" <<'PY'
-import json,sys,time
-path,need,maxs=sys.argv[1],float(sys.argv[2]),float(sys.argv[3]); t0=time.monotonic(); since=None
-def ok():
-    try:
-        with open(path,'rb') as f:
-            f.seek(0,2); f.seek(max(0,f.tell()-6000)); lines=f.read().decode('utf-8','replace').splitlines()[1:]
-        r=json.loads(lines[-1]); return r.get('available') is True and (time.monotonic_ns()-r['host_ns'])<300e6
-    except Exception: return False
-while time.monotonic()-t0<maxs:
-    if ok():
-        since=since or time.monotonic()
-        if time.monotonic()-since>=need: sys.exit(0)
-    else: since=None
-    time.sleep(0.05)
-sys.exit(1)
-PY
-}
 ack() { ssh "${SSHO[@]}" "$H" "kill -USR1 \$(cat ~/$L/pid_$N)" >> "$DET" 2>&1; }
 errtxt() { case "$1" in   # what the common controller errors mean and what clears them
   1|2|3) echo "an emergency stop was pressed or triggered; release it only when whoever pressed it says so";;
@@ -117,7 +99,8 @@ msg "Starting the headset app and looking for the right controller ..."
 adb -s "$S" shell am broadcast -a com.oculus.vrpowermanager.prox_close > /dev/null 2>&1   # keeps the headset awake while it is not worn
 adb -s "$S" shell am force-stop org.questxarm.reader; sleep 1
 mark "launch app"; adb -s "$S" shell am start -W -n org.questxarm.reader/com.rail.oculus.teleop.MainActivity >> "$DET" 2>&1
-wait_avail 2 90 || { msg "No controller input after 90 s. Is the headset awake and the right controller on and in its view? Ending."; mark "abort: no input"; finish abort; exit 3; }
+# Waits until the controller is seen (or Ctrl-C), saying what is missing and what fixes it whenever that changes.
+python3 -u "$P/scripts/controller_wait.py" "$D/src_$N.jsonl" --need 2 --serial "$S" --console "$D/teleop_$N.console.txt" || { msg "No controller. Ending."; mark "abort: no input"; finish abort; exit 3; }
 msg "Controller found."
 sleep 4; mark "acknowledge start-up notices"; ack; sleep 1.5; mark "state before cues = $(st)"
 [ "$(st)" = "ARMED" ] || msg "Release the side grip (middle finger)."

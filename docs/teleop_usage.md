@@ -52,6 +52,7 @@ There is no sound. The terminal tells you where you are:
 | Line in the terminal | Meaning |
 |---|---|
 | `Arm armed. workspace …` | The arm program on linux2 is up and has checked the arm |
+| `Waiting for the controller: …` | The headset app cannot use the right controller yet. The line says why and what fixes it, and changes when the cause changes:<br>• **not showing the app / not sending anything**: the headset is asleep. Press its power button briefly or put it on for a moment<br>• **a system window is in front of the app**: put the headset on and close it (boundary, tracking or battery warning, menu). A stationary boundary avoids most of these<br>• **not connected**: the controller is asleep, its battery is flat, or the headset switched to hand tracking. Pick it up and press any button<br>• **cannot see it**: hold it in front of the headset, in a lit place<br>It waits until the controller is found (no time limit); Ctrl-C ends the session |
 | `Controller found.` | The headset app is running and sees the right controller |
 | `Release the side grip (middle finger).` | Only shown if you are holding it at the start |
 | `READY, no time limit: Ctrl-C ends the session. …` | Hold the side grip and move |
