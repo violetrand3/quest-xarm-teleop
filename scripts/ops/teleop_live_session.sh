@@ -143,7 +143,8 @@ while [ "$TEL" = 0 ] || [ $SECONDS -lt $end ]; do
     prev=$s
   fi
   wh=$(last | sed -n 's/.*\[wrist held: \([^]]*\)\].*/\1/p')   # the wrist guard is holding the arm
-  [ -n "$wh" ] && [ -z "$pwh" ] && { mark "wrist held: $wh"; msg "  WRIST HELD ($wh): move your hand back the way it came, or tilt the gripper away from straight down"; }
+  # "joint 5 at 15deg, near the wrist's turning point; try: tilt the gripper back toward straight down"; shown again when the hint changes
+  [ -n "$wh" ] && [ "${wh#*; try: }" != "${pwh#*; try: }" ] && { mark "wrist held: $wh"; msg "  WRIST HELD (${wh%%; try: *}). Try: ${wh#*; try: }. Moves that would take the wrist further in are not followed."; }
   pwh=$wh
   if [ "$REC" = 1 ]; then
     e=$(epf)

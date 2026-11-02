@@ -14,6 +14,8 @@ import math
 from dataclasses import dataclass
 from typing import Sequence
 
+import arm_kinematics as kin
+
 
 def dist(a: Sequence[float], b: Sequence[float]) -> float:
     return math.sqrt(sum((a[k] - b[k]) ** 2 for k in range(3)))
@@ -123,13 +125,6 @@ class RateLimiter:
         return self.p
 
 
-def _q_deg(a: Sequence[float] | None, b: Sequence[float] | None) -> float:
-    if a is None or b is None:
-        return 0.0
-    d = min(1.0, abs(sum(a[k] * b[k] for k in range(4))))
-    return math.degrees(2.0 * math.acos(d))
-
-
 class WristGuard:
     """Keeps the wrist away from its turning point and from the limits of joints 4 and 6, using the joint
     angles read every tick (2026-10-31: pointing straight down close to the base took joint 5 to 10 deg;
@@ -137,50 +132,140 @@ class WristGuard:
     which only someone at the rig can clear).
 
     Joint 5 near 0 lines up axes 4 and 6, and the controller then spins both for a small change of the tool.
-    This program does not know the arm's geometry, so it cannot predict joint angles; it reacts to the ones it
-    reads. In the warning zone (joint 5 within j5_zone of 0, or joint 4 or 6 within j46_zone of +-360) a target
-    is sent only if it leads back toward the last pose MEASURED outside the zone (the arm reaches each target a
-    little after it is sent, so the last target sent from outside can already be inside); otherwise the arm is
-    held where it is. Joint 4 or 6 closer than j46_stop to its limit anyway is a fault, raised before the
-    controller's own limit."""
+    Near the warning zone (joint 5 within j5_zone of 0, or joint 4 or 6 within j46_zone of +-360) each target is
+    judged by the joint angles it would need, predicted from the measured ones with the arm's geometry
+    (arm_kinematics: the xArm6 geometry): a target that keeps the arm out of the zone, or does not take it further in than the best
+    target sent since the arm came near the zone, is sent. (Against the best, not the last: a tolerance against
+    the last target adds up, and in a test a hand moving on steadily took joint 5 from 15 to 6 deg that way.)
+    Otherwise the guard tries the target's position with the last orientation, the last position with the
+    target's orientation, and then only those parts of the move along base x, y and z that do not take the wrist
+    further in (sliding along the edge of the zone; never a direction the hand did not ask for), with and without
+    the target's orientation. It holds the arm only when none of them is acceptable. So any
+    move that helps is followed, and only the part of a move that would make the wrist worse is not.
+    (The guard of 2026-10-31 followed only moves back toward the last pose outside the zone; a hand cannot retrace
+    a pose, and on 2026-11-02 it held the arm for nine grip presses in a row.)
+    Joint 4 or 6 closer than j46_stop to its limit anyway is a fault, raised before the controller's own limit."""
 
     LIMIT_DEG = 360.0  # joints 4 and 6
-    MM_PER_DEG = 2.0  # how a turn of the tool counts against a movement when comparing poses
+    NEAR = 1.5  # margin below which targets are predicted (above it a tick's move cannot reach the zone)
+    SLACK = 0.01  # margin a target may lose against the last one sent (0.15 deg of joint 5): the prediction's own noise
+    HINT_EVERY = 25  # ticks between hints while held (each hint predicts a handful of trial moves)
 
     def __init__(self, j5_zone_deg: float, j46_zone_deg: float, j46_stop_deg: float):
         self.j5_zone, self.j46_zone, self.j46_stop = j5_zone_deg, j46_zone_deg, j46_stop_deg
-        self.safe: tuple | None = None  # (p_m, q) of the arm when its joints were last read outside the zone
         self.last: tuple | None = None  # (p_m, q) of the last target sent
+        self.best: float | None = None  # the highest predicted margin of a target sent since the arm came near the zone
         self.note = ""
+        self.hint = ""
+        self._hint_age = 0
+
+    def engage(self, fb: tuple) -> None:
+        """At an engagement the first target is where the arm is."""
+        self.last, self.best = fb, None
 
     def margin(self, j: Sequence[float]) -> float:
         """Below 1: in the warning zone."""
         return min(abs(j[4]) / self.j5_zone, (self.LIMIT_DEG - abs(j[3])) / self.j46_zone, (self.LIMIT_DEG - abs(j[5])) / self.j46_zone)
 
-    def _d(self, a: tuple, b: tuple) -> float:
-        return dist(a[0], b[0]) * 1000.0 + self.MM_PER_DEG * _q_deg(a[1], b[1])
+    def worst(self, j: Sequence[float]) -> str:
+        return min(((abs(j[4]) / self.j5_zone, f"joint 5 at {j[4]:.0f}deg, near the wrist's turning point"),
+                    ((self.LIMIT_DEG - abs(j[3])) / self.j46_zone, f"joint 4 at {j[3]:.0f}deg, near its limit"),
+                    ((self.LIMIT_DEG - abs(j[5])) / self.j46_zone, f"joint 6 at {j[5]:.0f}deg, near its limit")))[1]
+
+    def predicted(self, j: Sequence[float], fb: tuple, t: tuple) -> float:
+        """Margin of the target t = (p_m, q), predicted from the joints j measured at the pose fb = (p_m, q)."""
+        dp = (t[0][0] - fb[0][0], t[0][1] - fb[0][1], t[0][2] - fb[0][2])
+        return self.margin(kin.predict(j, dp, fb[1], t[1]))
+
+    def _helpful_position(self, j: Sequence[float], fb: tuple, target: tuple) -> tuple:
+        """The target's position with only the parts of the move (along base x, y, z) that do not lower the margin."""
+        p0, q0 = self.last
+        m0 = self.predicted(j, fb, self.last)
+        p = list(p0)
+        for k in range(3):
+            d = target[0][k] - p0[k]
+            if abs(d) < 1e-6:
+                continue
+            e = list(p0)
+            e[k] += math.copysign(0.001, d)
+            if self.predicted(j, fb, (tuple(e), q0)) >= m0:
+                p[k] = target[0][k]
+        return tuple(p)
+
+    def _hint(self, j: Sequence[float], fb: tuple) -> str:
+        """The simple move of the hand that helps the wrist most, found by predicting a few trial moves."""
+        p, q = fb
+        trials = []
+        if q is not None:
+            z = kin.q_to_matrix(q)
+            z = (z[0][2], z[1][2], z[2][2])  # the gripper's axis
+            k = (-z[1], z[0], 0.0)  # z x down: tilting about it brings the gripper toward straight down
+            n = math.hypot(k[0], k[1])
+            if n > 0.03:
+                for a, what in ((0.17, "tilt the gripper back toward straight down"), (-0.17, "tilt the gripper further from straight down")):
+                    trials.append((what, p, _q_turn(q, (k[0] / n * a, k[1] / n * a, 0.0))))
+            if not self.worst(j).startswith("joint 5"):
+                for a in (0.35, -0.35):  # +a about the gripper's axis is clockwise seen from above while it points down
+                    cw = (a > 0) == (z[2] < 0)
+                    trials.append((f"turn the gripper {'clockwise' if cw else 'counter-clockwise'} (seen from above)", p, _q_turn(q, (z[0] * a, z[1] * a, z[2] * a))))
+        r = math.hypot(p[0], p[1])
+        if r > 1e-3:
+            for d, what in ((0.03, "move the gripper away from the robot's base"), (-0.03, "move the gripper toward the robot's base")):
+                trials.append((what, (p[0] + p[0] / r * d, p[1] + p[1] / r * d, p[2]), q))
+        trials += [("move the gripper up", (p[0], p[1], p[2] + 0.03), q), ("move the gripper down", (p[0], p[1], p[2] - 0.03), q)]
+        now = self.margin(j)
+        best = max(trials, key=lambda t: self.predicted(j, fb, (t[1], t[2])))
+        return best[0] if self.predicted(j, fb, (best[1], best[2])) > now + 0.02 else "move the hand back the way it came"
 
     def check(self, joints_deg: Sequence[float] | None, fb: tuple, p_m: Sequence[float], q: Sequence[float] | None) -> tuple:
-        """(fault reason or None, send this target?) for the target (p_m, q), given the joints and the pose fb = (p_m, q)
-        read in the same tick. A target that is sent is remembered."""
+        """(fault reason or None, the target (p_m, q) to send, or None to hold the arm), for the target (p_m, q),
+        given the joints and the pose fb = (p_m, q) read in the same tick. A target that is sent is remembered."""
         if joints_deg is None:
-            return "wrist_guard:no joint angles from the backend", False
+            return "wrist_guard:no joint angles from the backend", None
         j = joints_deg
         for k in (3, 5):
             if self.LIMIT_DEG - abs(j[k]) < self.j46_stop:
-                return f"wrist_limit:joint {k + 1} at {j[k]:.1f}deg, within {self.j46_stop:g}deg of its limit", False
+                return f"wrist_limit:joint {k + 1} at {j[k]:.1f}deg, within {self.j46_stop:g}deg of its limit", None
         target = (tuple(p_m), None if q is None else tuple(q))
-        m = self.margin(j)
-        if m >= 1.0:
-            send, self.note, self.safe = True, "", (tuple(fb[0]), None if fb[1] is None else tuple(fb[1]))
-        elif self.safe is None or self.last is None:
-            send, self.note = True, ""  # entered the zone before any target was sent outside it: nothing to lead back to
+        chosen = target
+        if self.margin(j) >= self.NEAR or self.last is None:
+            self.best = None
         else:
-            send = self._d(target, self.safe) < self._d(self.last, self.safe) - 1e-6
-            worst = min(((abs(j[4]) / self.j5_zone, f"joint 5 at {j[4]:.0f}deg, near the wrist's turning point"),
-                         ((self.LIMIT_DEG - abs(j[3])) / self.j46_zone, f"joint 4 at {j[3]:.0f}deg, near its limit"),
-                         ((self.LIMIT_DEG - abs(j[5])) / self.j46_zone, f"joint 6 at {j[5]:.0f}deg, near its limit")))[1]
-            self.note = ("leading back: " if send else "held: ") + worst
-        if send:
-            self.last = target
-        return None, send
+            if self.best is None:
+                self.best = self.predicted(j, fb, self.last)
+            floor = min(1.0, self.best) - self.SLACK
+            parts = [t for t in (target, (target[0], self.last[1]), (self.last[0], target[1])) if t != self.last]
+            parts += [lambda: (self._helpful_position(j, fb, target), target[1]),  # computed only when needed
+                      lambda: (self._helpful_position(j, fb, target), self.last[1])]
+            for t in parts:  # the last target itself is a hold
+                t = t() if callable(t) else t
+                if t == self.last:
+                    continue
+                m = self.predicted(j, fb, t)
+                if m >= floor:
+                    chosen, self.best = t, max(self.best, m)
+                    break
+            else:
+                chosen = None
+        if chosen is target and self.margin(j) >= 1.0:
+            self.note = ""
+        elif chosen is None:
+            if not self.note.startswith("held") or self._hint_age >= self.HINT_EVERY:
+                self.hint, self._hint_age = self._hint(j, fb), 0
+            self._hint_age += 1
+            self.note = f"held: {self.worst(j)}; try: {self.hint}"
+        else:
+            self.note = ("following" if chosen is target else "following part of the move") + f": {self.worst(j)}"
+        if chosen is not None:
+            self.last = chosen
+        return None, chosen
+
+
+def _q_turn(q: Sequence[float], r: Sequence[float]) -> tuple:
+    """q turned by the rotation vector r (base frame)."""
+    a = math.sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2])
+    s = math.sin(a / 2.0) / a if a > 1e-12 else 0.5
+    t = (r[0] * s, r[1] * s, r[2] * s, math.cos(a / 2.0))
+    x, y, z, w = q
+    return (t[3] * x + t[0] * w + t[1] * z - t[2] * y, t[3] * y - t[0] * z + t[1] * w + t[2] * x,
+            t[3] * z + t[0] * y - t[1] * x + t[2] * w, t[3] * w - t[0] * x - t[1] * y - t[2] * z)  # fmt: skip

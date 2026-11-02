@@ -328,13 +328,24 @@ class TeleopAdapter:
             send = True
             if why is None and self.wrist is not None:
                 q_now = None if self.rot is None else fb.q_xyzw
-                why, send = self.wrist.check(fb.joints_deg, (fb.p_m, q_now), limited, None if self.rot is None else self.rot.q_lim)
+                q_t = None if self.rot is None else self.rot.q_lim
+                why, chosen = self.wrist.check(fb.joints_deg, (fb.p_m, q_now), limited, q_t)
                 latch = True
-                if why is None and not send:  # held: the limited targets stay where the arm was last sent
-                    self.limiter.reset(self.wrist.last[0])
-                    limited = self.limiter.p
-                    if self.rot is not None and self.wrist.last[1] is not None:
-                        self.rot.q_lim = self.wrist.last[1]
+                if why is None:
+                    send = chosen is not None
+                    p_go, q_go = chosen if send else self.wrist.last  # held: the targets stay where the arm was last sent
+                    if tuple(p_go) != tuple(limited):  # the axes not followed stop; the others keep their speed
+                        v = tuple(0.0 if abs(p_go[k] - limited[k]) > 1e-12 else self.limiter.v[k] for k in range(3))
+                        self.limiter.reset(p_go)
+                        self.limiter.v = v
+                        limited = self.limiter.p
+                    if self.rot is not None and q_go is not None and tuple(q_go) != tuple(q_t):
+                        self.rot.q_lim = q_go
+                        try:
+                            orientation = self.backend.orientation_from_q(q_go)
+                        except BackendError as e:
+                            why = "command_failed:" + str(e)[:80]
+                            send = False
             if why is None and send:
                 try:
                     self.backend.command_target(limited, orientation)
@@ -381,7 +392,7 @@ class TeleopAdapter:
                         self.rot.engage(view.sample.q_xyzw, fb.q_xyzw)  # rotation target starts AT the tool's orientation
                     self.limiter.reset(fb.p_m)  # limited target starts AT the tool: zero jump
                     if self.wrist is not None:
-                        self.wrist.last = (tuple(fb.p_m), fb.q_xyzw if self.rot is not None else None)
+                        self.wrist.engage((tuple(fb.p_m), fb.q_xyzw if self.rot is not None else None))
                     self.p_req = tuple(fb.p_m)
                     self._transition(now, old, "valid_press_after_valid_release")
                     try:
@@ -411,6 +422,7 @@ class TeleopAdapter:
             "wrist": None if self.wrist is None or eng.state != ACTIVE else self.wrist.note,
             "rot_deg": None if self.rot is None else self.rot.angles_deg()[0], "rot_req_deg": None if self.rot is None else self.rot.angles_deg()[1],
             "fb_q": None if fb is None or fb.q_xyzw is None else [round(v, 6) for v in fb.q_xyzw],
+            "joints": None if fb is None or fb.joints_deg is None else [round(v, 2) for v in fb.joints_deg],
             "gripper": grip_status, "gripper_pct": None if proposal is None else proposal.pct_closed,
             "gripper_fb_pct": None if gripper_fb is None else round(gripper_fb, 2),
             "dt_ms": None if dt_ns is None else round(dt_ns / 1e6, 2), "synthetic": self.backend.synthetic,

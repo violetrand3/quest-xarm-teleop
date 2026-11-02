@@ -81,11 +81,15 @@ All of them hold the arm at the edge, the way a wall would: no error, and the ot
 - **Turn** (`TURN_MAX=90`): how far the gripper may turn about the vertical, either way, from where it pointed
   at the start. 90 degrees is enough to put the jaws across an object lying in any direction.
 - **Speed**: the target moves at most `V_MAX` mm/s, and the gripper turns at most `ROT_SPEED` degrees/s.
-- **Wrist**: pointing straight down close to the robot's base brings the wrist to its turning point, where
-  two wrist joints spin a full turn for a small move (2026-10-31: that stopped the arm with error 23). The
-  program reads the joints every 20 ms; near that point it holds the arm and only follows moves that lead
-  back out. The terminal then says `WRIST HELD (…)`: move your hand back the way it came, or tilt the
-  gripper away from straight down.
+- **Wrist**: when the gripper points along the forearm (for example reaching close to the base, or high
+  with the gripper tilted outward), joint 5 comes near 0. That is the wrist's turning point: there two
+  wrist joints spin a full turn for a small move (2026-10-31: that stopped the arm with error 23). The
+  program reads the joints every 20 ms and works out, from the arm's geometry, what each move would do to
+  them. Within 15° of that point (or 45° of the joint 4/6 limits) it follows every move, or part of a move,
+  that does not take the wrist further in, and stops the rest. You can always move away in a direction that
+  helps; you do not have to retrace your path. The terminal then says, for example,
+  `WRIST HELD (joint 5 at 15deg, …). Try: tilt the gripper back toward straight down.` The suggestion is
+  worked out for the pose the arm is in.
 
 A demo still open when the session ends is saved and marked `closed_by: session_end`.
 Ctrl-C ends the session cleanly: the lab program parks the arm. Neither Ctrl-C nor
