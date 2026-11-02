@@ -71,14 +71,26 @@ scripts/teleop status
 there, and whether the lab host runs the same programs as your checkout.
 
 The lab host has **one copy of the programs, shared by everyone** who uses the `dev` account
-(`~/quest-xarm-teleop-dryrun`). `record` and `try` refuse to start when it differs from your checkout,
-so a session never runs code you don't have. When yours is the newer version, install it with:
+(`~/quest-xarm-teleop-dryrun`). `record` and `try` refuse to start when the programs that run there differ
+from your checkout, so a session never runs code you don't have. Files that run only on your PC (such as
+the headset reader) are not compared.
+
+To install a new version there, commit it and push it to GitHub first, then:
 
 ```
-scripts/teleop sync      # refused while a session is running; records which version was installed and by whom
+scripts/teleop sync
 ```
 
-If the other person's version is newer, update your checkout (`git pull`) instead of syncing over theirs.
+`sync` installs only a version that is committed, pushed, and not older than what the lab host has, and
+never while a session is running. So the others can always match it with `git pull`. When it refuses, it
+says why:
+
+| Message | What to do |
+|---|---|
+| changes that are not committed | commit and `git push`, then sync |
+| commits that are not on GitHub | `git push`, then sync |
+| GitHub has newer commits, or the lab host runs a newer version | `git pull` (then there is usually nothing to sync) |
+| the lab host's copy is not a version on GitHub | someone installed work in progress with an older launcher. Ask them to push it, or replace it with `scripts/teleop sync --overwrite` |
 
 ## Then
 

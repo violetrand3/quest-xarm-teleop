@@ -10,7 +10,8 @@
 #   scripts/teleop episodes [session] list the recorded sessions, or the demos of one session
 #   scripts/teleop watch              follow the lab program's console of the running session
 #   scripts/teleop stop               end the running session now (a SOFTWARE stop; the lab program parks the arm)
-#   scripts/teleop sync               install this checkout's programs on the lab host (refused while a session runs)
+#   scripts/teleop sync               install this checkout's programs on the lab host: committed, pushed, not older
+#                                     than the lab's copy, and no session running (--overwrite: replace a newer one)
 #   scripts/teleop studio             open UFactory Studio, the arm's own control page (clearing errors, turning joints)
 #
 # Settings: config/teleop_session.conf.  THE ARM MOVES in "record" and "try": they ask the go/no-go questions first
@@ -30,25 +31,90 @@ note() { echo "  - $*"; }
 for t in adb ssh rsync ss python3; do command -v "$t" > /dev/null || die "'$t' is not installed on this PC (see docs/getting_started.md)"; done
 
 # -- the lab host runs its own copy of scripts/ (in ~/$LAB_DIR); it must be the same as this checkout's ------------
+# The lab copy is shared by everyone using the lab account. "sync" installs only what is committed and on GitHub, so
+# the others can always match it with git pull; the start check compares only the programs that run on the lab host.
 sync_files() {   # what "sync" installs: the programs, tests, docs and configs; not the settings file, which only this PC reads
   { git -C "$P" ls-files -- scripts tests config docs 2>/dev/null || (cd "$P" && find scripts tests config docs -type f); } \
     | grep -v -e '__pycache__' -e '^config/teleop_session.conf$'; }
+lab_files() {   # the programs that run on the lab host: what this launcher starts there, and what those import or start
+  (cd "$P" && python3 - <<'PY'
+import ast, pathlib, re, sys
+starts = ["scripts/ops/lab_teleop_live_run.sh", "scripts/live_teleop.py", "scripts/lab_cam_relay.py", "scripts/episode_inspect.py"]
+missing = [f for f in starts if not pathlib.Path(f).is_file()]
+if missing:
+    sys.exit(f"lab_files: {', '.join(missing)} not found; update the list in scripts/teleop")
+seen, todo = set(), list(starts)
+while todo:
+    f = todo.pop()
+    p = pathlib.Path(f)
+    if f in seen or not p.is_file():
+        continue
+    seen.add(f)
+    text = p.read_text(encoding="utf-8")
+    if f.endswith(".sh"):
+        todo += re.findall(r"scripts/[\w/.-]+\.(?:py|sh)", text)
+        continue
+    for n in ast.walk(ast.parse(text, f)):
+        names = []
+        if isinstance(n, ast.Import):
+            names = [a.name for a in n.names]
+        elif isinstance(n, ast.ImportFrom) and n.module and not n.level:
+            names = [n.module]
+        elif isinstance(n, ast.Constant) and isinstance(n.value, str) and re.fullmatch(r"[\w-]+\.py", n.value):
+            names = [n.value[:-3]]   # a program started by file name, e.g. Path(__file__).with_name("episode_cameras.py")
+        todo += [f"{p.parent}/{m.split('.')[0]}.py" for m in names]
+print("\n".join(sorted(seen)))
+PY
+  ); }
 version_here() { git -C "$P" log -1 --format='%h %cs' 2>/dev/null || echo "not a git checkout"
   [ -n "$(git -C "$P" status --porcelain -- scripts 2>/dev/null)" ] && echo " + changes not committed"; }
-lab_differs() {   # prints the scripts that differ on the lab host (nothing = the same)
-  (cd "$P" && sync_files | grep '^scripts/' | xargs sha256sum) \
-    | ssh "${SSHO[@]}" "$LAB_HOST" "cd ~/$LAB_DIR 2>/dev/null && sha256sum -c --quiet 2>/dev/null || true; [ -d ~/$LAB_DIR ] || echo 'NO_LAB_DIR: FAILED'" \
+lab_differs() {   # prints the lab-side programs that differ on the lab host (nothing = the same)
+  local f; f=$(lab_files) || die "cannot list the lab-side programs"
+  (cd "$P" && echo "$f" | xargs sha256sum) \
+    | ssh "${SSHO[@]}" "$LAB_HOST" "if cd ~/$LAB_DIR 2>/dev/null; then sha256sum -c --quiet 2>/dev/null || true; else cat > /dev/null; echo 'NO_LAB_DIR: FAILED'; fi" \
     | sed -n 's/: FAILED.*//p'; }
+lab_version() { lab "cat ~/$LAB_DIR/SYNCED_FROM.txt 2>/dev/null"; }   # e.g. "452b17c 2026-11-02, installed by dev@pc on ..."
+lab_order() {   # how the lab copy's commit relates to this checkout: older, newer, same, unknown
+  local v h; v=$1; h=${v%% *}
+  case "$v" in *"not committed"*|"") echo unknown; return;; esac
+  git -C "$P" rev-parse -q --verify "$h^{commit}" > /dev/null || git -C "$P" fetch -q origin 2>/dev/null
+  git -C "$P" rev-parse -q --verify "$h^{commit}" > /dev/null || { echo unknown; return; }
+  if [ "$(git -C "$P" rev-parse "$h")" = "$(git -C "$P" rev-parse HEAD)" ]; then echo same
+  elif git -C "$P" merge-base --is-ancestor "$h" HEAD; then echo older
+  elif git -C "$P" merge-base --is-ancestor HEAD "$h"; then echo newer
+  else echo unknown; fi; }
 lab_check() {   # stops when the lab host would run different programs than this checkout
-  local d; d=$(lab_differs)
+  local d v; d=$(lab_differs)
   [ -z "$d" ] && return 0
+  v=$(lab_version)
   echo "The lab host's copy of the programs (~/$LAB_DIR) is not the same as this checkout:"
   echo "  this checkout:   $(version_here | tr -d '\n')"
-  echo "  lab host's copy: $(lab "cat ~/$LAB_DIR/SYNCED_FROM.txt 2>/dev/null" || echo '?')"
+  echo "  lab host's copy: ${v:-?}"
   echo "  differing: $(echo "$d" | head -5 | tr '\n' ' ')$([ "$(echo "$d" | wc -l)" -gt 5 ] && echo "and $(($(echo "$d" | wc -l) - 5)) more")"
-  die "if this checkout is the newer one, run: scripts/teleop sync   (if the lab's is newer, update this checkout first, e.g. git pull)"
+  case $(lab_order "$v") in
+    newer) die "the lab host runs a newer version: update this checkout with git pull";;
+    older) die "this checkout is newer: install it with scripts/teleop sync (commit and push your changes first)";;
+    *)     die "the lab host's copy is not a version on GitHub (it may be work in progress): ask whoever installed it (above) to push it, or replace it with scripts/teleop sync --overwrite";;
+  esac
 }
-lab_sync() {
+lab_sync() {   # [--overwrite]: also replace a lab copy that is newer than this checkout or not on GitHub
+  local over=${1:-} v o c
+  [ -z "$over" ] || [ "$over" = --overwrite ] || die "usage: scripts/teleop sync [--overwrite]"
+  git -C "$P" rev-parse -q --verify HEAD > /dev/null || die "sync needs a git checkout (git clone the repository)"
+  c=$(git -C "$P" status --porcelain -uno -- scripts tests config docs ':!config/teleop_session.conf') || die "git status failed"
+  [ -z "$c" ] || die "this checkout has changes that are not committed; commit and push them first, so the others can git pull the same version:
+$(echo "$c" | head -8)"
+  git -C "$P" fetch -q origin || die "cannot reach GitHub to check that this version is pushed (git fetch failed)"
+  git -C "$P" rev-parse -q --verify '@{u}' > /dev/null || die "this branch has no GitHub branch to compare with (git push -u origin $(git -C "$P" branch --show-current))"
+  git -C "$P" merge-base --is-ancestor '@{u}' HEAD || die "GitHub has newer commits than this checkout; git pull first"
+  git -C "$P" merge-base --is-ancestor HEAD '@{u}' || die "this checkout has commits that are not on GitHub; git push first"
+  [ -n "$(lab_differs)" ] || { echo "The lab host already runs this version ($(version_here | tr -d '\n')). Nothing to install."; return 0; }
+  v=$(lab_version); o=$(lab_order "$v")
+  [ -z "$v" ] && lab "[ ! -d ~/$LAB_DIR/scripts ]" && o=older   # nothing installed yet
+  if [ "$o" = newer ] || [ "$o" = unknown ]; then
+    [ "$over" = --overwrite ] || die "the lab host runs ${v:-a version not recorded}, which is $([ "$o" = newer ] && echo 'newer than this checkout: git pull first' || echo 'not a version on GitHub (it may be work in progress): ask whoever installed it to push it, or replace it with scripts/teleop sync --overwrite')"
+    echo "Replacing the lab host's copy (${v:-not recorded})."
+  fi
   lab "pgrep -f '[s]cripts/live_teleop.py' > /dev/null" && die "a teleop session is running on the lab host; sync after it ends"
   (cd "$P" && sync_files | rsync -a --delay-updates --files-from=- -e "ssh ${SSHO[*]}" ./ "$LAB_HOST:$LAB_DIR/") || die "copying to the lab host failed"
   lab "mkdir -p ~/$LAB_DIR/logs ~/$LAB_DIR/episodes && echo '$(version_here | tr -d '\n'), installed by $(id -un)@$(hostname -s) on $(date '+%Y-%m-%d %H:%M')' > ~/$LAB_DIR/SYNCED_FROM.txt"
@@ -263,7 +329,7 @@ case "${1:-}" in
           [ "$(adb devices | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] && echo "Teleop app on the headset: $(adb shell pm list packages org.questxarm.reader | grep -q . && echo yes || echo 'NO (see docs/getting_started.md)')"
           d=$(lab_differs); echo "Lab host's programs: $([ -z "$d" ] && echo 'same as this checkout' || echo "DIFFERENT from this checkout ($(echo "$d" | wc -l) files); see scripts/teleop sync")"
           echo "Camera view: $URL";;
-  sync) lab_sync;;
+  sync) lab_sync "${2:-}";;
   studio)   # the arm's own web page, through the lab host; the arm's address is read there and never printed or saved
     if ! ss -ltn | grep -q "127.0.0.1:$STUDIO_LOCAL_PORT "; then
       ip=$(lab "grep -oE 'XArmAPI\\(\"[0-9.]+\"' /home/dev/robotdash/stepper.py | grep -oE '[0-9]+(\\.[0-9]+){3}' | head -1")
@@ -280,5 +346,5 @@ case "${1:-}" in
   watch) n=$(cat "$R/current_session" 2>/dev/null) || die "no session name known"; lab "tail -n 5 -F ~/$L/teleop_$n.console.txt" | sed -u -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/<ip>/g';;
   stop) n=$(cat "$R/current_session" 2>/dev/null) || die "no session name known"
         lab "kill -INT \$(cat ~/$L/pid_$n) 2>/dev/null && echo 'stop sent to the lab program of $n; it parks the arm (software stop, not the physical stop)' || echo 'no running lab program for $n'";;
-  *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 1;;
+  *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 1;;
 esac

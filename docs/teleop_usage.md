@@ -28,7 +28,7 @@ scripts/teleop record        # demo recording session; runs until you press Ctrl
 | `scripts/teleop episodes [session]` | Lists recorded sessions, or checks the demos of one |
 | `scripts/teleop watch` | Follows the lab program's console during a session (second terminal) |
 | `scripts/teleop stop` | Ends the running session from a second terminal (software stop) |
-| `scripts/teleop sync` | Installs this checkout's programs on the lab host (see `getting_started.md`) |
+| `scripts/teleop sync` | Installs this checkout's programs on the lab host: only a committed, pushed version, not older than the lab's (see `getting_started.md`) |
 | `scripts/teleop studio` | Opens UFactory Studio, the arm's own control page, at `http://127.0.0.1:18333/`: clearing a controller error, turning a wrist joint back |
 
 A session has no time limit unless you give minutes. It ends when you press Ctrl-C, and by itself when
