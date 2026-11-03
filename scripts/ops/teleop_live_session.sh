@@ -62,13 +62,14 @@ finish() {
   if grep -q 'lab program finished and parked' "$DET"; then msg "The arm program has ended and parked the arm."
   else msg "WARNING: the arm program did not confirm that it ended. Look at the arm; use the physical stop if it is moving."; fi
   T=$(cat "$R/tailc.pid" 2>/dev/null); kill "$T" 2>/dev/null
-  if [ "$REC" = 1 ]; then scp -q "${SSHO[@]:1}" "$H:$L/teleop_$N.*" "$H:$L/teleop_link_$N.jsonl" "$H:$L/episodes_$N.check.txt" "$D/" >> "$DET" 2>&1
-  else scp -q "${SSHO[@]:1}" "$H:$L/teleop_$N.*" "$H:$L/teleop_link_$N.jsonl" "$H:$L/refdiff_${N}_*.json" "$D/" >> "$DET" 2>&1; fi
+  # rsync -z: these are text logs (about 80 MB for a 25 min session) and copy about 7x faster compressed; scp -C did not help
+  if [ "$REC" = 1 ]; then rsync -z -t -e "ssh ${SSHO[*]:1}" "$H:$L/teleop_$N.*" "$H:$L/teleop_link_$N.jsonl" "$H:$L/episodes_$N.check.txt" "$D/" >> "$DET" 2>&1
+  else rsync -z -t -e "ssh ${SSHO[*]:1}" "$H:$L/teleop_$N.*" "$H:$L/teleop_link_$N.jsonl" "$H:$L/refdiff_${N}_*.json" "$D/" >> "$DET" 2>&1; fi
   adb -s "$S" shell am force-stop org.questxarm.reader >> "$DET" 2>&1; echo "DONE $N ($1)" >> "$DET"
 }
 videos() {
   if [ "$REC" = 1 ] && [ "${MAKE_VIDEOS:-1}" = 1 ]; then
-    msg "Copying the demos here and making the videos ..."
+    msg "Making the videos on $H and copying the demos here (without the raw camera files) ..."
     if bash "$P/scripts/ops/episodes_videos.sh" "$N" >> "$DET" 2>&1; then msg "Videos are ready."; else msg "The videos were not made; see $DET"; fi
   fi
   return 0

@@ -98,14 +98,18 @@ Ctrl-C ends the session cleanly: the lab program parks the arm. Neither Ctrl-C n
 
 ## After a session
 
-The summary lists the demos. For each one, on this PC and on linux2:
+The summary lists the demos. The videos are made on linux2 and copied here with the rest of each demo, except the
+raw camera files (`cam_*.mjpeg`, about 0.7 MB/s per camera), which stay on linux2: copying them took most of the
+wait. A 2-demo, 8-minute session takes about 2 minutes. For each demo, on this PC and on linux2:
 
 ```
 data/episodes/<session>/episode_0001/view_iphone.mp4     gripper camera, for watching
 data/episodes/<session>/episode_0001/view_rs_color.mp4   fixed RealSense camera (before 2026-10-14: view_zed.mp4)
 data/episodes/<session>/episode_0001/steps.jsonl         arm pose, joints, targets, jaws every 20 ms
-data/episodes/<session>/episode_0001/cam_*.mjpeg + .frames.jsonl   the recorded frames with their times
+data/episodes/<session>/episode_0001/cam_*.frames.jsonl the time of every recorded frame
 ```
+
+The raw frames themselves (`cam_*.mjpeg`) are only on linux2. To copy them here too: `scripts/ops/episodes_fetch.sh <session>`.
 
 On linux2 the same folders are under `~/quest-xarm-teleop-dryrun/episodes/<session>/`.
 Action labels: `python3 scripts/episode_inspect.py <session folder> --labels 8` (see the report).
