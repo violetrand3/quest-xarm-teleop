@@ -148,9 +148,20 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Lab cameras (l
 <style>body{margin:0;background:#111;color:#ccc;font:13px sans-serif}
 .row{display:flex;gap:6px;padding:6px;height:calc(100vh - 34px)}
 .v{flex:1;display:flex;flex-direction:column;min-width:0}.v img{width:100%;height:100%;object-fit:contain;background:#000}
-.b{padding:6px 10px}</style></head><body>
-<div class="b">Lab cameras, low rate, view-only (no robot controls). __INFO__</div>
-<div class="row">__VIEWS__</div></body></html>"""
+.b{padding:6px 10px}.v img{cursor:pointer}.v img.t{transform:rotate(180deg)}.v span{color:#fc6}</style></head><body>
+<div class="b">Lab cameras, low rate, view-only (no robot controls). Click a picture to turn it upside down (this browser remembers it). __INFO__</div>
+<div class="row">__VIEWS__</div>
+<script>
+// Manual 180-degree turn per camera, in this browser only (the phone on the gripper turns its own picture as the wrist
+// tilts, and the new beige jaws defeat the automatic check). The recorded frames are not changed.
+function key(k){return "turn_"+k}
+function get(k){try{return localStorage.getItem(key(k))==="1"}catch(e){return false}}
+function put(k,v){try{localStorage.setItem(key(k),v?"1":"0")}catch(e){}}
+function show(img){var k=img.dataset.k,t=get(k);img.classList.toggle("t",t);
+  img.parentNode.querySelector("span").textContent=t?" (turned 180\u00b0 here, click to undo)":""}
+document.querySelectorAll(".v img").forEach(function(img){show(img);
+  img.addEventListener("click",function(){put(img.dataset.k,!get(img.dataset.k));show(img)})});
+</script></body></html>"""
 
 
 def make_handler(views: dict, fps: float, info: str):
@@ -167,7 +178,7 @@ def make_handler(views: dict, fps: float, info: str):
         def do_GET(self) -> None:  # noqa: N802
             p = self.path.split("?")[0]
             if p in ("/", "/index.html"):
-                tiles = "".join(f'<div class="v"><div>{k}</div><img src="/cam/{k}" alt="{k}"></div>' for k in views)
+                tiles = "".join(f'<div class="v"><div>{k}<span></span></div><img src="/cam/{k}" alt="{k}" data-k="{k}"></div>' for k in views)
                 self._send(200, "text/html; charset=utf-8", PAGE.replace("__VIEWS__", tiles).replace("__INFO__", info).encode())
             elif p == "/stats":
                 self._send(200, "application/json", json.dumps({k: {"clients": v.clients, "frames_in": v.frames_in, "frames_out": v.frames_out,

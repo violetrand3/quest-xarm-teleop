@@ -213,8 +213,10 @@ PY
 
 ensure_cameras() {   # $1 = seconds the view must stay up
   local need=$1 pid left args
-  # --upright: the phone app turns the gripper picture 180 degrees when the wrist tilts (2026-10-14); the view turns it back
-  local want="--port $RELAY_PORT --views $CAMERAS --upright ${CAMERAS%%,*} --fps 8 --width 480 --quality 55 --duration $RELAY_LIFE_S"
+  # The phone app turns the gripper picture 180 degrees when the wrist tilts (2026-10-14). --upright turned it back by finding
+  # the blue jaws; the jaws fitted after 2026-11-02 are beige, so it is off (it could only be misled by blue objects in view)
+  # and the camera page turns a picture when it is clicked.
+  local want="--port $RELAY_PORT --views $CAMERAS --fps 8 --width 480 --quality 55 --duration $RELAY_LIFE_S"
   pid=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["relay"]; print(r[0][0] if r else "")' "$R/status.json")
   left=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["relay"]; print((r[0][2] - r[0][1] if r[0][2] else 10**9) if r else 0)' "$R/status.json")
   args=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["relay"]; print(r[0][3] if r and len(r[0]) > 3 else "")' "$R/status.json")
