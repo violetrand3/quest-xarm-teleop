@@ -67,7 +67,7 @@ print("\n".join(sorted(seen)))
 PY
   ); }
 version_here() { git -C "$P" log -1 --format='%h %cs' 2>/dev/null || echo "not a git checkout"
-  [ -n "$(git -C "$P" status --porcelain -- scripts 2>/dev/null)" ] && echo " + changes not committed"; }
+  [ -n "$(git -C "$P" status --porcelain -uno -- scripts 2>/dev/null)" ] && echo " + changes not committed"; }
 lab_differs() {   # prints the lab-side programs that differ on the lab host (nothing = the same)
   local f; f=$(lab_files) || die "cannot list the lab-side programs"
   (cd "$P" && echo "$f" | xargs sha256sum) \
