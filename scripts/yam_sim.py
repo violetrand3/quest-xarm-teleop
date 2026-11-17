@@ -190,3 +190,50 @@ class SimYamPair:
         if part_a in GRIPPER_PARTS and part_b in GRIPPER_PARTS:
             return ""
         return f"{arm_a} arm: {part_a} and {part_b} overlap" if dist < SELF_OVERLAP else ""
+
+
+class SimView:
+    """Browser view of the two simulated arms (viser), on the lab host's loopback only: reach it through an SSH
+    tunnel. Shows the arms, the table, each arm's box and its current target. View only: no controls."""
+
+    def __init__(self, pair: SimYamPair, port: int):
+        import viser  # in I2RT's environment
+
+        self.pair = pair
+        self.server = viser.ViserServer(host="127.0.0.1", port=port, verbose=False)
+        self.vd = mujoco.MjData(pair.cm)  # its own state: the control step's clearance checks are not disturbed
+        m, sc = pair.cm, self.server.scene
+        sc.add_grid("/table", width=1.6, height=1.6, cell_size=0.1, position=(0.3, 0.0, 0.0))
+        self.meshes = {}
+        for g in range(m.ngeom):
+            if m.geom_type[g] != mujoco.mjtGeom.mjGEOM_MESH:
+                continue
+            mid = m.geom_dataid[g]
+            v = m.mesh_vert[m.mesh_vertadr[mid] : m.mesh_vertadr[mid] + m.mesh_vertnum[mid]]
+            f = m.mesh_face[m.mesh_faceadr[mid] : m.mesh_faceadr[mid] + m.mesh_facenum[mid]]
+            self.meshes[g] = sc.add_mesh_simple(f"/arms/g{g}", v.copy(), f.copy(), color=tuple(int(c * 255) for c in m.geom_rgba[g][:3]))
+        for n, a in pair.arms.items():
+            x0, x1, y0, y1, z0, z1 = a.box
+            sc.add_box(f"/boxes/{n}", dimensions=(x1 - x0, y1 - y0, z1 - z0), position=((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2),
+                       color=(80, 160, 255) if n == "left" else (255, 160, 80), opacity=0.08)  # fmt: skip
+        self.targets = {n: sc.add_frame(f"/targets/{n}", axes_length=0.05, axes_radius=0.003) for n in pair.names}
+
+    def show(self, q_by_name: Mapping[str, Sequence[float]], targets: Mapping[str, Sequence | None]) -> None:
+        m, d = self.pair.cm, self.vd
+        for n, q in q_by_name.items():
+            d.qpos[self.pair.cm_qadr[n]] = self.pair._q_model(q[:N_ARM], q[N_ARM] if len(q) > N_ARM else 0.0)
+        mujoco.mj_kinematics(m, d)
+        with self.server.atomic():
+            for g, h in self.meshes.items():
+                h.position = d.geom_xpos[g].copy()
+                w = np.empty(4)
+                mujoco.mju_mat2Quat(w, d.geom_xmat[g])
+                h.wxyz = w
+            for n, t in targets.items():
+                self.targets[n].visible = t is not None
+                if t is not None:
+                    self.targets[n].position = t[0]
+                    self.targets[n].wxyz = (t[1][3], t[1][0], t[1][1], t[1][2])
+
+    def close(self) -> None:
+        self.server.stop()

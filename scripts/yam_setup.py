@@ -3,9 +3,9 @@
 World frame: origin on the table top midway between the two arm bases; x forward (the way both arms face,
 away from the operator), y to the operator's left, z up. Metres and radians throughout the YAM code.
 
-ASSUMED until measured on the rig (2026-11-17): the bases stand on the table 0.60 m apart, both facing +x;
-the arms are the standard YAM with the LINEAR_4310 gripper (I2RT's defaults). The operator's left hand
-drives the left arm (can_left), the right hand the right arm (can_right).
+ASSUMED until measured on the rig (2026-11-17): the bases stand on the table 0.60 m apart, both facing +x; the
+arms are the standard YAM (I2RT's default). The gripper, LINEAR_4310, was confirmed by the operator on
+2026-11-17. The operator's left hand drives the left arm (can_left), the right hand the right arm (can_right).
 """
 
 from __future__ import annotations

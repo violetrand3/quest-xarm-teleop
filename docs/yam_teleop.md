@@ -4,15 +4,33 @@ Two I2RT YAM arms on the lab host (`can_left`, `can_right`), driven by the two Q
 hand drives the left arm, the right hand the right arm. It shares the Quest side, the recorder and the launcher
 with the xArm teleop, and nothing else: the YAM code never imports the xArm code, and the reverse (a test checks).
 
-**Status (2026-11-17): step 1 of 4 done, in simulation. Nothing here can move a real arm:** the arm layer
+**Status (2026-11-17): steps 1-3 done, in simulation. Nothing here can move a real arm:** the arm layer
 (`yam_sim.py`) creates every robot with `sim=True` and has no path to the CAN links.
 
 | Step | What | State |
 |---|---|---|
 | 1 | Two simulated arms driven to tool targets through the IK, with the safety rules below | done |
-| 2 | Replay recorded hand motion (xArm sessions) through the simulated arms | next |
-| 3 | Live Quest -> simulated arms: both controllers, one clutch per hand, a browser view | |
+| 2 | Replay recorded hand motion (xArm sessions) through the simulated arms | done |
+| 3 | Live Quest -> simulated arms: both controllers, one clutch per hand, a browser view | done; first try with the headset to come |
 | 4 | Real arms: safety review, gains, gripper calibration, base placement, first engagement with someone at the arms | needs the lab |
+
+## Trying it (simulation)
+
+```
+scripts/teleop yam-sim
+```
+
+On the PC the headset is plugged into, after `scripts/teleop sync` has installed this version on the lab host.
+It starts the simulation on the lab host, the sender and the headset app, and prints when the controllers are
+found. Watch the two simulated arms at **http://127.0.0.1:18767/** (a 3D view: drag to turn it).
+
+- Switch BOTH controllers on. Left controller -> left arm, right controller -> right arm.
+- Hold the side grip (middle finger) to move that arm, release to stop. A grip already held when the session
+  starts must be released once first.
+- The index trigger closes that arm's gripper (it starts open; it follows once the trigger matches it).
+- Enter acknowledges a latched problem (e.g. after the headset's view was re-centred); Ctrl-C ends.
+- The terminal prints a line whenever a hand's state changes, with what limited it (box edge, speed limit,
+  "too close", an end stop, ...). Everything is also logged on the lab host: `~/quest-xarm-teleop-dryrun/logs/yam_<session>.*`.
 
 ## Files
 
@@ -23,6 +41,11 @@ with the xArm teleop, and nothing else: the YAM code never imports the xArm code
 | `scripts/yam_control.py` | any PC | one control step for both arms: clutch, limits, IK, keeping clear, tracking fault |
 | `scripts/yam_sim.py` | lab host, I2RT's environment | two simulated arms: IK (mink), clearance model (MuJoCo), commands |
 | `scripts/yam_sim_check.py` | lab host, I2RT's environment | drives the simulated arms through every safety rule; PASS/FAIL per rule |
+| `scripts/yam_input.py` | any PC | both controllers from the Quest stream; each judged on its own controller |
+| `scripts/yam_teleop.py` | any PC | per hand: clutch (the xArm's rules), hand-to-tool mapping, gripper pickup |
+| `scripts/yam_replay.py` | lab host, I2RT's environment | replays a recorded session (`data/sessions/src_*.jsonl`) through the simulated arms |
+| `scripts/yam_sim_live.py` | lab host, I2RT's environment | the live simulation: Quest stream in, simulated arms, browser view |
+| `scripts/ops/yam_sim_session.sh` | operator's PC | one session, started by `scripts/teleop yam-sim` |
 
 Run the check on the lab host (from a synced copy):
 
@@ -30,7 +53,8 @@ Run the check on the lab host (from a synced copy):
 /home/dev/yam/i2rt/.venv/bin/python scripts/yam_sim_check.py
 ```
 
-Tests: `tests/test_yam_control.py` (any PC) and `tests/test_yam_sim.py` (lab host, skipped elsewhere).
+Tests: `tests/test_yam_control.py`, `tests/test_yam_teleop.py` (any PC) and `tests/test_yam_sim.py` (lab host,
+skipped elsewhere).
 
 ## Safety rules (per control step, 50 Hz)
 
@@ -53,9 +77,17 @@ All the numbers are in `yam_setup.py`. They are first guesses, to be tuned in st
 
 ## Assumptions to confirm on the rig
 
-- Arm model and gripper: standard YAM with the LINEAR_4310 gripper (I2RT's defaults).
+- Arm model: the standard YAM (I2RT's default). The gripper, LINEAR_4310, was confirmed on 2026-11-17.
 - Placement: both bases on the table, 0.60 m apart, both facing away from the operator. The boxes in
   `yam_setup.py` follow from that.
+
+## Hand to arm
+
+While a hand's grip is held, its arm's tool follows the hand from where both were when the grip was pressed:
+the hand's movement scaled by 0.667 (as on the xArm), the hand's rotation 1:1. The axes are the xArm's (the
+operator faces the way the arms face; OPERATOR_YAW in config/teleop_session.conf applies as on the xArm). The gripper follows the
+trigger only once the trigger has come within 0.1 of the gripper's state, so an arm holding something does not
+drop it when the hand comes back with the trigger released.
 
 ## Found in simulation
 
@@ -63,5 +95,10 @@ All the numbers are in `yam_setup.py`. They are first guesses, to be tuned in st
   20 ms available.
 - Pointing straight down, the grasp point cannot go much above 20 cm (the wrist would be out of reach), so
   top-down grasps happen low over the table.
+- Replaying 332 s of the 2026-11-16 xArm session (the right hand, mirrored for the left): both arms engaged
+  221 s, every release honoured, no clearance problem; the operator's wrist turns reach the YAM's joint 4 end
+  stop (its wrist range is smaller than the xArm's). End to end through the real sender and tunnel (a recorded
+  session played back in place of the headset): all 3131 packets accepted, both arms followed, both let go
+  when the stream stopped.
 - I2RT's simulated arm puts the joints straight at each command (no motor dynamics): the simulation checks the
   decisions, not how smoothly real motors follow.

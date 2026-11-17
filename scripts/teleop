@@ -13,6 +13,8 @@
 #   scripts/teleop sync               install this checkout's programs on the lab host: committed, pushed, not older
 #                                     than the lab's copy, and no session running (--overwrite: replace a newer one)
 #   scripts/teleop studio             open UFactory Studio, the arm's own control page (clearing errors, turning joints)
+#   scripts/teleop yam-sim            both controllers drive two SIMULATED YAM arms on the lab host (no hardware; see
+#                                     docs/yam_teleop.md); watch them at http://127.0.0.1:18767/
 #
 # Settings: config/teleop_session.conf.  THE ARM MOVES in "record" and "try": they ask the go/no-go questions first
 # and save what you typed with the session. Ctrl-C during a session ends it cleanly.
@@ -36,10 +38,14 @@ for t in adb ssh rsync ss python3; do command -v "$t" > /dev/null || die "'$t' i
 sync_files() {   # what "sync" installs: the programs, tests, docs and configs; not the settings file, which only this PC reads
   { git -C "$P" ls-files -- scripts tests config docs 2>/dev/null || (cd "$P" && find scripts tests config docs -type f); } \
     | grep -v -e '__pycache__' -e '^config/teleop_session.conf$'; }
+# What the start check compares: the xArm session's programs (yam-sim sets its own list, so a YAM change never blocks
+# an xArm session and the reverse).
+LAB_STARTS="scripts/ops/lab_teleop_live_run.sh scripts/live_teleop.py scripts/lab_cam_relay.py scripts/episode_inspect.py"
 lab_files() {   # the programs that run on the lab host: what this launcher starts there, and what those import or start
-  (cd "$P" && python3 - <<'PY'
+  # shellcheck disable=SC2086
+  (cd "$P" && python3 - $LAB_STARTS <<'PY'
 import ast, pathlib, re, sys
-starts = ["scripts/ops/lab_teleop_live_run.sh", "scripts/live_teleop.py", "scripts/lab_cam_relay.py", "scripts/episode_inspect.py"]
+starts = sys.argv[1:]
 missing = [f for f in starts if not pathlib.Path(f).is_file()]
 if missing:
     sys.exit(f"lab_files: {', '.join(missing)} not found; update the list in scripts/teleop")
@@ -359,5 +365,11 @@ case "${1:-}" in
   watch) n=$(cat "$R/current_session" 2>/dev/null) || die "no session name known"; lab "tail -n 5 -F ~/$L/teleop_$n.console.txt" | sed -u -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/<ip>/g';;
   stop) n=$(cat "$R/current_session" 2>/dev/null) || die "no session name known"
         lab "kill -INT \$(cat ~/$L/pid_$n) 2>/dev/null && echo 'stop sent to the lab program of $n; it parks the arm (software stop, not the physical stop)' || echo 'no running lab program for $n'";;
-  *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 1;;
+  yam-sim)   # simulation only: no arm moves
+    LAB_STARTS="scripts/yam_sim_live.py"; lab_check
+    ps -eo args | grep -q '[b]ash .*teleop_live_session' && die "an xArm session is running on this PC; end it first"
+    [ "$(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] || die "need exactly one headset on USB (adb devices)"
+    n=sim_$(date +%Y%m%d-%H%M%S); echo "$n" > "$R/current_yam_session"
+    exec bash "$P/scripts/ops/yam_sim_session.sh" "$n";;
+  *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 1;;
 esac
