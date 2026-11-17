@@ -146,9 +146,33 @@ class LatchTests(unittest.TestCase):
 
 
 class GripperTests(unittest.TestCase):
+    def test_the_trigger_works_only_while_the_arm_is_held(self):
+        r = Rig()
+        r.hands["left"].trigger = 0.0
+        r.step()
+        r.hands["left"].trigger = 1.0
+        self.assertTrue(r.step(20)["left"].gripper.startswith("holds"))
+        self.assertEqual(r.pair.cmd["left"][6], 1.0)  # not engaged: the gripper did not move
+
+    def test_releasing_the_side_grip_holds_the_gripper_and_drops_the_pickup(self):
+        r = Rig()
+        r.hands["left"].trigger = 0.0
+        r.engage("left")
+        r.hands["left"].trigger = 0.5
+        r.step(20)
+        g = r.pair.cmd["left"][6]
+        self.assertAlmostEqual(g, 0.5)
+        r.hands["left"].grip = 0.0  # released
+        r.hands["left"].trigger = 1.0
+        r.step(10)
+        self.assertEqual(r.pair.cmd["left"][6], g)
+        r.engage("left")  # the trigger (1.0, closed) no longer matches the jaws (0.5 open): it must come back first
+        self.assertEqual(r.step()["left"].gripper, "waiting for the trigger to match")
+
     def test_pickup_then_follow(self):
         r = Rig()  # the gripper starts open (1.0)
-        r.hands["left"].trigger = 1.0  # would close
+        r.hands["left"].trigger = 1.0  # would close: does not match the open gripper
+        r.engage("left")
         self.assertEqual(r.step(5)["left"].gripper, "waiting for the trigger to match")
         self.assertEqual(r.pair.cmd["left"][6], 1.0)
         r.hands["left"].trigger = 0.05  # matches open
@@ -160,10 +184,11 @@ class GripperTests(unittest.TestCase):
     def test_losing_the_hand_drops_the_pickup(self):
         r = Rig()
         r.hands["left"].trigger = 0.0
-        r.step()
+        r.engage("left")
         r.hands["left"].ok = False
         r.step()
         r.hands["left"].ok, r.hands["left"].trigger = True, 1.0
+        r.engage("left")
         self.assertEqual(r.step()["left"].gripper, "waiting for the trigger to match")
 
 

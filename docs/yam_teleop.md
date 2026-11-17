@@ -28,7 +28,8 @@ found. Watch the two simulated arms at **http://127.0.0.1:18767/** (a 3D view: d
 - Switch BOTH controllers on. Left controller -> left arm, right controller -> right arm.
 - Hold the side grip (middle finger) to move that arm, release to stop. A grip already held when the session
   starts must be released once first.
-- The index trigger closes that arm's gripper (it starts open; it follows once the trigger matches it).
+- While the side grip is held, the index trigger closes that arm's gripper (as on the xArm). It follows once the
+  trigger matches the gripper; released, the gripper stays as it is.
 - Enter acknowledges a latched problem (e.g. after the headset's view was re-centred); Ctrl-C ends. The
   simulation on the lab host also ends by itself after 60 s without a connection from this PC.
 - The terminal prints a line whenever a hand's state changes, with what limited it (box edge, speed limit,
@@ -140,8 +141,8 @@ Before `yam-try`, both arms must rest folded on their bases: a refused start-up 
 While a hand's grip is held, its arm's tool follows the hand from where both were when the grip was pressed:
 the hand's movement scaled by 0.667 (as on the xArm), the hand's rotation 1:1. The axes are the xArm's (the
 operator faces the way the arms face; OPERATOR_YAW in config/teleop_session.conf applies as on the xArm). The gripper follows the
-trigger only once the trigger has come within 0.1 of the gripper's state, so an arm holding something does not
-drop it when the hand comes back with the trigger released.
+trigger only while the side grip is held (as on the xArm), and only once the trigger has come within 0.1 of the
+gripper's state, so an arm holding something does not drop it when the hand comes back with the trigger released.
 
 ## Found in simulation
 

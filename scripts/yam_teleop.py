@@ -8,10 +8,10 @@ Per hand, every control step:
         q_tool = exp(R * rotvec(q_hand * q_hand0^-1)) * q_tool0          (hand rotation 1:1)
     R maps the Quest's LOCAL axes to the world frame (yam_setup) for an operator whose forward is turned by
     operator_yaw from the headset's forward, exactly as on the xArm (0: headset worn or on the forehead);
-  - the gripper follows the index trigger (pressed = closed: opening = 1 - trigger) once the trigger has come
-    within PICKUP of the gripper's command, so a trigger that does not match the jaws never moves them
-    (an arm holding an object does not drop it when the hand comes back with the trigger released). Losing the
-    hand's input drops the pickup.
+  - while engaged (only then, as on the xArm), the gripper follows the index trigger (pressed = closed:
+    opening = 1 - trigger) once the trigger has come within PICKUP of the gripper's command, so a trigger that
+    does not match the jaws never moves them (an arm holding an object does not drop it when the hand comes back
+    with the trigger released). Releasing the side grip or losing the hand's input drops the pickup.
 Everything that limits motion (box, speeds, jumps, joints, keeping clear) is in BimanualControl (yam_control).
 """
 
@@ -125,6 +125,9 @@ class YamTeleop:
 
     def _grip(self, h: str, v: InputView | None, now_ns: int) -> tuple[float | None, str]:
         e = self.eng[h]
+        if e.state != ACTIVE:  # as on the xArm: the trigger works only while the side grip holds the arm
+            self.picked[h] = False
+            return None, "holds (the trigger works while the side grip is held)"
         problem = "no input" if v is None else e.input_problem(v, now_ns, None)[0]
         trig = None if problem else v.sample.trigger
         if trig is None:

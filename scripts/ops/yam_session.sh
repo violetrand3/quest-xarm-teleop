@@ -69,7 +69,7 @@ adb -s "$S" shell am start -W -n org.questxarm.reader/com.rail.oculus.teleop.Mai
 python3 -u "$P/scripts/controller_wait.py" "$D/yam_src_$N.jsonl" --need 2 --serial "$S" || { msg "No controller. Ending."; finish; exit 3; }
 sleep 4; ssh "${SSHO[@]}" "$H" "kill -USR1 \$(cat ~/$L/yam_pid_$N)"   # the app's start-up reference notices, once (as on the xArm)
 msg "READY ($KIND). Cameras: http://127.0.0.1:${RELAY_LOCAL_PORT:-18091}/   3D view of what the arms are commanded to do: http://127.0.0.1:$VIEW_PORT/"
-msg "Each hand: hold the side grip (middle finger) to move its arm, release to stop; the index trigger closes its gripper."
+msg "Each hand: hold the side grip (middle finger) to move its arm, release to stop; while the grip is held, the index trigger closes its gripper (as on the xArm)."
 msg "Left controller -> left arm, right controller -> right arm (switch the left controller on too). Ctrl-C ends; Enter acknowledges a latched problem."
 prev=""; TTY=0; { : < /dev/tty; } 2> /dev/null && TTY=1   # Enter is read only when there is a terminal
 while true; do
