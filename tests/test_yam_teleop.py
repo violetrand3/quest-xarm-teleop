@@ -134,6 +134,17 @@ class ClutchTests(unittest.TestCase):
         self.assertEqual(r.engage("left")["left"].clutch, ACTIVE)
 
 
+class LatchTests(unittest.TestCase):
+    def test_a_latched_hand_says_why_and_how_to_clear_it(self):
+        r = Rig()
+        r.t.eng["left"].latch("local_space_change")
+        rep = r.step()
+        self.assertEqual(rep["left"].clutch, "FAULT_LATCHED")
+        self.assertTrue(any("local_space_change" in n and "press Enter" in n for n in rep["left"].notes))
+        self.assertIn("left: acknowledged", " ".join(r.t.acknowledge()))
+        self.assertEqual(r.step()["left"].clutch, ARMED)  # released grip seen again: may engage after a press
+
+
 class GripperTests(unittest.TestCase):
     def test_pickup_then_follow(self):
         r = Rig()  # the gripper starts open (1.0)

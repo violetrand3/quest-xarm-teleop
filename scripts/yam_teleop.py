@@ -110,7 +110,10 @@ class YamTeleop:
             r = reports[h]
             if self.eng[h].state == ACTIVE and not self.control.engaged[h]:  # the control let this arm go
                 self.eng[h].disengage("; ".join(r.notes) or r.state, False)
-            out[h] = HandReport(self.eng[h].state, r.state, grip_state[h], notes[h] + r.notes)
+            extra = []
+            if self.eng[h].state == "FAULT_LATCHED":
+                extra = [f"latched ({self.eng[h].blocked.replace('acknowledgement required: ', '')}): press Enter after checking the headset's view"]
+            out[h] = HandReport(self.eng[h].state, r.state, grip_state[h], notes[h] + r.notes + extra)
         return out
 
     def acknowledge(self) -> list[str]:
