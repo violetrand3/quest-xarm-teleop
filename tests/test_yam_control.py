@@ -218,6 +218,32 @@ class ControlTests(unittest.TestCase):
         self.assertAlmostEqual(p.cmd["right"][2], 0.3 + LIM.track_err + 0.01)  # stopped at the measured position
         self.assertEqual(c.engage("left"), [f"not engaged: {c.fault}"])
 
+    def test_a_moving_joint_may_trail_further_than_a_still_one(self):
+        c, p = control()
+        c.engage("left")
+        for k in range(10):  # left x moving at the speed limit
+            c.tick({"left": Request(pose(0.3 + 0.003 * (k + 1), 0.3, 0.3)), "right": Request(pose(0.3, -0.3, 0.3))})
+        p.offset["left"][0] = -(LIM.track_err + 0.02)  # trailing a little more than a still joint may
+        c.tick({"left": Request(pose(0.333, 0.3, 0.3)), "right": Request(pose(0.3, -0.3, 0.3))})
+        self.assertEqual(c.fault, "")
+        p.offset["right"][0] = LIM.track_err + 0.02  # the right arm is still: the same error stops both
+        c.tick({"left": Request(pose(0.333, 0.3, 0.3)), "right": Request(pose(0.3, -0.3, 0.3))})
+        self.assertIn("right arm joint 1", c.fault)
+
+    def test_enter_clears_a_fault_without_moving_and_a_hand_must_press_again(self):
+        c, p = control()
+        c.engage("left")
+        p.offset["left"][2] = 0.3
+        c.tick({"left": Request(pose(0.3, 0.3, 0.3))})
+        self.assertTrue(c.fault)
+        p.offset["left"][2] = 0.0  # the arm is where it was stopped (the stand-in reads command + offset)
+        held = list(p.cmd["left"])
+        self.assertTrue(c.clear_fault())
+        self.assertEqual(c.fault, "")
+        self.assertFalse(c.engaged["left"])
+        c.tick({"left": Request(pose(0.35, 0.3, 0.3))})  # not engaged: nothing moves
+        self.assertEqual(p.cmd["left"][:6], held[:6])
+
     def test_gripper_rate_limit(self):
         c, p = control()
         r = c.tick({"left": Request(None, grip=0.0)})

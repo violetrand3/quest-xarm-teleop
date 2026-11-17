@@ -114,8 +114,11 @@ class YamTeleop:
         return out
 
     def acknowledge(self) -> list[str]:
-        """The operator's explicit acknowledgement of latched hand problems (never engages anything)."""
-        return [f"{h}: {self.eng[h].acknowledge()[1]}" for h in self.names]
+        """The operator's explicit acknowledgement of latched hand problems and of a stopped-arms fault (never
+        engages anything: a hand must still be released and pressed again)."""
+        out = [f"{h}: {self.eng[h].acknowledge()[1]}" for h in self.names]
+        cleared = self.control.clear_fault()
+        return out + ([cleared] if cleared else [])
 
     def _grip(self, h: str, v: InputView | None, now_ns: int) -> tuple[float | None, str]:
         e = self.eng[h]

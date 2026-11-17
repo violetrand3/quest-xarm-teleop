@@ -121,6 +121,15 @@ What the hardware does (read from I2RT's code and, read-only, from the motors on
 after its go/no-go questions: someone at the arms with the e-stop in reach, nobody near the arms and nothing under
 them, nothing else commanding them. Start with small, slow movements of one hand; the arms work low over the table.
 
+Watch the arms on the camera page (`yam-try` starts it and prints its address, http://127.0.0.1:18091/); the 3D page
+shows what the arms are COMMANDED to do, not what they do.
+
+Tracking: a joint measured too far from its command stops both arms where they are (the only check that notices a
+blocked arm). A moving joint trails its command, so the allowance is 0.15 rad plus 0.3 s of the joint's fastest
+commanded speed in the last 0.5 s (the first real run, 2026-11-17, stopped on right joint 4 trailing 0.15 rad at
+0.75 rad/s). Enter clears the stop once you have looked; the arms keep holding, and a hand is released and pressed
+again to move its arm. Each step logs the commanded ("q") and measured ("meas") joints, to tune this from data.
+
 Stopping: release a side grip (that arm stops where it is); Ctrl-C or `scripts/teleop stop` (both arms are lowered
 to rest, then let go); on the lab host `/home/dev/yam/yam_stop.sh` (the linux2 session's emergency software stop:
 it kills the programs and switches all 14 motors off, so the arms drop); the e-stop (the arms drop).

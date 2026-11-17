@@ -379,6 +379,7 @@ case "${1:-}" in
     LAB_STARTS=$YAM_STARTS; lab_check
     ps -eo args | grep -q '[b]ash .*teleop_live_session' && die "an xArm session is running on this PC; end it first"
     [ "$(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] || die "need exactly one headset on USB (adb devices)"
+    rig_status; RELOAD=0; ensure_cameras 21600; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')"
     n=sim_$(date +%Y%m%d-%H%M%S); echo "$n" > "$R/current_yam_session"
     exec bash "$P/scripts/ops/yam_session.sh" "$n";;
   yam-try)   # THE REAL YAM ARMS MOVE
@@ -398,6 +399,7 @@ case "${1:-}" in
     echo "  - you stand behind the arms, both facing away from you; both controllers are on"
     CONFIRM_TEXT="Operator $(id -un)@$(hostname -s) at the terminal prompt of scripts/teleop yam-try on $(date '+%Y-%m-%d %H:%M:%S %Z'): both real YAM arms, half speed, until Ctrl-C. Shown as conditions that must all be true: someone is at the arms right now, agrees, and has the YAM e-stop in reach; nobody is near the arms and nothing is under them that a dropping arm could hit; nothing else will command the YAM arms; both arms rest folded on their bases; the operator stands behind the arms, both facing away, both controllers on."
     ask_yes "Is all of this true? Start?"
+    rig_status; RELOAD=0; ensure_cameras 21600; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')"
     n=yam_$(date +%Y%m%d-%H%M%S); echo "$n" > "$R/current_yam_session"; echo "$CONFIRM_TEXT" > "$D/confirm_$n.txt"
     [ -n "${TELEOP_DRY_RUN:-}" ] && { echo "DRY RUN, nothing started: yam_session.sh $n $D/confirm_$n.txt"; exit 0; }
     exec bash "$P/scripts/ops/yam_session.sh" "$n" "$D/confirm_$n.txt";;

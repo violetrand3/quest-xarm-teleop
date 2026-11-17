@@ -13,7 +13,8 @@ operator's PC for --link-lost-exit-s, or a failure of the control step. Every on
 THEIR REST POSES at --park-speed, under the same clearance rules as teleop, and only then lets the arms go (real
 arms: torque off, they go limp, so they must be at rest first). If lowering cannot finish within --park-timeout-s
 the arms stay held where they are and the program says so; a second SIGINT then ends it (real arms go limp).
-SIGUSR1 acknowledges latched hand problems (e.g. a headset reference change).
+SIGUSR1 (Enter in the operator's terminal) acknowledges latched hand problems (e.g. a headset reference change) and a
+stopped-arms fault: the arms keep holding; a hand is released and pressed again to move its arm.
 Console: one status line every 0.5 s; "ENDING: <why>" when it ends by itself; a JSON result line last.
 """
 
@@ -140,9 +141,10 @@ def main(argv: list[str] | None = None) -> int:
                         print("acknowledged: " + "; ".join(teleop.acknowledge()), flush=True)
                     reports = teleop.tick(views, now)
                     last.update(reports=reports, connected=views["right"].connected, steps=last["steps"] + 1)
-                    if log:
+                    if log:  # "q": commanded, "meas": measured (real arms; the simulation reads back its command)
                         log.write(json.dumps({"t": round((now - start) / 1e9, 3), **{h: {"clutch": r.clutch, "arm": r.arm, "grip": r.gripper,
-                                              "q": [round(v, 4) for v in control.q[h]], "notes": r.notes} for h, r in reports.items()}}) + "\n")  # fmt: skip
+                                              "q": [round(v, 4) for v in control.q[h]], "meas": [round(v, 4) for v in pair.joints(h)] if real else None,
+                                              "notes": r.notes} for h, r in reports.items()}}) + "\n")  # fmt: skip
                 elif phase[0] == "parking":
                     done, said = control.park_tick(rest, a.park_speed, grip_max)
                     last["park"] = said

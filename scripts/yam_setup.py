@@ -43,7 +43,9 @@ class Limits:
     reach_tol_rot: float = math.radians(3)
     clearance: float = 0.01  # m kept between the two arms, and between an arm and the table
     grip_speed: float = 2.0  # gripper opening (0..1) per second
-    track_err: float = 0.15  # rad: a joint measured this far from its command stops both arms (real arms; 0 in sim)
+    track_err: float = 0.15  # rad: a joint measured this far from its command stops both arms (real arms; 0 in sim) ...
+    track_lag_s: float = 0.3  # ... plus this many seconds of the joint's fastest commanded speed in the last 0.5 s: a
+    # moving real joint trails its command (2026-11-17, first real run: right joint 4 trailed 0.15 rad at 0.75 rad/s)
 
 
 BASE_SPACING = 0.35  # m, centre to centre (estimate, 2026-11-17)

@@ -19,6 +19,7 @@ A joint measured further than track_err from its command (real arms) stops both 
 
 from __future__ import annotations
 
+import collections
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
@@ -52,6 +53,7 @@ class BimanualControl:
         self.q = {n: list(pair.joints(n)) for n in self.arms}  # last command per arm: 6 joints + gripper
         self.engaged = {n: False for n in self.arms}
         self.fault = ""
+        self._recent = {n: collections.deque([list(self.q[n][:6])], maxlen=max(2, round(0.5 / lim.dt))) for n in self.arms}
 
     # --- clutch ---------------------------------------------------------------------------------------------
     def engage(self, name: str) -> list[str]:
@@ -109,6 +111,7 @@ class BimanualControl:
         for n in self.arms:
             self.q[n] = list(reports[n].q)
             self.pair.command(n, self.q[n])
+            self._recent[n].append(list(self.q[n][:6]))
         return reports
 
     # --- lowering to rest (every way a session ends) ---------------------------------------------------------
@@ -170,12 +173,32 @@ class BimanualControl:
         r.q[:6] = self.q[n][:6]
         r.state, r.notes = "held", r.notes + [why]
 
+    def allowed_tracking_error(self, n: str) -> list[float]:
+        """Per joint: track_err plus track_lag_s of the fastest commanded speed in the last 0.5 s."""
+        h = list(self._recent[n])
+        fastest = [max((abs(b[i] - a[i]) for a, b in zip(h, h[1:])), default=0.0) / self.lim.dt for i in range(6)]
+        return [self.lim.track_err + self.lim.track_lag_s * v for v in fastest]
+
+    def clear_fault(self) -> str:
+        """The operator's acknowledgement of a tracking fault: the arms keep holding where they were stopped; the
+        hands must be released and pressed again to move them."""
+        if not self.fault:
+            return ""
+        was, self.fault = self.fault, ""
+        for n in self.arms:
+            self.q[n][:6] = list(self.pair.joints(n))[:6]
+            self._recent[n].clear()
+            self._recent[n].append(list(self.q[n][:6]))
+        return f"fault cleared ({was.split(':')[0]})"
+
     def _check_tracking(self) -> None:
         for n in self.arms:
             meas = self.pair.joints(n)
+            allowed = self.allowed_tracking_error(n)
             for i in range(6):
-                if abs(meas[i] - self.q[n][i]) > self.lim.track_err:
-                    self.fault = f"{n} arm joint {i + 1} is {abs(meas[i] - self.q[n][i]):.2f} rad from its command: both arms stopped"
+                if abs(meas[i] - self.q[n][i]) > allowed[i]:
+                    self.fault = (f"{n} arm joint {i + 1} is {abs(meas[i] - self.q[n][i]):.2f} rad from its command "
+                                  f"(allowed {allowed[i]:.2f} at its recent speed): both arms stopped where they are; Enter clears it")
                     for m in self.arms:  # stop where they are
                         self.q[m][:6] = list(self.pair.joints(m))[:6]
                         self.engaged[m] = False
