@@ -1,11 +1,12 @@
-# Bimanual YAM teleop (in progress: simulation only)
+# Bimanual YAM teleop (simulation working; real arms written, waiting for the bring-up)
 
 Two I2RT YAM arms on the lab host (`can_left`, `can_right`), driven by the two Quest controllers: the left
 hand drives the left arm, the right hand the right arm. It shares the Quest side, the recorder and the launcher
 with the xArm teleop, and nothing else: the YAM code never imports the xArm code, and the reverse (a test checks).
 
-**Status (2026-11-17): steps 1-3 done, in simulation. Nothing here can move a real arm:** the arm layer
-(`yam_sim.py`) creates every robot with `sim=True` and has no path to the CAN links.
+**Status (2026-11-17): steps 1-3 done, in simulation; the real-arm path is written but has never run on hardware.**
+`yam_sim.py` creates every robot with `sim=True` and has no path to the CAN links; only `yam_real.py` opens the real
+arms, used only by `scripts/teleop yam-try` after its questions, and it refuses until the bring-up is recorded.
 
 | Step | What | State |
 |---|---|---|
