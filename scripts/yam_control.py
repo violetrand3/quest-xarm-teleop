@@ -1,0 +1,153 @@
+"""Bimanual YAM: one control step for both arms. Pure Python; the arms are reached through `pair`.
+
+`pair` is the arm layer (yam_sim.SimYamPair today; the real arms later) and provides:
+    names                          the arms, e.g. ("left", "right")
+    joint_ranges(name)             [(lo, hi)] of the 6 arm joints, rad
+    joints(name)                   measured [6 joints + gripper opening 0..1]
+    fk(name, q6)                   tool (grasp point) pose in the world frame
+    solve(name, pose, q6_init)     (q6, position error m, rotation error rad): the IK, from q6_init
+    clearance_problems(q_by_name)  {what: distance m} for every pair of parts closer than allowed
+    command(name, q7)              6 joints + gripper opening
+Every step every arm is commanded: an arm that is idle or held gets its last command again, so it stays put.
+
+Per step, for each engaged arm with a request: TargetLimiter -> IK -> joint_step (yam_limits). Then the
+proposed joints of both arms are checked together: a move that brings any two parts (the two arms, an arm and
+itself, an arm and the table) closer than allowed, and closer than they already are, is not made; the other
+arm still moves if its own move is fine. A request missing for an engaged arm (input lost) lets that arm go.
+A joint measured further than track_err from its command (real arms) stops both arms where they are, latched.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Mapping, Sequence
+
+from yam_limits import TargetLimiter, dist, joint_step
+from yam_setup import ArmSetup, Limits
+
+GRIP_KEEP = None  # a request's grip of None keeps the gripper's current command
+
+
+@dataclass
+class Request:
+    pose: Any = None  # ((x, y, z), (qx, qy, qz, qw)) in the world frame, or None (no input this step)
+    grip: float | None = GRIP_KEEP  # gripper opening 0..1
+
+
+@dataclass
+class ArmReport:
+    state: str  # "idle" | "following" | "held" | "let go" | "fault"
+    q: list[float]  # what was commanded this step (6 joints + gripper)
+    target: Any = None
+    notes: list[str] = field(default_factory=list)
+    reach_err_m: float = 0.0
+
+
+class BimanualControl:
+    def __init__(self, pair: Any, arms: Sequence[ArmSetup], lim: Limits):
+        self.pair, self.lim = pair, lim
+        self.arms = {a.name: a for a in arms}
+        assert set(self.arms) == set(pair.names), "the arm layer and the setup name different arms"
+        self.limiter = {n: TargetLimiter(a.box, lim) for n, a in self.arms.items()}
+        self.q = {n: list(pair.joints(n)) for n in self.arms}  # last command per arm: 6 joints + gripper
+        self.engaged = {n: False for n in self.arms}
+        self.fault = ""
+
+    # --- clutch ---------------------------------------------------------------------------------------------
+    def engage(self, name: str) -> list[str]:
+        if self.fault:
+            return [f"not engaged: {self.fault}"]
+        self.engaged[name] = True
+        return self.limiter[name].reset(self.pair.fk(name, self.q[name][:6]))
+
+    def release(self, name: str) -> None:
+        self.engaged[name] = False
+
+    # --- one step -------------------------------------------------------------------------------------------
+    def tick(self, requests: Mapping[str, Request]) -> dict[str, ArmReport]:
+        if not self.fault:
+            self._check_tracking()
+        if self.fault:
+            for n in self.arms:
+                self.pair.command(n, self.q[n])
+            return {n: ArmReport("fault", list(self.q[n]), notes=[self.fault]) for n in self.arms}
+
+        reports: dict[str, ArmReport] = {}
+        proposal = {n: list(self.q[n]) for n in self.arms}
+        for n in self.arms:
+            req = requests.get(n)
+            if req is not None and req.grip is not None:  # the gripper follows the trigger, engaged or not
+                g = min(max(req.grip, 0.0), 1.0)
+                step = self.lim.grip_speed * self.lim.dt
+                proposal[n][6] = self.q[n][6] + max(-step, min(step, g - self.q[n][6]))
+            if not self.engaged[n]:
+                reports[n] = ArmReport("idle", proposal[n])
+                continue
+            if req is None or req.pose is None:
+                self.engaged[n] = False
+                reports[n] = ArmReport("let go", proposal[n], notes=["no hand input: the arm is let go and stays where it is"])
+                continue
+            q6 = self.q[n][:6]
+            ts = self.limiter[n].step(req.pose, self.pair.fk(n, q6))
+            if ts.glitch:
+                self.engaged[n] = False
+                reports[n] = ArmReport("let go", proposal[n], notes=[ts.glitch + ": the arm is let go; release and grip again"])
+                continue
+            q_ik, e_pos, e_rot = self.pair.solve(n, ts.target, q6)
+            notes = list(ts.notes)
+            if e_pos > self.lim.reach_tol or e_rot > self.lim.reach_tol_rot:
+                notes.append(f"out of reach by {e_pos * 1000:.0f} mm: following as far as it goes")
+            js = joint_step(q6, q_ik, self.pair.joint_ranges(n), self.lim)
+            notes += js.notes
+            if js.q is None:
+                reports[n] = ArmReport("held", proposal[n], ts.target, notes + [js.refused], e_pos)
+                continue
+            proposal[n][:6] = js.q
+            reports[n] = ArmReport("following", proposal[n], ts.target, notes, e_pos)
+
+        self._keep_clear(proposal, reports)
+        for n in self.arms:
+            self.q[n] = list(reports[n].q)
+            self.pair.command(n, self.q[n])
+        return reports
+
+    # --- checks ---------------------------------------------------------------------------------------------
+    def _keep_clear(self, proposal: dict, reports: dict) -> None:
+        """Moves that would bring parts closer than allowed (and closer than now) are not made."""
+        now = self.pair.clearance_problems(self.q)
+        moving = [n for n in self.arms if proposal[n][:6] != self.q[n][:6]]
+
+        def worse(q_by_name: Mapping[str, Sequence[float]]) -> list[str]:
+            new = self.pair.clearance_problems(q_by_name)
+            return [f"{what} {d * 1000:.0f} mm" for what, d in new.items() if what not in now or d < now[what] - 1e-4]
+
+        for n in moving:  # each arm's own move, against the other arm where it is
+            bad = worse({m: (proposal[m] if m == n else self.q[m]) for m in self.arms})
+            if bad:
+                self._hold(n, reports, "too close: " + "; ".join(bad))
+        if [n for n in moving if reports[n].state == "following"] and len(moving) > 1:
+            bad = worse({m: (reports[m].q) for m in self.arms})
+            if bad:  # each move alone is fine, both together are not
+                for n in moving:
+                    self._hold(n, reports, "too close: " + "; ".join(bad))
+
+    def _hold(self, n: str, reports: dict, why: str) -> None:
+        r = reports[n]
+        r.q[:6] = self.q[n][:6]
+        r.state, r.notes = "held", r.notes + [why]
+
+    def _check_tracking(self) -> None:
+        for n in self.arms:
+            meas = self.pair.joints(n)
+            for i in range(6):
+                if abs(meas[i] - self.q[n][i]) > self.lim.track_err:
+                    self.fault = f"{n} arm joint {i + 1} is {abs(meas[i] - self.q[n][i]):.2f} rad from its command: both arms stopped"
+                    for m in self.arms:  # stop where they are
+                        self.q[m][:6] = list(self.pair.joints(m))[:6]
+                        self.engaged[m] = False
+                    return
+
+
+def tool_gap(pair: Any, name: str, q6: Sequence[float], target: Any) -> float:
+    """Distance from the tool to a target, m (for reports and tests)."""
+    return dist(pair.fk(name, q6)[0], target[0])
