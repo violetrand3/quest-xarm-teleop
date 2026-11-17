@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import threading
 import time
@@ -51,9 +52,9 @@ def jaws_at_top(img) -> bool | None:
 class View(threading.Thread):
     """Pulls one camera-wall stream while watched; keeps only the newest re-encoded frame."""
 
-    def __init__(self, key: str, upstream: str, width: int, quality: int, upright: bool = False):
+    def __init__(self, key: str, upstream: str, width: int, quality: int, upright: bool = False, url: str | None = None):
         super().__init__(daemon=True)
-        self.key, self.url, self.width, self.quality = key, f"{upstream}/cam/{key}", width, quality
+        self.key, self.url, self.width, self.quality = key, url or f"{upstream}/cam/{key}", width, quality
         self.upright, self.turned, self.votes, self.turns = upright, False, 0, 0
         self.cv = threading.Condition()
         self.frame: bytes | None = None
@@ -108,7 +109,7 @@ class View(threading.Thread):
                         line = r.readline()
                         if not line:
                             break
-                        if not line.startswith(b"--frame"):
+                        if not line.startswith(b"--"):  # a part boundary (the camera wall's "--frame", yamcam.py's "--f")
                             continue
                         n = None
                         while True:
@@ -225,7 +226,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--port", type=int, default=28090, help="loopback port (host is always 127.0.0.1)")
     ap.add_argument("--upstream", default="http://127.0.0.1:8090", help="the existing camera wall (loopback)")
-    ap.add_argument("--views", default="iphone,zed")
+    ap.add_argument("--views", default="iphone,zed", help="comma list of camera-wall names, or name=http://127.0.0.1:<port>/<path> "
+                    "for a loopback MJPEG stream elsewhere (e.g. the YAM wrist cameras: wrist_c920=http://127.0.0.1:8096/stream/c920)")
     ap.add_argument("--upright", default="", help="views (comma list) of the gripper camera: turned 180 degrees when its jaws appear at the top")
     ap.add_argument("--fps", type=float, default=8.0)
     ap.add_argument("--width", type=int, default=480)
@@ -235,8 +237,15 @@ def main(argv: list[str] | None = None) -> int:
     if not args.upstream.startswith("http://127.0.0.1:"):
         print("error: upstream must be the loopback camera wall", file=sys.stderr)
         return 2
-    keys = [k for k in args.views.split(",") if k]
-    views = {k: View(k, args.upstream, args.width, args.quality, k in args.upright.split(",")) for k in keys}
+    sources = {}
+    for item in (v for v in args.views.split(",") if v):
+        name, _, url = item.partition("=")
+        if not re.fullmatch(r"[a-z0-9_]+", name) or (url and not url.startswith("http://127.0.0.1:")):
+            print(f"error: view {item!r}: a name of a-z, 0-9, _ and, optionally, =http://127.0.0.1:<port>/<path>", file=sys.stderr)
+            return 2
+        sources[name] = url or None
+    keys = list(sources)
+    views = {k: View(k, args.upstream, args.width, args.quality, k in args.upright.split(","), sources[k]) for k in keys}
     info = f"{args.fps:g} fps max, {args.width}px wide, JPEG quality {args.quality}"
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(views, args.fps, info))
     srv.daemon_threads = True

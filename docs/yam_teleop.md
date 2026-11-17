@@ -122,8 +122,10 @@ What the hardware does (read from I2RT's code and, read-only, from the motors on
 after its go/no-go questions: someone at the arms with the e-stop in reach, nobody near the arms and nothing under
 them, nothing else commanding them. Start with small, slow movements of one hand; the arms work low over the table.
 
-Watch the arms on the camera page (`yam-try` starts it and prints its address, http://127.0.0.1:18091/); the 3D page
-shows what the arms are COMMANDED to do, not what they do.
+Watch the arms on the camera page (`yam-try` and `yam-sim` start it and print its address, http://127.0.0.1:18091/):
+the RealSense, which sees both arms, and the two wrist webcams (`wrist_c920`, `wrist_emeet`, served on the lab host
+by /home/dev/yam/yamcam.py on 127.0.0.1:8096; about 1.5 frames/s from that program on 2026-11-17). YAM_VIEWS in the
+environment changes the list. The 3D page shows what the arms are COMMANDED to do, not what they do.
 
 Tracking: a joint measured too far from its command stops both arms where they are (the only check that notices a
 blocked arm). A moving joint trails its command, so the allowance is 0.10 rad plus 0.25 s of the joint's fastest

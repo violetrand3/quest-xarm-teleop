@@ -44,6 +44,9 @@ sync_files() {   # what "sync" installs: the programs, tests, docs and configs; 
 # an xArm session and the reverse).
 LAB_STARTS="scripts/ops/lab_teleop_live_run.sh scripts/live_teleop.py scripts/lab_cam_relay.py scripts/episode_inspect.py"
 YAM_STARTS="scripts/yam_live.py"
+# The YAM sessions' camera page: the RealSense (sees both arms) and the two wrist webcams, which the lab's yamcam.py
+# serves on 127.0.0.1:8096 (not on the camera wall).
+YAM_VIEWS=${YAM_VIEWS:-rs_color,wrist_c920=http://127.0.0.1:8096/stream/c920,wrist_emeet=http://127.0.0.1:8096/stream/emeet}
 lab_files() {   # the programs that run on the lab host: what this launcher starts there, and what those import or start
   # shellcheck disable=SC2086
   (cd "$P" && python3 - $LAB_STARTS <<'PY'
@@ -225,12 +228,12 @@ sys.exit(1 if block else 0)
 PY
 }
 
-ensure_cameras() {   # $1 = seconds the view must stay up
-  local need=$1 pid left args
+ensure_cameras() {   # $1 = seconds the view must stay up, $2 = the views (default: CAMERAS, the xArm's)
+  local need=$1 views=${2:-$CAMERAS} pid left args
   # The phone app turns the gripper picture 180 degrees when the wrist tilts (2026-10-14). --upright turned it back by finding
   # the blue jaws; the jaws fitted after 2026-11-02 are beige, so it is off (it could only be misled by blue objects in view)
   # and the camera page turns a picture when it is clicked.
-  local want="--port $RELAY_PORT --views $CAMERAS --fps 8 --width 480 --quality 55 --duration $RELAY_LIFE_S"
+  local want="--port $RELAY_PORT --views $views --fps 8 --width 480 --quality 55 --duration $RELAY_LIFE_S"
   pid=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["relay"]; print(r[0][0] if r else "")' "$R/status.json")
   left=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["relay"]; print((r[0][2] - r[0][1] if r[0][2] else 10**9) if r else 0)' "$R/status.json")
   args=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["relay"]; print(r[0][3] if r and len(r[0]) > 3 else "")' "$R/status.json")
@@ -379,7 +382,7 @@ case "${1:-}" in
     LAB_STARTS=$YAM_STARTS; lab_check
     ps -eo args | grep -q '[b]ash .*teleop_live_session' && die "an xArm session is running on this PC; end it first"
     [ "$(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] || die "need exactly one headset on USB (adb devices)"
-    rig_status; RELOAD=0; ensure_cameras 21600; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')"
+    rig_status; RELOAD=0; ensure_cameras 21600 "$YAM_VIEWS"; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')"
     n=sim_$(date +%Y%m%d-%H%M%S); echo "$n" > "$R/current_yam_session"
     exec bash "$P/scripts/ops/yam_session.sh" "$n";;
   yam-try)   # THE REAL YAM ARMS MOVE
@@ -399,7 +402,7 @@ case "${1:-}" in
     echo "  - you stand behind the arms, both facing away from you; both controllers are on"
     CONFIRM_TEXT="Operator $(id -un)@$(hostname -s) at the terminal prompt of scripts/teleop yam-try on $(date '+%Y-%m-%d %H:%M:%S %Z'): both real YAM arms, half speed, until Ctrl-C. Shown as conditions that must all be true: someone is at the arms right now, agrees, and has the YAM e-stop in reach; nobody is near the arms and nothing is under them that a dropping arm could hit; nothing else will command the YAM arms; both arms rest folded on their bases; the operator stands behind the arms, both facing away, both controllers on."
     ask_yes "Is all of this true? Start?"
-    rig_status; RELOAD=0; ensure_cameras 21600; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')"
+    rig_status; RELOAD=0; ensure_cameras 21600 "$YAM_VIEWS"; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')"
     n=yam_$(date +%Y%m%d-%H%M%S); echo "$n" > "$R/current_yam_session"; echo "$CONFIRM_TEXT" > "$D/confirm_$n.txt"
     [ -n "${TELEOP_DRY_RUN:-}" ] && { echo "DRY RUN, nothing started: yam_session.sh $n $D/confirm_$n.txt"; exit 0; }
     exec bash "$P/scripts/ops/yam_session.sh" "$n" "$D/confirm_$n.txt";;
