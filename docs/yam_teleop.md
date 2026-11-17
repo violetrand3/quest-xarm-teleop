@@ -11,7 +11,7 @@ with the xArm teleop, and nothing else: the YAM code never imports the xArm code
 |---|---|---|
 | 1 | Two simulated arms driven to tool targets through the IK, with the safety rules below | done |
 | 2 | Replay recorded hand motion (xArm sessions) through the simulated arms | done |
-| 3 | Live Quest -> simulated arms: both controllers, one clutch per hand, a browser view | done; first try with the headset to come |
+| 3 | Live Quest -> simulated arms: both controllers, one clutch per hand, a browser view | done; tried with the headset on 2026-11-17 |
 | 4 | Real arms: safety review, gains, gripper calibration, base placement, first engagement with someone at the arms | needs the lab |
 
 ## Trying it (simulation)
