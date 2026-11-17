@@ -12,7 +12,7 @@ with the xArm teleop, and nothing else: the YAM code never imports the xArm code
 | 1 | Two simulated arms driven to tool targets through the IK, with the safety rules below | done |
 | 2 | Replay recorded hand motion (xArm sessions) through the simulated arms | done |
 | 3 | Live Quest -> simulated arms: both controllers, one clutch per hand, a browser view | done; tried with the headset on 2026-11-17 |
-| 4 | Real arms: safety review, gains, gripper calibration, base placement, first engagement with someone at the arms | needs the lab |
+| 4 | Real arms: the code is written (`scripts/teleop yam-try`, below), never run on hardware; waits for the bring-up | needs the lab |
 
 ## Trying it (simulation)
 
@@ -45,8 +45,9 @@ found. Watch the two simulated arms at **http://127.0.0.1:18767/** (a 3D view: d
 | `scripts/yam_input.py` | any PC | both controllers from the Quest stream; each judged on its own controller |
 | `scripts/yam_teleop.py` | any PC | per hand: clutch (the xArm's rules), hand-to-tool mapping, gripper pickup |
 | `scripts/yam_replay.py` | lab host, I2RT's environment | replays a recorded session (`data/sessions/src_*.jsonl`) through the simulated arms |
-| `scripts/yam_sim_live.py` | lab host, I2RT's environment | the live simulation: Quest stream in, simulated arms, browser view |
-| `scripts/ops/yam_sim_session.sh` | operator's PC | one session, started by `scripts/teleop yam-sim` |
+| `scripts/yam_live.py` | lab host, I2RT's environment | the live program: Quest stream in, simulated (`--arms sim`) or real (`--arms real`) arms, browser view, lowering to rest |
+| `scripts/yam_real.py` | lab host, I2RT's environment | the real arms behind the same interface (opening them enables the motors) |
+| `scripts/ops/yam_session.sh` | operator's PC | one session, started by `scripts/teleop yam-sim` or `yam-try` |
 
 Run the check on the lab host (from a synced copy):
 
@@ -54,8 +55,8 @@ Run the check on the lab host (from a synced copy):
 /home/dev/yam/i2rt/.venv/bin/python scripts/yam_sim_check.py
 ```
 
-Tests: `tests/test_yam_control.py`, `tests/test_yam_teleop.py` (any PC) and `tests/test_yam_sim.py` (lab host,
-skipped elsewhere).
+Tests: `tests/test_yam_control.py`, `tests/test_yam_teleop.py`, `tests/test_yam_real.py` (any PC) and
+`tests/test_yam_sim.py` (lab host, skipped elsewhere).
 
 ## Safety rules (per control step, 50 Hz)
 
@@ -82,6 +83,39 @@ All the numbers are in `yam_setup.py`. They are first guesses, to be tuned in st
 - Placement: both bases on the table, both facing away from the operator, who stands behind them (confirmed);
   about 0.35 m apart centre to centre (an estimate, 2026-11-17: measure it and set BASE_SPACING in
   `yam_setup.py`). The boxes follow from it.
+
+## The real arms (`scripts/teleop yam-try`): NOT RUN YET
+
+What the hardware does (read from I2RT's code and, read-only, from the motors on 2026-11-17):
+
+- Opening an arm enables its motors. `yam_real.py` opens it holding every joint where it is, so nothing moves at
+  start-up; I2RT refuses to start when a joint reads outside its limits (a wrong zero position).
+- The LINEAR_4310 gripper calibrates itself at start-up by DRIVING to its ends, unless its limits are given; and
+  its zero is unreliable today. So its limits are measured once in the bring-up and given every time.
+- Every motor's watchdog is on (TIMEOUT 8000): when commands stop, the motor goes limp. I2RT's own thread keeps
+  commanding while the program runs; **if the program dies or the power is cut, the arms go limp and drop.**
+- I2RT's `close()` sets every torque to zero: the arms go limp. So every way a session ends (Ctrl-C,
+  `scripts/teleop stop`, the time limit, no connection from the operator's PC for 10 s, a failure of the control
+  step) first **lowers both arms to their rest poses** at 0.3 rad/s, under the same clearance rules as teleop,
+  and only then lets them go. If that cannot finish within 40 s, the arms stay held where they are and the
+  terminal says so; `scripts/teleop stop` then lets them go (they drop) or the e-stop is used.
+- There is no controller-side fence or error stop as on the xArm: the rules above and the YAM e-stop are all.
+
+**Bring-up first** (done by the linux2 session, each step with the user's explicit approval given to it):
+
+1. Check each arm's joint zero positions: the joint readings against what the arm looks like.
+2. Enable one arm holding its pose with someone watching, then the other.
+3. Calibrate both grippers (I2RT's calibration, which drives them) and note their [closed, open] limits.
+4. Confirm each arm's rest pose: where it sits safely when it goes limp.
+5. Write `/home/dev/yam/yam_hardware.json` on the lab host (format in `scripts/yam_real.py`); `yam-try` refuses
+   to start without it.
+
+**Then the first run:** `scripts/teleop yam-try`, half the simulation's speed limits (the tool at most 7.5 cm/s),
+after its go/no-go questions: someone at the arms with the e-stop in reach, nobody near the arms and nothing under
+them, nothing else commanding them. Start with small, slow movements of one hand; the arms work low over the table.
+
+Stopping: release a side grip (that arm stops where it is); Ctrl-C or `scripts/teleop stop` (both arms are lowered
+to rest, then let go); the e-stop (the arms drop).
 
 ## Hand to arm
 
