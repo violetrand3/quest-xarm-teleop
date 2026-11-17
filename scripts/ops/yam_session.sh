@@ -15,10 +15,16 @@ S=$(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"{print $1}'); [ "$(echo 
 msg() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$1"; }
 for p in $LINK_PORT $VIEW_PORT; do ss -ltn | grep -q "127.0.0.1:$p " && { msg "Port $p on this PC is in use (another session?). Ending."; exit 2; }; done
 
-finish() {
+finish() {   # $1 = notstarted: the lab program exited at start-up, so there is nothing to lower
   T=$(cat "$R/yam_tx.pid" 2>/dev/null); kill -INT "$T" 2>/dev/null; for i in $(seq 1 40); do kill -0 "$T" 2>/dev/null || break; sleep 0.25; done
   sed -i "s/$S/[REDACTED]/g" "$D/yam_tx_$N.console.txt" 2>/dev/null
   T=$(cat "$R/yam_tunnel.pid" 2>/dev/null); ps -o args= -p "$T" 2>/dev/null | grep -q -- "-L 127.0.0.1:$LINK_PORT:" && kill "$T"
+  if [ "${1:-}" = notstarted ]; then
+    ssh "${SSHO[@]}" "$H" "ps -o args= -p \$(cat ~/$L/yam_pid_$N 2>/dev/null) 2>/dev/null | grep -q yam_live.py" \
+      && msg "WARNING: the YAM program is still running on $H; look at the arms" || msg "The YAM program is not running; nothing was commanded."
+    T=$(cat "$R/yam_tail.pid" 2>/dev/null); kill "$T" 2>/dev/null; adb -s "$S" shell am force-stop org.questxarm.reader > /dev/null 2>&1
+    return
+  fi
   msg "Lowering both arms to rest and ending ..."
   # One stop signal, and none if the program is already ending by itself: a second one, while the arms are held
   # because lowering could not finish, lets them go (they drop). That stays the operator's decision (scripts/teleop stop).
@@ -42,8 +48,8 @@ ssh "${SSHO[@]}" "$H" "tail -n +1 -F ~/$L/yam_$N.console.txt 2>/dev/null" > "$D/
 echo $! > "$R/yam_tail.pid"
 for i in $(seq 1 120); do grep -q "Listening on\|Traceback\|^error" "$D/yam_$N.console.txt" 2>/dev/null && break; sleep 0.25; done
 if ! grep -q "Listening on" "$D/yam_$N.console.txt"; then
-  msg "NOT STARTED. The YAM program says: $(grep -v 'INFO' "$D/yam_$N.console.txt" | grep -m1 'Error\|error' | cut -c1-300)"
-  finish; exit 3
+  msg "NOT STARTED. The YAM program says: $(grep -v 'INFO' "$D/yam_$N.console.txt" | grep '^[A-Za-z]*Error\|^error' | tail -1 | cut -c1-300)"
+  finish notstarted; exit 3
 fi
 trap 'trap "" INT TERM HUP PIPE; echo; msg "Ending the session." 2> /dev/null; finish 2> /dev/null; exit 130' INT TERM HUP PIPE
 ssh "${SSHO[@]:1}" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
