@@ -144,6 +144,19 @@ def scenarios(pair) -> list[tuple[str, bool, str]]:
     out.append(("gripper closes at its speed limit", g[-1] == 0.0 and max(a - b for a, b in zip([OPEN] + g, g)) <= lim.grip_speed * lim.dt + 1e-9,
                 f"opening {OPEN} -> {g[-1]} in {g.index(0.0) + 1} steps"))
 
+    r = Run(pair)  # both arms reach toward the middle, then everything is lowered to rest
+    r.go(150, lambda k: {"left": Request(moved(r.start["left"], dy=-0.3, dz=-0.1)), "right": Request(moved(r.start["right"], dy=0.3, dz=-0.1))})
+    rest = {n: pair.rest(n) for n in pair.names}
+    steps, done, worse = 0, False, []
+    while not done and steps < 3000:
+        before = pair.clearance_problems(r.c.q)
+        done, said = r.c.park_tick(rest, 0.3)
+        after = pair.clearance_problems(r.c.q)
+        worse += [w for w, d in after.items() if w not in before or d < before[w] - 1e-4]
+        steps += 1
+    out.append(("lowers both arms to rest from the middle", done and not worse,
+                f"at rest after {steps * lim.dt:.1f} s at 0.3 rad/s; no part brought closer than allowed on the way"))
+
     ms = sorted(STEP_MS)
     out.append(("one control step for both arms is fast enough", ms[-1] < lim.dt * 1000 / 2, f"{ms[len(ms) // 2]:.1f} ms typical, {ms[-1]:.1f} ms worst (step is {lim.dt * 1000:.0f} ms)"))
     return out

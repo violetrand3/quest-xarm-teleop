@@ -15,6 +15,8 @@
 #   scripts/teleop studio             open UFactory Studio, the arm's own control page (clearing errors, turning joints)
 #   scripts/teleop yam-sim            both controllers drive two SIMULATED YAM arms on the lab host (no hardware; see
 #                                     docs/yam_teleop.md); watch them at http://127.0.0.1:18767/
+#   scripts/teleop yam-try            the same with the REAL YAM arms: THEY MOVE (half speed; go/no-go questions first;
+#                                     needs the bring-up recorded on the lab host). stop / Ctrl-C lower them to rest
 #
 # Settings: config/teleop_session.conf.  THE ARM MOVES in "record" and "try": they ask the go/no-go questions first
 # and save what you typed with the session. Ctrl-C during a session ends it cleanly.
@@ -41,7 +43,7 @@ sync_files() {   # what "sync" installs: the programs, tests, docs and configs; 
 # What the start check compares: the xArm session's programs (yam-sim sets its own list, so a YAM change never blocks
 # an xArm session and the reverse).
 LAB_STARTS="scripts/ops/lab_teleop_live_run.sh scripts/live_teleop.py scripts/lab_cam_relay.py scripts/episode_inspect.py"
-YAM_STARTS="scripts/yam_sim_live.py"
+YAM_STARTS="scripts/yam_live.py"
 lab_files() {   # the programs that run on the lab host: what this launcher starts there, and what those import or start
   # shellcheck disable=SC2086
   (cd "$P" && python3 - $LAB_STARTS <<'PY'
@@ -134,7 +136,7 @@ $(echo "$c" | head -8)"
     [ "$over" = --overwrite ] || die "the lab host runs ${v:-a version not recorded}, which is $([ "$o" = newer ] && echo 'newer than this checkout: git pull first' || echo 'not a version on GitHub (it may be work in progress): ask whoever installed it to push it, or replace it with scripts/teleop sync --overwrite')"
     echo "Replacing the lab host's copy (${v:-not recorded})."
   fi
-  lab "pgrep -f '[s]cripts/live_teleop.py|[s]cripts/yam_sim_live.py' > /dev/null" && die "a teleop session is running on the lab host; sync after it ends"
+  lab "pgrep -f '[s]cripts/live_teleop.py|[s]cripts/yam_live.py' > /dev/null" && die "a teleop session is running on the lab host; sync after it ends"
   (cd "$P" && sync_files | rsync -a --delay-updates --files-from=- -e "ssh ${SSHO[*]}" ./ "$LAB_HOST:$LAB_DIR/") || die "copying to the lab host failed"
   lab "mkdir -p ~/$LAB_DIR/logs ~/$LAB_DIR/episodes && echo '$(version_here | tr -d '\n'), installed by $(id -un)@$(hostname -s) on $(date '+%Y-%m-%d %H:%M')' > ~/$LAB_DIR/SYNCED_FROM.txt"
   [ -z "$(lab_differs)" ] || die "the lab host's copy still differs after copying"
@@ -365,13 +367,34 @@ case "${1:-}" in
     if [ -n "${2:-}" ]; then lab "cd ~/$LAB_DIR && python3 scripts/episode_inspect.py episodes/$2"
     else lab "cd ~/$LAB_DIR/episodes 2>/dev/null && for s in */; do [ -f \"\$s/session.json\" ] && echo \"\${s%/}: \$(ls -d \$s/episode_[0-9][0-9][0-9][0-9] 2>/dev/null | wc -l) demos, \$(du -sh \$s | cut -f1)\"; done; df -h . | awk 'NR==2{print \"free disk: \"\$4}'"; fi;;
   watch) n=$(cat "$R/current_session" 2>/dev/null) || die "no session name known"; lab "tail -n 5 -F ~/$L/teleop_$n.console.txt" | sed -u -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/<ip>/g';;
-  stop) n=$(cat "$R/current_session" 2>/dev/null) || die "no session name known"
-        lab "kill -INT \$(cat ~/$L/pid_$n) 2>/dev/null && echo 'stop sent to the lab program of $n; it parks the arm (software stop, not the physical stop)' || echo 'no running lab program for $n'";;
+  stop) n=$(cat "$R/current_session" 2>/dev/null); y=$(cat "$R/current_yam_session" 2>/dev/null)
+        [ -n "$n$y" ] || die "no session name known"
+        [ -n "$n" ] && lab "kill -INT \$(cat ~/$L/pid_$n 2>/dev/null) 2>/dev/null && echo 'stop sent to the lab program of $n; it parks the arm (software stop, not the physical stop)' || echo 'no running xArm lab program ($n)'"
+        [ -n "$y" ] && lab "p=\$(cat ~/$L/yam_pid_$y 2>/dev/null); ps -o args= -p \"\$p\" 2>/dev/null | grep -q yam_live.py && kill -INT \$p && echo 'stop sent to the YAM program of $y: it lowers both arms to rest (software stop, not the e-stop); if it already could not lower them, this lets them go (they drop)' || echo 'no running YAM program ($y)'";;
   yam-sim)   # simulation only: no arm moves
     LAB_STARTS=$YAM_STARTS; lab_check
     ps -eo args | grep -q '[b]ash .*teleop_live_session' && die "an xArm session is running on this PC; end it first"
     [ "$(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] || die "need exactly one headset on USB (adb devices)"
     n=sim_$(date +%Y%m%d-%H%M%S); echo "$n" > "$R/current_yam_session"
-    exec bash "$P/scripts/ops/yam_sim_session.sh" "$n";;
-  *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 1;;
+    exec bash "$P/scripts/ops/yam_session.sh" "$n";;
+  yam-try)   # THE REAL YAM ARMS MOVE
+    LAB_STARTS=$YAM_STARTS; lab_check
+    ps -eo args | grep -q '[b]ash .*teleop_live_session\|[b]ash .*yam_session' && die "another session is running on this PC; end it first"
+    [ "$(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] || die "need exactly one headset on USB (adb devices)"
+    lab "test -s /home/dev/yam/yam_hardware.json" || die "the YAM bring-up is not recorded on the lab host (/home/dev/yam/yam_hardware.json: gripper limits and rest poses); see docs/yam_teleop.md"
+    lab "pgrep -f '[y]am_live.py|[l]ive_teleop.py' > /dev/null" && die "a teleop program is already running on the lab host"
+    echo
+    echo "THE YAM ARMS WILL MOVE: both arms, at half the simulation's speed limits (the tool at most 7.5 cm/s), until Ctrl-C."
+    echo "Ending (Ctrl-C, scripts/teleop stop, a lost connection, a fault) lowers both arms to rest before the motors are switched off."
+    echo "If the program or the power stops, the motors go limp and the ARMS DROP. All of this must be true:"
+    echo "  - someone is at the arms RIGHT NOW, agrees, and has the YAM e-stop in reach"
+    echo "  - nobody is near the arms and nothing is under them that a dropping arm could hit"
+    echo "  - nothing else will command the YAM arms (no other session, agent or program)"
+    echo "  - you stand behind the arms, both facing away from you; both controllers are on"
+    CONFIRM_TEXT="Operator $(id -un)@$(hostname -s) at the terminal prompt of scripts/teleop yam-try on $(date '+%Y-%m-%d %H:%M:%S %Z'): both real YAM arms, half speed, until Ctrl-C. Shown as conditions that must all be true: someone is at the arms right now, agrees, and has the YAM e-stop in reach; nobody is near the arms and nothing is under them that a dropping arm could hit; nothing else will command the YAM arms; the operator stands behind the arms, both facing away, both controllers on."
+    ask_yes "Is all of this true? Start?"
+    n=yam_$(date +%Y%m%d-%H%M%S); echo "$n" > "$R/current_yam_session"; echo "$CONFIRM_TEXT" > "$D/confirm_$n.txt"
+    [ -n "${TELEOP_DRY_RUN:-}" ] && { echo "DRY RUN, nothing started: yam_session.sh $n $D/confirm_$n.txt"; exit 0; }
+    exec bash "$P/scripts/ops/yam_session.sh" "$n" "$D/confirm_$n.txt";;
+  *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 1;;
 esac

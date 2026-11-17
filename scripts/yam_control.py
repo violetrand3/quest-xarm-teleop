@@ -36,7 +36,7 @@ class Request:
 
 @dataclass
 class ArmReport:
-    state: str  # "idle" | "following" | "held" | "let go" | "fault"
+    state: str  # "idle" | "following" | "held" | "let go" | "fault" | "parking"
     q: list[float]  # what was commanded this step (6 joints + gripper)
     target: Any = None
     notes: list[str] = field(default_factory=list)
@@ -111,6 +111,37 @@ class BimanualControl:
             self.pair.command(n, self.q[n])
         return reports
 
+    # --- lowering to rest (every way a session ends) ---------------------------------------------------------
+    def park_tick(self, rest: Mapping[str, Sequence[float]], joint_speed: float) -> tuple[bool, dict[str, str]]:
+        """One step of lowering both arms to their rest poses (6 joints each; grippers stay as they are).
+
+        Both arms are let go first. Each arm's joints move straight toward rest, the largest change limited to
+        joint_speed * dt, under the same rule as teleop: no step may bring parts closer than allowed and closer
+        than they are. An arm whose step is refused waits while the other moves (usually out of its way).
+        Returns (both at rest, {arm: what it did})."""
+        for n in self.arms:
+            self.engaged[n] = False
+        step = joint_speed * self.lim.dt
+        proposal, said = {}, {}
+        for n in self.arms:
+            q = list(self.q[n])
+            d = [r - a for a, r in zip(q[:6], rest[n])]
+            m = max(abs(x) for x in d)
+            k = 1.0 if m <= step else step / m
+            q[:6] = [a + x * k for a, x in zip(q[:6], d)]
+            proposal[n] = q
+            said[n] = "lowering"
+        reports = {n: ArmReport("parking", list(proposal[n])) for n in self.arms}
+        self._keep_clear(proposal, reports)
+        for n in self.arms:
+            self.q[n] = list(reports[n].q)
+            self.pair.command(n, self.q[n])
+            if reports[n].state == "held":
+                said[n] = "waiting: " + "; ".join(reports[n].notes)
+            elif max(abs(a - r) for a, r in zip(self.q[n][:6], rest[n])) < 1e-6:
+                said[n] = "at rest"
+        return all(s == "at rest" for s in said.values()), said
+
     # --- checks ---------------------------------------------------------------------------------------------
     def _keep_clear(self, proposal: dict, reports: dict) -> None:
         """Moves that would bring parts closer than allowed (and closer than now) are not made."""
@@ -125,7 +156,7 @@ class BimanualControl:
             bad = worse({m: (proposal[m] if m == n else self.q[m]) for m in self.arms})
             if bad:
                 self._hold(n, reports, "too close: " + "; ".join(bad))
-        if [n for n in moving if reports[n].state == "following"] and len(moving) > 1:
+        if len([n for n in moving if reports[n].state != "held"]) > 1:
             bad = worse({m: (reports[m].q) for m in self.arms})
             if bad:  # each move alone is fine, both together are not
                 for n in moving:

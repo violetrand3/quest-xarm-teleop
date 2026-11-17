@@ -70,14 +70,14 @@ class SimYamPair:
         self.arms = {a.name: a for a in arms}
         self.names = tuple(self.arms)
         self.robots, self.cfg, self.T_wb, self.T_bw = {}, {}, {}, {}
+        self.arm_type, self.gripper_type = ArmType[arm_type], GripperType[gripper_type]
+        # The kinematic and clearance models come from a simulated arm's model file (no hardware either way).
+        model_arm = get_yam_robot(channel="none", arm_type=self.arm_type, gripper_type=self.gripper_type, sim=True)
+        self.xml = model_arm.xml_path
         for a in arms:
-            r = get_yam_robot(channel=a.channel, arm_type=ArmType[arm_type], gripper_type=GripperType[gripper_type], sim=True)
-            if not r.get_robot_info().get("sim"):
-                raise RuntimeError("expected a simulated robot")  # never reached: sim=True above
-            self.robots[a.name] = r
+            self.robots[a.name] = self._make_robot(a)
             self.T_wb[a.name] = _yaw_T(a.base_xyz, a.base_yaw)
             self.T_bw[a.name] = np.linalg.inv(self.T_wb[a.name])
-        self.xml = self.robots[self.names[0]].xml_path
         self.model = mujoco.MjModel.from_xml_path(self.xml)
         for a in arms:
             self.cfg[a.name] = mink.Configuration(self.model)
@@ -85,6 +85,12 @@ class SimYamPair:
         self.ranges = [tuple(float(v) for v in self.model.jnt_range[i]) for i in range(N_ARM)]
         self.slide = tuple(float(v) for v in self.model.jnt_range[N_ARM])  # gripper finger slide, m
         self._build_clearance_model()
+
+    def _make_robot(self, a: ArmSetup):  # noqa: ANN202
+        r = get_yam_robot(channel=a.channel, arm_type=self.arm_type, gripper_type=self.gripper_type, sim=True)
+        if not r.get_robot_info().get("sim"):
+            raise RuntimeError("expected a simulated robot")  # never reached: sim=True above
+        return r
 
     # --- the interface yam_control uses ----------------------------------------------------------------------
     def joint_ranges(self, name: str) -> list[tuple[float, float]]:
@@ -138,6 +144,10 @@ class SimYamPair:
             if what and (what not in out or c.dist < out[what]):
                 out[what] = float(c.dist)
         return out
+
+    def rest(self, name: str) -> list[float]:
+        """Where the arm is lowered to before it is let go (simulation: folded, every joint at 0)."""
+        return [0.0] * N_ARM
 
     # --- simulation only -------------------------------------------------------------------------------------
     def place(self, name: str, q7: Sequence[float]) -> None:
