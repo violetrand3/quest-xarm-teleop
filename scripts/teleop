@@ -82,6 +82,10 @@ lab_differs() {   # prints the lab-side programs that differ on the lab host (no
   (cd "$P" && echo "$f" | xargs sha256sum) \
     | ssh "${SSHO[@]}" "$LAB_HOST" "if cd ~/$LAB_DIR 2>/dev/null; then sha256sum -c --quiet 2>/dev/null || true; else cat > /dev/null; echo 'NO_LAB_DIR: FAILED'; fi" \
     | sed -n 's/: FAILED.*//p'; }
+sync_differs() {   # every file sync installs (docs and tests too) that differs on the lab host, or is missing there
+  (cd "$P" && sync_files | xargs sha256sum) \
+    | ssh "${SSHO[@]}" "$LAB_HOST" "if cd ~/$LAB_DIR 2>/dev/null; then sha256sum -c --quiet 2>/dev/null || true; else cat > /dev/null; echo 'NO_LAB_DIR: FAILED'; fi" \
+    | sed -n 's/: FAILED.*//p'; }
 lab_version() { lab "cat ~/$LAB_DIR/SYNCED_FROM.txt 2>/dev/null"; }   # e.g. "452b17c 2026-11-02, installed by dev@pc on ..."
 lab_same_as() {   # the lab-side programs on the lab host are exactly those of commit $1
   local f; f=$(lab_files) || return 1
@@ -129,7 +133,7 @@ $(echo "$c" | head -8)"
   git -C "$P" rev-parse -q --verify '@{u}' > /dev/null || die "this branch has no GitHub branch to compare with (git push -u origin $(git -C "$P" branch --show-current))"
   git -C "$P" merge-base --is-ancestor '@{u}' HEAD || die "GitHub has newer commits than this checkout; git pull first"
   git -C "$P" merge-base --is-ancestor HEAD '@{u}' || die "this checkout has commits that are not on GitHub; git push first"
-  [ -n "$(lab_differs)" ] || { echo "The lab host already runs this version ($(version_here | tr -d '\n')). Nothing to install."; return 0; }
+  [ -n "$(lab_differs)$(sync_differs)" ] || { echo "The lab host already has this version ($(version_here | tr -d '\n')). Nothing to install."; return 0; }
   v=$(lab_version); o=$(lab_order "$v")
   [ -z "$v" ] && lab "[ ! -d ~/$LAB_DIR/scripts ]" && o=older   # nothing installed yet
   if [ "$o" = newer ] || [ "$o" = unknown ]; then
@@ -139,7 +143,7 @@ $(echo "$c" | head -8)"
   lab "pgrep -f '[s]cripts/live_teleop.py|[s]cripts/yam_live.py' > /dev/null" && die "a teleop session is running on the lab host; sync after it ends"
   (cd "$P" && sync_files | rsync -a --delay-updates --files-from=- -e "ssh ${SSHO[*]}" ./ "$LAB_HOST:$LAB_DIR/") || die "copying to the lab host failed"
   lab "mkdir -p ~/$LAB_DIR/logs ~/$LAB_DIR/episodes && echo '$(version_here | tr -d '\n'), installed by $(id -un)@$(hostname -s) on $(date '+%Y-%m-%d %H:%M')' > ~/$LAB_DIR/SYNCED_FROM.txt"
-  [ -z "$(lab_differs)" ] || die "the lab host's copy still differs after copying"
+  [ -z "$(lab_differs)$(sync_differs)" ] || die "the lab host's copy still differs after copying"
   echo "The lab host now runs this checkout ($(version_here | tr -d '\n'))."
 }
 
