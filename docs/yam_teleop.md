@@ -100,6 +100,12 @@ What the hardware does (read from I2RT's code and, read-only, from the motors on
   step) first **lowers both arms to their rest poses** at 0.3 rad/s, under the same clearance rules as teleop,
   and only then lets them go. If that cannot finish within 40 s, the arms stay held where they are and the
   terminal says so; `scripts/teleop stop` then lets them go (they drop) or the e-stop is used.
+- At every start-up I2RT shifts a motor's zero by a full turn when it reads outside +-pi. The gripper's stroke is
+  ~5 rad (right arm, measured 2026-11-17: closed +0.001, open -5.069 rad), so jaws more than ~60% open at start-up
+  come back 2*pi off and the measured limits no longer apply. `yam_real.py` reads each gripper's opening right
+  after opening the arm, before any command: outside 0..1 it switches both arms off again and refuses (close
+  that gripper and start again). Lowering to rest closes each gripper to at most 40% open, so the next start-up
+  is valid.
 - There is no controller-side fence or error stop as on the xArm: the rules above and the YAM e-stop are all.
 
 **Bring-up first** (done by the linux2 session, each step with the user's explicit approval given to it):
@@ -116,7 +122,9 @@ after its go/no-go questions: someone at the arms with the e-stop in reach, nobo
 them, nothing else commanding them. Start with small, slow movements of one hand; the arms work low over the table.
 
 Stopping: release a side grip (that arm stops where it is); Ctrl-C or `scripts/teleop stop` (both arms are lowered
-to rest, then let go); the e-stop (the arms drop).
+to rest, then let go); on the lab host `/home/dev/yam/yam_stop.sh` (the linux2 session's emergency software stop:
+it kills the programs and switches all 14 motors off, so the arms drop); the e-stop (the arms drop).
+Before `yam-try`, both arms must rest folded on their bases: a refused start-up switches them off again.
 
 ## Hand to arm
 

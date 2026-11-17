@@ -394,8 +394,9 @@ case "${1:-}" in
     echo "  - someone is at the arms RIGHT NOW, agrees, and has the YAM e-stop in reach"
     echo "  - nobody is near the arms and nothing is under them that a dropping arm could hit"
     echo "  - nothing else will command the YAM arms (no other session, agent or program)"
+    echo "  - both arms rest folded on their bases (a refused start-up switches them off again: they go limp)"
     echo "  - you stand behind the arms, both facing away from you; both controllers are on"
-    CONFIRM_TEXT="Operator $(id -un)@$(hostname -s) at the terminal prompt of scripts/teleop yam-try on $(date '+%Y-%m-%d %H:%M:%S %Z'): both real YAM arms, half speed, until Ctrl-C. Shown as conditions that must all be true: someone is at the arms right now, agrees, and has the YAM e-stop in reach; nobody is near the arms and nothing is under them that a dropping arm could hit; nothing else will command the YAM arms; the operator stands behind the arms, both facing away, both controllers on."
+    CONFIRM_TEXT="Operator $(id -un)@$(hostname -s) at the terminal prompt of scripts/teleop yam-try on $(date '+%Y-%m-%d %H:%M:%S %Z'): both real YAM arms, half speed, until Ctrl-C. Shown as conditions that must all be true: someone is at the arms right now, agrees, and has the YAM e-stop in reach; nobody is near the arms and nothing is under them that a dropping arm could hit; nothing else will command the YAM arms; both arms rest folded on their bases; the operator stands behind the arms, both facing away, both controllers on."
     ask_yes "Is all of this true? Start?"
     n=yam_$(date +%Y%m%d-%H%M%S); echo "$n" > "$R/current_yam_session"; echo "$CONFIRM_TEXT" > "$D/confirm_$n.txt"
     [ -n "${TELEOP_DRY_RUN:-}" ] && { echo "DRY RUN, nothing started: yam_session.sh $n $D/confirm_$n.txt"; exit 0; }

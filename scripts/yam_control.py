@@ -112,8 +112,9 @@ class BimanualControl:
         return reports
 
     # --- lowering to rest (every way a session ends) ---------------------------------------------------------
-    def park_tick(self, rest: Mapping[str, Sequence[float]], joint_speed: float) -> tuple[bool, dict[str, str]]:
-        """One step of lowering both arms to their rest poses (6 joints each; grippers stay as they are).
+    def park_tick(self, rest: Mapping[str, Sequence[float]], joint_speed: float, grip_max: float | None = None) -> tuple[bool, dict[str, str]]:
+        """One step of lowering both arms to their rest poses (6 joints each). A gripper more open than grip_max is
+        closed to it at the gripper speed limit (None: grippers stay as they are).
 
         Both arms are let go first. Each arm's joints move straight toward rest, the largest change limited to
         joint_speed * dt, under the same rule as teleop: no step may bring parts closer than allowed and closer
@@ -129,6 +130,8 @@ class BimanualControl:
             m = max(abs(x) for x in d)
             k = 1.0 if m <= step else step / m
             q[:6] = [a + x * k for a, x in zip(q[:6], d)]
+            if grip_max is not None and q[6] > grip_max:
+                q[6] = max(grip_max, q[6] - self.lim.grip_speed * self.lim.dt)
             proposal[n] = q
             said[n] = "lowering"
         reports = {n: ArmReport("parking", list(proposal[n])) for n in self.arms}
@@ -138,7 +141,7 @@ class BimanualControl:
             self.pair.command(n, self.q[n])
             if reports[n].state == "held":
                 said[n] = "waiting: " + "; ".join(reports[n].notes)
-            elif max(abs(a - r) for a, r in zip(self.q[n][:6], rest[n])) < 1e-6:
+            elif max(abs(a - r) for a, r in zip(self.q[n][:6], rest[n])) < 1e-6 and (grip_max is None or self.q[n][6] <= grip_max + 1e-9):
                 said[n] = "at rest"
         return all(s == "at rest" for s in said.values()), said
 

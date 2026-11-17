@@ -81,13 +81,17 @@ def main(argv: list[str] | None = None) -> int:
 
     lim = first_run_limits(Limits()) if real else Limits()
     if real:
-        from yam_real import HARDWARE_FILE, HardwareFileError, RealYamPair
+        from yam_real import GRIP_REST_MAX, HARDWARE_FILE, GripperStartError, HardwareFileError, RealYamPair
 
         try:
             pair = RealYamPair(ARMS, lim, a.hardware_file or HARDWARE_FILE)
         except HardwareFileError as e:
             print(f"error: {e}; nothing was opened", file=sys.stderr)
             return 2
+        except GripperStartError as e:
+            print(f"error: {e}. Both arms were switched off again.", file=sys.stderr)
+            return 2
+        grip_max = GRIP_REST_MAX
         print(f"{banner}: both arms enabled and holding where they are. Confirmation: {a.human_confirmation.strip()[:300]}", flush=True)
     else:
         from yam_sim import SimYamPair
@@ -95,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         pair = SimYamPair(ARMS, lim)
         for n in pair.names:
             pair.place(n, WORK)
+        grip_max = None
     rest = {n: pair.rest(n) for n in pair.names}
     control = BimanualControl(pair, ARMS, lim)
     teleop = YamTeleop(control, a.scale, a.operator_yaw, a.input_fresh_ms)
@@ -139,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
                         log.write(json.dumps({"t": round((now - start) / 1e9, 3), **{h: {"clutch": r.clutch, "arm": r.arm, "grip": r.gripper,
                                               "q": [round(v, 4) for v in control.q[h]], "notes": r.notes} for h, r in reports.items()}}) + "\n")  # fmt: skip
                 elif phase[0] == "parking":
-                    done, said = control.park_tick(rest, a.park_speed)
+                    done, said = control.park_tick(rest, a.park_speed, grip_max)
                     last["park"] = said
                     if log:
                         log.write(json.dumps({"t": round((now - start) / 1e9, 3), "parking": said, "q": control.q}) + "\n")

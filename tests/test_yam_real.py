@@ -56,6 +56,17 @@ class ParkTests(unittest.TestCase):
         self.assertTrue(done)
         self.assertTrue(said["left"].startswith("waiting") or said["left"] == "lowering")
 
+    def test_an_open_gripper_is_closed_to_the_rest_maximum(self):
+        c = BimanualControl(FakePair(), ARMS, LIM)  # grippers start fully open (1.0)
+        done, steps, g = False, 0, [1.0]
+        while not done and steps < 500:
+            done, _ = c.park_tick(REST, 0.3, grip_max=0.4)
+            g.append(c.q["left"][6])
+            steps += 1
+        self.assertTrue(done)
+        self.assertAlmostEqual(c.q["left"][6], 0.4)
+        self.assertLessEqual(max(a - b for a, b in zip(g, g[1:])), LIM.grip_speed * LIM.dt + 1e-12)
+
     def test_teleop_requests_are_ignored_after_parking_starts(self):
         c = BimanualControl(FakePair(), ARMS, LIM)
         c.engage("left")

@@ -33,6 +33,12 @@ from yam_setup import ArmSetup, HardwareFileError, Limits, load_hardware
 from yam_sim import N_ARM, SimYamPair
 
 HARDWARE_FILE = Path("/home/dev/yam/yam_hardware.json")
+GRIP_START_TOL = 0.05  # how far outside 0..1 a gripper may read at start-up (calibration noise)
+GRIP_REST_MAX = 0.4  # lowering to rest closes a gripper to at most this opening, so the next start-up is valid
+
+
+class GripperStartError(RuntimeError):
+    pass
 
 
 class RealYamPair(SimYamPair):
@@ -54,6 +60,16 @@ class RealYamPair(SimYamPair):
                           gripper_limits_override=np.array(self.hw[a.name]["gripper_limits"]),  # no calibration motion
                           enable_auto_recovery=False)  # fmt: skip
         self.robots[a.name] = r  # so close() reaches it even if the next arm fails
+        # I2RT shifts a motor's zero by a full turn at start-up when it reads outside (-pi, pi] (wrap_around_offset).
+        # The gripper's stroke is ~5 rad (closed ~0, open ~-5.07 on the right arm), so jaws more than ~62% open at
+        # start-up come back 2*pi off and the measured limits no longer apply: the first gripper command would drive
+        # the motor a full turn past an end stop. Nothing has been commanded yet: check the opening and refuse.
+        g = float(r.get_joint_pos()[N_ARM])
+        if not -GRIP_START_TOL <= g <= 1.0 + GRIP_START_TOL:
+            raise GripperStartError(
+                f"the {a.name} gripper reads {g:+.2f} of its stroke at start-up (0 = closed, 1 = open): it is probably more "
+                "than about 60% open, so I2RT shifted its zero by a full turn and the measured limits do not apply. Nothing "
+                "was commanded. Close that gripper below half open (or recalibrate it in the bring-up) and start again")
         return r
 
     def rest(self, name: str) -> list[float]:
