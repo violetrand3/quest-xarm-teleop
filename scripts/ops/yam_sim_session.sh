@@ -35,7 +35,7 @@ if ! grep -q "Listening on" "$D/yam_$N.console.txt"; then
   msg "NOT STARTED. The simulation program says: $(grep -v 'INFO' "$D/yam_$N.console.txt" | grep -m1 'Error\|error' | cut -c1-300)"
   finish; exit 3
 fi
-trap 'trap "" INT TERM; echo; msg "Ending the session."; finish; exit 130' INT TERM
+trap 'trap "" INT TERM HUP PIPE; echo; msg "Ending the session." 2> /dev/null; finish 2> /dev/null; exit 130' INT TERM HUP PIPE
 ssh "${SSHO[@]:1}" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
   -L 127.0.0.1:$LINK_PORT:127.0.0.1:28766 -L 127.0.0.1:$VIEW_PORT:127.0.0.1:28767 "$H" > "$R/yam_tunnel.txt" 2>&1 < /dev/null &
 echo $! > "$R/yam_tunnel.pid"; for i in $(seq 1 40); do ss -ltn | grep -q "127.0.0.1:$LINK_PORT " && break; sleep 0.25; done
@@ -50,14 +50,14 @@ python3 -u "$P/scripts/controller_wait.py" "$D/yam_src_$N.jsonl" --need 2 --seri
 msg "READY (simulation). Watch the arms at http://127.0.0.1:$VIEW_PORT/"
 msg "Each hand: hold the side grip (middle finger) to move its arm, release to stop; the index trigger closes its gripper."
 msg "Left controller -> left arm, right controller -> right arm (switch the left controller on too). Ctrl-C ends; Enter acknowledges a latched problem."
-prev=""
+prev=""; TTY=0; { : < /dev/tty; } 2> /dev/null && TTY=1   # Enter is read only when there is a terminal
 while true; do
   if grep -q '^ENDING:\|^{"result"' "$D/yam_$N.console.txt" 2>/dev/null; then
     msg "The simulation ended by itself: $(sed -n 's/^ENDING: //p' "$D/yam_$N.console.txt" | head -1)"; finish; exit 0
   fi
-  IFS= read -r -t 0.5 _ < /dev/tty 2> /dev/null; rc=$?
-  if [ $rc = 0 ]; then ssh "${SSHO[@]}" "$H" "kill -USR1 \$(cat ~/$L/yam_pid_$N)" && msg "Acknowledged."
-  elif [ $rc -lt 128 ]; then sleep 0.5; fi   # no terminal to read from
+  if [ "$TTY" = 1 ]; then
+    IFS= read -r -t 0.5 _ < /dev/tty && { ssh "${SSHO[@]}" "$H" "kill -USR1 \$(cat ~/$L/yam_pid_$N)" && msg "Acknowledged."; }
+  else sleep 0.5; fi
   line=$(grep 'YAM SIMULATION' "$D/yam_$N.console.txt" | tail -n 1 | sed 's/^ *[0-9.]*s YAM SIMULATION (no hardware) | //')
   now=$(echo "$line" | sed 's/ \[[^]]*\]//g')   # a line is shown when a hand's state changes, with its notes
   [ -n "$now" ] && [ "$now" != "$prev" ] && { msg "  $line"; prev=$now; }

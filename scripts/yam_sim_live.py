@@ -9,6 +9,7 @@ page (viser, loopback only, through a second tunnel). Each hand: hold the side g
 arm, release to stop; the index trigger closes that arm's gripper.
 
 Signals: SIGINT/SIGTERM end it; SIGUSR1 acknowledges latched hand problems (e.g. a headset reference change).
+It also ends by itself after --link-lost-exit-s without a connection (the operator's PC gone).
 Console: one line every 0.5 s per state; "ENDING: <why>" when it ends by itself.
 """
 
@@ -46,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--operator-yaw", type=float, default=0.0)
     ap.add_argument("--input-fresh-ms", type=float, default=400.0)
     ap.add_argument("--duration", type=float, default=0.0, help="end after this many seconds (0 = until stopped)")
+    ap.add_argument("--link-lost-exit-s", type=float, default=60.0, help="end after this long without a connection from the operator's PC")
     ap.add_argument("--log", type=Path, help="every control step (JSON lines)")
     ap.add_argument("--link-log", type=Path, help="the receiver's packet log")
     a = ap.parse_args(argv)
@@ -112,9 +114,15 @@ def main(argv: list[str] | None = None) -> int:
     for th in threads:
         th.start()
     print(f"{BANNER}. Listening on 127.0.0.1:{server.port}; view on 127.0.0.1:{a.view_port}. Left hand -> left arm, right hand -> right arm.", flush=True)
+    last_link = 0.0
     while not stop.wait(0.5):
         r = last["reports"]
         t = (time.monotonic_ns() - start) / 1e9
+        if last["connected"]:
+            last_link = t
+        elif t - last_link >= a.link_lost_exit_s:
+            ended[0] = f"no connection from the operator's PC for {a.link_lost_exit_s:g} s"
+            break
         if r is not None:
             hands = " | ".join(f"{h}: {x.clutch} {x.arm} grip={x.gripper}" + (f" [{'; '.join(x.notes)[:110]}]" if x.notes else "") for h, x in r.items())
             print(f"{t:7.1f}s {BANNER} | input={'CONNECTED' if last['connected'] else 'DISCONNECTED'} | {hands}", flush=True)
