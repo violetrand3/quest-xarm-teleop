@@ -126,9 +126,10 @@ Watch the arms on the camera page (`yam-try` starts it and prints its address, h
 shows what the arms are COMMANDED to do, not what they do.
 
 Tracking: a joint measured too far from its command stops both arms where they are (the only check that notices a
-blocked arm). A moving joint trails its command, so the allowance is 0.15 rad plus 0.3 s of the joint's fastest
-commanded speed in the last 0.5 s (the first real run, 2026-11-17, stopped on right joint 4 trailing 0.15 rad at
-0.75 rad/s). Enter clears the stop once you have looked; the arms keep holding, and a hand is released and pressed
+blocked arm). A moving joint trails its command, so the allowance is 0.10 rad plus 0.25 s of the joint's fastest
+commanded speed in the last 0.5 s. Set from the measured joints of a real run (2026-11-17, 86 s at half speed):
+still within 0.044 rad, lag 0.04-0.12 s per joint, at worst 51% of the allowance. (The first real run had stopped
+on a fixed 0.15 rad: right joint 4 trailing at 0.75 rad/s.) Enter clears the stop once you have looked; the arms keep holding, and a hand is released and pressed
 again to move its arm. Each step logs the commanded ("q") and measured ("meas") joints, to tune this from data.
 
 Stopping: release a side grip (that arm stops where it is); Ctrl-C or `scripts/teleop stop` (both arms are lowered
