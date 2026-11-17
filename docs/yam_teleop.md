@@ -28,7 +28,8 @@ found. Watch the two simulated arms at **http://127.0.0.1:18767/** (a 3D view: d
 - Hold the side grip (middle finger) to move that arm, release to stop. A grip already held when the session
   starts must be released once first.
 - The index trigger closes that arm's gripper (it starts open; it follows once the trigger matches it).
-- Enter acknowledges a latched problem (e.g. after the headset's view was re-centred); Ctrl-C ends.
+- Enter acknowledges a latched problem (e.g. after the headset's view was re-centred); Ctrl-C ends. The
+  simulation on the lab host also ends by itself after 60 s without a connection from this PC.
 - The terminal prints a line whenever a hand's state changes, with what limited it (box edge, speed limit,
   "too close", an end stop, ...). Everything is also logged on the lab host: `~/quest-xarm-teleop-dryrun/logs/yam_<session>.*`.
 
