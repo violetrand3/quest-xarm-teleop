@@ -28,8 +28,9 @@ found. Watch the two simulated arms at **http://127.0.0.1:18767/** (a 3D view: d
 - Switch BOTH controllers on. Left controller -> left arm, right controller -> right arm.
 - Hold the side grip (middle finger) to move that arm, release to stop. A grip already held when the session
   starts must be released once first.
-- While the side grip is held, the index trigger closes that arm's gripper (as on the xArm). It follows once the
-  trigger matches the gripper; released, the gripper stays as it is.
+- While the side grip is held, the index trigger closes that arm's gripper (as on the xArm); released, the gripper
+  stays as it is. The first time in a session it follows at once; after that, when you grip again it waits until
+  the trigger matches what the gripper holds (the terminal says how far to press), so nothing held is dropped.
 - Enter acknowledges a latched problem (e.g. after the headset's view was re-centred); Ctrl-C ends. The
   simulation on the lab host also ends by itself after 60 s without a connection from this PC.
 - The terminal prints a line whenever a hand's state changes, with what limited it (box edge, speed limit,
@@ -168,8 +169,9 @@ presses): 1 demo saved, 2 discarded, as pressed; the saved one 23.9 s, 1194 rows
 While a hand's grip is held, its arm's tool follows the hand from where both were when the grip was pressed:
 the hand's movement scaled by 0.667 (as on the xArm), the hand's rotation 1:1. The axes are the xArm's (the
 operator faces the way the arms face; OPERATOR_YAW in config/teleop_session.conf applies as on the xArm). The gripper follows the
-trigger only while the side grip is held (as on the xArm), and only once the trigger has come within 0.1 of the
-gripper's state, so an arm holding something does not drop it when the hand comes back with the trigger released.
+trigger only while the side grip is held (as on the xArm). Once you have moved a gripper with the trigger, it follows
+again after a release only when the trigger has come within 0.1 of it, so an arm holding something does not drop it
+when the hand comes back with the trigger released; a gripper you have not moved yet in the session follows at once.
 
 ## Found in simulation
 

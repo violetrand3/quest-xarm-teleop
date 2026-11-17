@@ -9,9 +9,11 @@ Per hand, every control step:
     R maps the Quest's LOCAL axes to the world frame (yam_setup) for an operator whose forward is turned by
     operator_yaw from the headset's forward, exactly as on the xArm (0: headset worn or on the forehead);
   - while engaged (only then, as on the xArm), the gripper follows the index trigger (pressed = closed:
-    opening = 1 - trigger) once the trigger has come within PICKUP of the gripper's command, so a trigger that
-    does not match the jaws never moves them (an arm holding an object does not drop it when the hand comes back
-    with the trigger released). Releasing the side grip or losing the hand's input drops the pickup.
+    opening = 1 - trigger), at its speed limit. Once the operator has moved a gripper with the trigger, it follows
+    again after a release only when the trigger has come within PICKUP of it, so an arm holding something does not
+    drop it when the hand comes back with the trigger released. A gripper the operator has not moved yet in this
+    session (where the start-up or the last lowering to rest left it) follows at once: at 40% open with the trigger
+    released, it waited for a 60% press that nobody knew about (2026-11-17).
 Everything that limits motion (box, speeds, jumps, joints, keeping clear) is in BimanualControl (yam_control).
 """
 
@@ -70,6 +72,7 @@ class YamTeleop:
         self.map = {h: HandMap(scale, R) for h in self.names}
         self.eng = {h: Engagement(GRIP_RELEASED_MAX, GRIP_PRESSED_MIN, GRIP_HOLD_MIN, int(input_fresh_ms * 1e6)) for h in self.names}
         self.picked = {h: False for h in self.names}
+        self.operator_set = {h: False for h in self.names}  # this gripper was moved by the operator's trigger
 
     def tick(self, views: Mapping[str, InputView], now_ns: int) -> dict[str, HandReport]:
         requests: dict[str, Request] = {}
@@ -135,7 +138,10 @@ class YamTeleop:
             return None, "no input"
         want = 1.0 - min(max(trig, 0.0), 1.0)
         if not self.picked[h]:
-            if abs(want - self.control.q[h][6]) > PICKUP:
-                return None, "waiting for the trigger to match"
+            have = self.control.q[h][6]
+            if self.operator_set[h] and abs(want - have) > PICKUP:
+                return None, (f"waiting for the trigger to match: the gripper is {have * 100:.0f}% open, "
+                              f"the trigger asks {want * 100:.0f}%; {'press' if want > have else 'release'} it to {(1 - have) * 100:.0f}%")
             self.picked[h] = True
+        self.operator_set[h] = True
         return want, "following"

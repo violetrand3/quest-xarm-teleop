@@ -167,19 +167,33 @@ class GripperTests(unittest.TestCase):
         r.step(10)
         self.assertEqual(r.pair.cmd["left"][6], g)
         r.engage("left")  # the trigger (1.0, closed) no longer matches the jaws (0.5 open): it must come back first
-        self.assertEqual(r.step()["left"].gripper, "waiting for the trigger to match")
+        self.assertTrue(r.step()["left"].gripper.startswith("waiting for the trigger to match"))
 
-    def test_pickup_then_follow(self):
-        r = Rig()  # the gripper starts open (1.0)
-        r.hands["left"].trigger = 1.0  # would close: does not match the open gripper
-        r.engage("left")
-        self.assertEqual(r.step(5)["left"].gripper, "waiting for the trigger to match")
-        self.assertEqual(r.pair.cmd["left"][6], 1.0)
-        r.hands["left"].trigger = 0.05  # matches open
+    def test_a_gripper_not_yet_moved_by_the_operator_follows_at_once(self):
+        r = Rig()
+        r.pair.cmd["left"][6] = 0.4  # where the last lowering to rest left it
+        r.control.q["left"][6] = 0.4
+        r.engage("left")  # trigger released: asks for fully open
         self.assertEqual(r.step()["left"].gripper, "following")
-        r.hands["left"].trigger = 1.0
         r.step(40)
-        self.assertEqual(r.pair.cmd["left"][6], 0.0)
+        self.assertAlmostEqual(r.pair.cmd["left"][6], 1.0)
+
+    def test_after_the_operator_used_it_a_mismatched_trigger_waits_and_says_how_to_match(self):
+        r = Rig()
+        r.hands["left"].trigger = 1.0
+        r.engage("left")
+        r.step(40)  # closed by the operator
+        self.assertAlmostEqual(r.pair.cmd["left"][6], 0.0)
+        r.hands["left"].grip = 0.0  # released, then the trigger let go
+        r.hands["left"].trigger = 0.0
+        r.step()
+        r.engage("left")
+        g = r.step()["left"].gripper
+        self.assertTrue(g.startswith("waiting for the trigger to match"), g)
+        self.assertIn("press it to 100%", g)
+        self.assertAlmostEqual(r.pair.cmd["left"][6], 0.0)  # what it holds is not dropped
+        r.hands["left"].trigger = 0.95
+        self.assertEqual(r.step()["left"].gripper, "following")
 
     def test_losing_the_hand_drops_the_pickup(self):
         r = Rig()
@@ -189,7 +203,7 @@ class GripperTests(unittest.TestCase):
         r.step()
         r.hands["left"].ok, r.hands["left"].trigger = True, 1.0
         r.engage("left")
-        self.assertEqual(r.step()["left"].gripper, "waiting for the trigger to match")
+        self.assertTrue(r.step()["left"].gripper.startswith("waiting for the trigger to match"))
 
 
 if __name__ == "__main__":
