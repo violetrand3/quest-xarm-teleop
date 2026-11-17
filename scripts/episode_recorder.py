@@ -74,6 +74,8 @@ def free_gb(path: Path) -> float:
 
 
 class EpisodeRecorder:
+    FORMAT, STEP_FIELDS = FORMAT, FIELDS  # a subclass for another robot names its own row (and overrides _row, _count)
+
     def __init__(self, session_dir: Path, session_meta: dict, cams: dict[str, str], extras: Callable[[], dict] | None = None,
                  min_free_gb: float = 5.0, max_episode_s: float = 300.0, clock: Callable[[], int] = time.monotonic_ns,
                  log: Callable[[str], None] = print):  # fmt: skip
@@ -102,10 +104,10 @@ class EpisodeRecorder:
         self._ticks = 0
         mono, wall = clock(), time.time_ns()
         with (session_dir / "session.json").open("x", encoding="utf-8") as f:
-            json.dump({"format": FORMAT, "created_wall": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            json.dump({"format": self.FORMAT, "created_wall": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                        "clock": {"note": "all times are this host's monotonic clock; wall = wall_ns + (t - mono_ns)", "mono_ns": mono, "wall_ns": wall},
                        "cameras": self.cams, "camera_time": "arrival of the frame on this host; the camera supplies no capture time",
-                       "steps_fields": FIELDS, **session_meta}, f, indent=1, default=str)  # fmt: skip
+                       "steps_fields": self.STEP_FIELDS, **session_meta}, f, indent=1, default=str)  # fmt: skip
         self._err = (session_dir / "cameras.stderr.txt").open("x", encoding="utf-8")
         cmd = [sys.executable, "-u", str(Path(__file__).with_name("episode_cameras.py"))]
         for name, url in self.cams.items():
@@ -251,6 +253,16 @@ class EpisodeRecorder:
         row = self._row(rec, extra)
         ep["steps_f"].write(json.dumps(row, separators=(",", ":")) + "\n")
         ep["steps"] += 1
+        self._count(ep, row, rec)
+        self._ticks += 1
+        if t - ep["t0"] >= self.max_episode_ns:
+            self._stop(t, "max_duration")
+        elif self._ticks % 250 == 0 and free_gb(self.dir) < self.min_free_gb - 1.0:
+            self._stop(t, "low_disk")
+
+    @staticmethod
+    def _count(ep: dict, row: dict, rec: dict) -> None:
+        """The episode's running statistics (meta.json) from one row."""
         if row["state"] == "ACTIVE":
             ep["active_ns"] += int((rec.get("dt_ms") or 0.0) * 1e6)
         p = row["tcp_mm"]
@@ -263,11 +275,6 @@ class EpisodeRecorder:
         g = row["grip_pct"]
         if g is not None:
             ep["grip_min"], ep["grip_max"] = min(ep["grip_min"], g), max(ep["grip_max"], g)
-        self._ticks += 1
-        if t - ep["t0"] >= self.max_episode_ns:
-            self._stop(t, "max_duration")
-        elif self._ticks % 250 == 0 and free_gb(self.dir) < self.min_free_gb - 1.0:
-            self._stop(t, "low_disk")
 
     @staticmethod
     def _row(rec: dict, extra: dict | None) -> dict:
@@ -337,7 +344,7 @@ class EpisodeRecorder:
         if ep["rows_without_pose"]:
             problems.append(f"{ep['rows_without_pose']} rows without an arm pose")
         dur = (t - ep["t0"]) / 1e9
-        meta = {"format": FORMAT, "episode": ep["n"], "outcome": "saved", "closed_by": closed_by, "t0": ep["t0"], "t1": t,
+        meta = {"format": self.FORMAT, "episode": ep["n"], "outcome": "saved", "closed_by": closed_by, "t0": ep["t0"], "t1": t,
                 "duration_s": round(dur, 3), "steps": ep["steps"], "step_rate_hz": round(ep["steps"] / dur, 2) if dur > 0 else None,
                 "arm_following_s": round(ep["active_ns"] / 1e9, 2), "engagements_started": ep["engagements"],
                 "tcp_travel_mm": round(ep["travel_mm"], 1),

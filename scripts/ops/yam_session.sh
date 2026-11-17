@@ -2,10 +2,12 @@
 # One bimanual YAM session: both Quest controllers -> two YAM arms on the lab host (scripts/yam_live.py).
 #   yam_session.sh <name>                      SIMULATED arms, no hardware (scripts/teleop yam-sim)
 #   yam_session.sh <name> <confirmation file>  the REAL arms: THEY MOVE (scripts/teleop yam-try, after its questions)
+#   yam_session.sh <name> <confirmation file> rec    the same, recording demos (scripts/teleop yam-record)
 # Ctrl-C ends it: the lab program lowers both arms to rest first. Enter acknowledges a latched hand problem.
 set -u
 P=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd); . "$P/config/teleop_session.conf" || exit 2
-H=$LAB_HOST; D=${TELEOP_DATA_DIR:-$P/data/sessions}; R=$P/run; N=$1; CONF=${2:-}; L=$LAB_DIR/logs
+H=$LAB_HOST; D=${TELEOP_DATA_DIR:-$P/data/sessions}; R=$P/run; N=$1; CONF=${2:-}; REC=$([ "${3:-}" = rec ] && echo 1 || echo 0); L=$LAB_DIR/logs
+YAM_RECORD_CAMS=${YAM_RECORD_CAMS:-rs_color}   # camera-wall cameras saved with every demo (the RealSense sees both arms)
 if [ -n "$CONF" ]; then KIND="real arms"; ARMS="--arms real --moves-real-arms"; else KIND="simulation, no hardware"; ARMS="--arms sim"; fi
 LAB_PY=${YAM_PYTHON:-/home/dev/yam/i2rt/.venv/bin/python}   # I2RT's environment on the lab host
 LINK_PORT=18766; VIEW_PORT=18767                               # this PC; the lab program listens on 28766 / 28767
@@ -32,7 +34,7 @@ finish() {   # $1 = notstarted: the lab program exited at start-up, so there is 
   T=$(cat "$R/yam_tx.pid" 2>/dev/null); kill -INT "$T" 2>/dev/null; for i in $(seq 1 40); do kill -0 "$T" 2>/dev/null || break; sleep 0.25; done
   sed -i "s/$S/[REDACTED]/g" "$D/yam_tx_$N.console.txt" 2>/dev/null
   T=$(cat "$R/yam_tunnel.pid" 2>/dev/null); ps -o args= -p "$T" 2>/dev/null | grep -q -- "-L 127.0.0.1:$LINK_PORT:" && kill "$T"
-  ssh "${SSHO[@]}" "$H" "for i in \$(seq 1 120); do grep -q '^{\"result\"\|^COULD NOT LOWER' ~/$L/yam_$N.console.txt && break; sleep 0.5; done; grep '^Both arms are at rest\|^COULD NOT LOWER\|^{\"result\"' ~/$L/yam_$N.console.txt" > "$D/yam_end_$N.txt" 2>&1
+  ssh "${SSHO[@]}" "$H" "for i in \$(seq 1 120); do grep -q '^{\"result\"\|^COULD NOT LOWER' ~/$L/yam_$N.console.txt && break; sleep 0.5; done; grep '^Both arms are at rest\|^COULD NOT LOWER\|^demos:\|^{\"result\"' ~/$L/yam_$N.console.txt" > "$D/yam_end_$N.txt" 2>&1
   if grep -q '"at_rest": true' "$D/yam_end_$N.txt"; then msg "Both arms are at rest and the program has ended."
   elif grep -q '^COULD NOT LOWER' "$D/yam_end_$N.txt"; then
     msg "WARNING: $(grep -m1 '^COULD NOT LOWER' "$D/yam_end_$N.txt" | cut -c1-300)"
@@ -40,12 +42,23 @@ finish() {   # $1 = notstarted: the lab program exited at start-up, so there is 
   else msg "WARNING: the lab program did not confirm that the arms are at rest. Look at the arms; use the e-stop if they move."; fi
   T=$(cat "$R/yam_tail.pid" 2>/dev/null); kill "$T" 2>/dev/null
   adb -s "$S" shell am force-stop org.questxarm.reader > /dev/null 2>&1
+  if [ "$REC" = 1 ]; then
+    msg "$(grep -m1 '^demos:' "$D/yam_end_$N.txt" 2>/dev/null || ssh "${SSHO[@]}" "$H" "grep -m1 '^demos:' ~/$L/yam_$N.console.txt")"
+    if [ "${MAKE_VIDEOS:-1}" = 1 ]; then
+      msg "Making the videos on $H and copying the demos here ..."
+      if bash "$P/scripts/ops/episodes_videos.sh" "$N" >> "$D/yam_videos_$N.txt" 2>&1; then msg "Demos and videos: $P/data/episodes/$N/"; else msg "The videos were not made; see $D/yam_videos_$N.txt"; fi
+    fi
+  fi
 }
 
 msg "Starting the YAM program on $H ($KIND) ..."
 ssh "${SSHO[@]}" "$H" "test -x $LAB_PY" || { msg "I2RT's Python ($LAB_PY) is not on $H. Ending."; exit 2; }
 if [ -n "$CONF" ]; then scp -q "${SSHO[@]:1}" "$CONF" "$H:$L/confirm_$N.txt" || { msg "cannot copy the confirmation to $H. Ending."; exit 2; }
   ARMS="$ARMS --human-confirmation \"\$(tr '\n\"' '  ' < logs/confirm_$N.txt)\""; fi
+if [ "$REC" = 1 ]; then
+  ARMS="$ARMS --record-dir episodes/$N --record-max-s $((${DEMO_MAX_MIN:-5} * 60)) --record-min-free-gb ${MIN_FREE_GB:-6}"
+  for c in ${YAM_RECORD_CAMS//,/ }; do ARMS="$ARMS --record-cam $c=${LAB_CAMERA_STATUS%/api/status}/cam/$c"; done
+fi
 ssh "${SSHO[@]}" "$H" "cd ~/$LAB_DIR && mkdir -p logs && (nohup setsid $LAB_PY -u scripts/yam_live.py $ARMS --operator-yaw ${OPERATOR_YAW:-0} --log logs/yam_$N.jsonl > logs/yam_$N.console.txt 2>&1 < /dev/null & echo \$! > logs/yam_pid_$N)"
 : > "$D/yam_$N.console.txt"
 ssh "${SSHO[@]}" "$H" "tail -n +1 -F ~/$L/yam_$N.console.txt 2>/dev/null" > "$D/yam_$N.console.txt" 2>/dev/null &
@@ -71,7 +84,8 @@ sleep 4; ssh "${SSHO[@]}" "$H" "kill -USR1 \$(cat ~/$L/yam_pid_$N)"   # the app'
 msg "READY ($KIND). Cameras: http://127.0.0.1:${RELAY_LOCAL_PORT:-18091}/   3D view of what the arms are commanded to do: http://127.0.0.1:$VIEW_PORT/"
 msg "Each hand: hold the side grip (middle finger) to move its arm, release to stop; while the grip is held, the index trigger closes its gripper (as on the xArm)."
 msg "Left controller -> left arm, right controller -> right arm (switch the left controller on too). Ctrl-C ends; Enter acknowledges a latched problem."
-prev=""; TTY=0; { : < /dev/tty; } 2> /dev/null && TTY=1   # Enter is read only when there is a terminal
+[ "$REC" = 1 ] && msg "Demos: right thumb A starts one and, pressed again, saves it; B discards the one in progress."
+prev=""; seen_ep=0; TTY=0; { : < /dev/tty; } 2> /dev/null && TTY=1   # Enter is read only when there is a terminal
 while true; do
   if grep -q '^ENDING:\|^{"result"' "$D/yam_$N.console.txt" 2>/dev/null; then
     msg "The YAM program is ending by itself: $(sed -n 's/^ENDING: //p' "$D/yam_$N.console.txt" | head -1)"; finish; exit 0
@@ -80,6 +94,10 @@ while true; do
     IFS= read -r -t 0.5 _ < /dev/tty && { ssh "${SSHO[@]}" "$H" "kill -USR1 \$(cat ~/$L/yam_pid_$N)" && msg "Acknowledged."; }
   else sleep 0.5; fi
   line=$(grep ' YAM \(SIMULATION\|REAL ARMS\)' "$D/yam_$N.console.txt" | tail -n 1 | sed 's/^ *[0-9.]*s YAM [^|]*| //')
-  now=$(echo "$line" | sed 's/ \[[^]]*\]//g')   # a line is shown when a hand's state changes, with its notes
+  now=$(echo "$line" | sed 's/ \[[^]]*\]//g; s/ | ep=.*//')   # a line is shown when a hand's state changes, with its notes
+  if [ "$REC" = 1 ]; then   # the recorder's own messages: started, SAVED, DISCARDED, NOT started
+    eps=$(grep '^episode \|^EPISODE' "$D/yam_$N.console.txt"); k=$(printf '%s' "$eps" | grep -c .)
+    [ "$k" -gt "$seen_ep" ] && { printf '%s\n' "$eps" | tail -n $((k - seen_ep)) | while IFS= read -r e; do msg "DEMO: $e"; done; seen_ep=$k; }
+  fi
   [ -n "$now" ] && [ "$now" != "$prev" ] && { msg "  $line"; prev=$now; }
 done

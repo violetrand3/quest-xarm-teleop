@@ -65,6 +65,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--link-lost-exit-s", type=float, default=0.0, help="end after this long without the operator's PC (default: 60 sim, 10 real)")
     ap.add_argument("--park-speed", type=float, default=0.3, help="joint speed while lowering to rest, rad/s")
     ap.add_argument("--park-timeout-s", type=float, default=40.0)
+    ap.add_argument("--record-dir", type=Path, help="record demos here (thumb A starts / saves, B discards); needs --record-cam")
+    ap.add_argument("--record-cam", action="append", default=[], help="NAME=http://127.0.0.1:<port>/<path>: a camera saved with every demo")
+    ap.add_argument("--record-max-s", type=float, default=300.0, help="a demo still recording after this long is saved and closed")
+    ap.add_argument("--record-min-free-gb", type=float, default=6.0)
     ap.add_argument("--log", type=Path, help="every control step (JSON lines)")
     ap.add_argument("--link-log", type=Path, help="the receiver's packet log")
     a = ap.parse_args(argv)
@@ -74,6 +78,9 @@ def main(argv: list[str] | None = None) -> int:
     if not (0.1 <= a.scale <= 1.5 and -180 <= a.operator_yaw <= 180 and 100 <= a.input_fresh_ms <= 500 and a.duration >= 0
             and 0.05 <= a.park_speed <= 0.6 and 5 <= a.park_timeout_s <= 120 and 2 <= a.link_lost_exit_s <= 600):  # fmt: skip
         print("error: argument outside its allowed range", file=sys.stderr)
+        return 2
+    if bool(a.record_dir) != bool(a.record_cam):
+        print("error: --record-dir and --record-cam go together", file=sys.stderr)
         return 2
     if real and not (a.moves_real_arms and a.human_confirmation.strip()):
         print("error: --arms real needs --moves-real-arms and --human-confirmation (the operator's answers); nothing was opened", file=sys.stderr)
@@ -115,6 +122,44 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as e:  # the view is a convenience; the arms do not depend on it
         print(f"no browser view: {e}", flush=True)
     log = a.log.open("x", encoding="utf-8") if a.log else None
+    episodes = None
+    if a.record_dir:
+        from yam_recorder import YamEpisodeRecorder
+
+        cams = dict(c.split("=", 1) for c in a.record_cam)
+        episodes = YamEpisodeRecorder(a.record_dir, {"tool": "yam_live", "arms": a.arms, "args": {k: str(v) for k, v in vars(a).items()},
+                                                     "setup": {n: vars(x) for n, x in control.arms.items()}, "limits": vars(lim),
+                                                     "rest_q": rest, "human_confirmation": a.human_confirmation},
+                                      cams, None, a.record_min_free_gb, a.record_max_s, log=lambda m: print(m, flush=True))  # fmt: skip
+    prev_clutch: dict[str, str] = {}
+    prev_fault = [""]
+    last_t = [0]
+
+    def record(views: dict, reports: dict, now: int) -> None:
+        """One step for the demo recorder (only while teleop runs; never while lowering)."""
+        arms = {}
+        for h, r in reports.items():
+            s = views[h].sample if views.get(h) is not None else None
+            meas = pair.joints(h)
+            tool = pair.fk(h, meas[:6])
+            tgt = control.limiter[h].target if control.engaged[h] else None
+            arms[h] = {"clutch": r.clutch, "arm": r.arm, "q_cmd": [round(v, 5) for v in control.q[h]], "q_meas": [round(v, 5) for v in meas],
+                       "tcp_p": [round(v, 5) for v in tool[0]], "tcp_q": [round(v, 6) for v in tool[1]],
+                       "target_p": None if tgt is None else [round(v, 5) for v in tgt[0]], "target_q": None if tgt is None else [round(v, 6) for v in tgt[1]],
+                       "grip_cmd": round(control.q[h][6], 4), "trig": None if s is None else s.trigger, "squeeze": None if s is None else s.grip,
+                       "hand_p": None if s is None or s.p_m is None else [round(v, 5) for v in s.p_m],
+                       "hand_q": None if s is None or s.q_xyzw is None else [round(v, 6) for v in s.q_xyzw],
+                       "input_age_ms": None if s is None else round((now - s.arrival_ns) / 1e6, 1), "notes": r.notes}  # fmt: skip
+            if prev_clutch.get(h) != r.clutch:
+                episodes.on_record({"k": "transition", "t": now, "arm": h, "old": prev_clutch.get(h), "new": r.clutch})
+                prev_clutch[h] = r.clutch
+        if control.fault and control.fault != prev_fault[0]:
+            episodes.on_record({"k": "fault", "t": now, "reason": control.fault})
+        prev_fault[0] = control.fault
+        rs = views["right"].sample if views.get("right") is not None else None
+        episodes.on_record({"k": "tick", "t": now, "dt_ms": round((now - last_t[0]) / 1e6, 2) if last_t[0] else None, "arms": arms,
+                            "btn_a": None if rs is None else rs.a, "btn_b": None if rs is None else rs.b})  # fmt: skip
+        last_t[0] = now
     closing, ack = threading.Event(), threading.Event()
     stops = [0]
     phase = ["teleop"]  # teleop -> parking -> parked, or -> holding (lowering could not finish)
@@ -141,6 +186,11 @@ def main(argv: list[str] | None = None) -> int:
                         print("acknowledged: " + "; ".join(teleop.acknowledge()), flush=True)
                     reports = teleop.tick(views, now)
                     last.update(reports=reports, connected=views["right"].connected, steps=last["steps"] + 1)
+                    if episodes is not None:
+                        try:
+                            record(views, reports, now)
+                        except Exception as e:  # recording must never disturb the arms
+                            print(f"recording a step failed: {type(e).__name__}: {e}"[:200], flush=True)
                     if log:  # "q": commanded, "meas": measured (real arms; the simulation reads back its command)
                         log.write(json.dumps({"t": round((now - start) / 1e9, 3), **{h: {"clutch": r.clutch, "arm": r.arm, "grip": r.gripper,
                                               "q": [round(v, 4) for v in control.q[h]], "meas": [round(v, 4) for v in pair.joints(h)] if real else None,
@@ -195,12 +245,15 @@ def main(argv: list[str] | None = None) -> int:
                     f"no connection from the operator's PC for {a.link_lost_exit_s:g} s" if t - last_link >= a.link_lost_exit_s else ""))  # fmt: skip
             if why:
                 ended[0] = why
+                if episodes is not None:
+                    episodes.request("end")  # a demo in progress is saved now: the lowering is not part of it
                 phase[0] = "parking"
                 stops[0] = min(stops[0], 1)
             r = last["reports"]
             if r is not None and phase[0] == "teleop":
                 hands = " | ".join(f"{h}: {x.clutch} {x.arm} grip={x.gripper}" + (f" [{'; '.join(x.notes)[:110]}]" if x.notes else "") for h, x in r.items())
-                print(f"{t:7.1f}s {banner} | input={'CONNECTED' if last['connected'] else 'DISCONNECTED'} | {hands}", flush=True)
+                ep = "" if episodes is None else f" | ep={episodes.status()}"
+                print(f"{t:7.1f}s {banner} | input={'CONNECTED' if last['connected'] else 'DISCONNECTED'} | {hands}{ep}", flush=True)
         if phase[0] == "parking":
             if park_t0 is None:
                 park_t0 = t
@@ -231,6 +284,10 @@ def main(argv: list[str] | None = None) -> int:
     if view is not None:
         view.close()
     pair.close()
+    if episodes is not None:
+        rec_end = episodes.close()
+        print(f"demos: {rec_end['saved']} saved, {rec_end['discarded']} discarded, {rec_end['refused']} not started"
+              + (f"; RECORDING ERROR: {rec_end['error']}" if rec_end.get("error") else ""), flush=True)
     if log:
         log.close()
     print(json.dumps({"result": "stopped", "arms": a.arms, "steps": last["steps"], "ended_by": ended[0], "at_rest": phase[0] == "parked"}), flush=True)

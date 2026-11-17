@@ -49,7 +49,8 @@ found. Watch the two simulated arms at **http://127.0.0.1:18767/** (a 3D view: d
 | `scripts/yam_replay.py` | lab host, I2RT's environment | replays a recorded session (`data/sessions/src_*.jsonl`) through the simulated arms |
 | `scripts/yam_live.py` | lab host, I2RT's environment | the live program: Quest stream in, simulated (`--arms sim`) or real (`--arms real`) arms, browser view, lowering to rest |
 | `scripts/yam_real.py` | lab host, I2RT's environment | the real arms behind the same interface (opening them enables the motors) |
-| `scripts/ops/yam_session.sh` | operator's PC | one session, started by `scripts/teleop yam-sim` or `yam-try` |
+| `scripts/yam_recorder.py` | lab host | demo recording for two arms (the xArm's recorder with its own row) |
+| `scripts/ops/yam_session.sh` | operator's PC | one session, started by `scripts/teleop yam-sim`, `yam-try` or `yam-record` |
 
 Run the check on the lab host (from a synced copy):
 
@@ -138,6 +139,29 @@ Stopping: release a side grip (that arm stops where it is); Ctrl-C or `scripts/t
 to rest, then let go); on the lab host `/home/dev/yam/yam_stop.sh` (the linux2 session's emergency software stop:
 it kills the programs and switches all 14 motors off, so the arms drop); the e-stop (the arms drop).
 Before `yam-try`, both arms must rest folded on their bases: a refused start-up switches them off again.
+
+## Recording demos (`scripts/teleop yam-record`)
+
+`yam-try` with demo recording, as `record` on the xArm: right thumb **A** starts a demo and, pressed again, saves it;
+**B** discards the one in progress. A demo still recording after DEMO_MAX_MIN (settings) is saved and closed; any end
+of the session saves the one in progress before the arms are lowered (the lowering is never part of a demo).
+Recording needs MIN_FREE_GB free on the lab host. Afterwards the videos are made on the lab host and the demos copied
+to `data/episodes/<session>/` (without the raw camera files), as for the xArm.
+
+Each demo (`episodes/<session>/episode_0001/` on the lab host):
+
+| File | What |
+|---|---|
+| `steps.jsonl` | one row per control step (50 Hz): for each arm, `left` and `right`: clutch and arm state, commanded and measured joints with the gripper opening (`q_cmd`, `q_meas`), the tool pose from the measured joints (`tcp_p`, `tcp_q`, metres, world frame), the tool target, the gripper command, trigger, side grip, the controller's pose and the notes (what limited the arm) |
+| `cam_rs_color.mjpeg` + `.frames.jsonl` | the RealSense (sees both arms), every frame with its time on the rows' clock |
+| `events.jsonl`, `meta.json` | clutch changes and faults; duration, following time, travel, gripper range, camera statistics, problems |
+
+`session.json` describes every field (format `quest-yam-bimanual-episode-v1`). The cameras saved are YAM_RECORD_CAMS
+(default `rs_color`; the wrist webcams are shown on the camera page but not recorded yet).
+
+Tested 2026-11-17 in simulation with a recorded xArm demo session played back in place of the headset (its own A/B
+presses): 1 demo saved, 2 discarded, as pressed; the saved one 23.9 s, 1194 rows at 50 Hz, the arms following 18.4 s,
+804 RealSense frames.
 
 ## Hand to arm
 

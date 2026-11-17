@@ -17,6 +17,7 @@
 #                                     docs/yam_teleop.md); watch them at http://127.0.0.1:18767/
 #   scripts/teleop yam-try            the same with the REAL YAM arms: THEY MOVE (half speed; go/no-go questions first;
 #                                     needs the bring-up recorded on the lab host). stop / Ctrl-C lower them to rest
+#   scripts/teleop yam-record         yam-try recording demos (right thumb A starts / saves, B discards; the RealSense)
 #
 # Settings: config/teleop_session.conf.  THE ARM MOVES in "record" and "try": they ask the go/no-go questions first
 # and save what you typed with the session. Ctrl-C during a session ends it cleanly.
@@ -385,13 +386,14 @@ case "${1:-}" in
     rig_status; RELOAD=0; ensure_cameras 21600 "$YAM_VIEWS"; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')"
     n=sim_$(date +%Y%m%d-%H%M%S); echo "$n" > "$R/current_yam_session"
     exec bash "$P/scripts/ops/yam_session.sh" "$n";;
-  yam-try)   # THE REAL YAM ARMS MOVE
+  yam-try|yam-record)   # THE REAL YAM ARMS MOVE
     LAB_STARTS=$YAM_STARTS; lab_check
     ps -eo args | grep -q '[b]ash .*teleop_live_session\|[b]ash .*yam_session' && die "another session is running on this PC; end it first"
     [ "$(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] || die "need exactly one headset on USB (adb devices)"
     lab "test -s /home/dev/yam/yam_hardware.json" || die "the YAM bring-up is not recorded on the lab host (/home/dev/yam/yam_hardware.json: gripper limits and rest poses); see docs/yam_teleop.md"
     lab "pgrep -f '[y]am_live.py|[l]ive_teleop.py' > /dev/null" && die "a teleop program is already running on the lab host"
     echo
+    [ "$1" = yam-record ] && echo && echo "Demos are recorded on the lab host (episodes/<session>/): right thumb A starts one and saves it, B discards it."
     echo "THE YAM ARMS WILL MOVE: both arms, at half the simulation's speed limits (the tool at most 7.5 cm/s), until Ctrl-C."
     echo "Ending (Ctrl-C, scripts/teleop stop, a lost connection, a fault) lowers both arms to rest before the motors are switched off."
     echo "If the program or the power stops, the motors go limp and the ARMS DROP. All of this must be true:"
@@ -400,11 +402,11 @@ case "${1:-}" in
     echo "  - nothing else will command the YAM arms (no other session, agent or program)"
     echo "  - both arms rest folded on their bases (a refused start-up switches them off again: they go limp)"
     echo "  - you stand behind the arms, both facing away from you; both controllers are on"
-    CONFIRM_TEXT="Operator $(id -un)@$(hostname -s) at the terminal prompt of scripts/teleop yam-try on $(date '+%Y-%m-%d %H:%M:%S %Z'): both real YAM arms, half speed, until Ctrl-C. Shown as conditions that must all be true: someone is at the arms right now, agrees, and has the YAM e-stop in reach; nobody is near the arms and nothing is under them that a dropping arm could hit; nothing else will command the YAM arms; both arms rest folded on their bases; the operator stands behind the arms, both facing away, both controllers on."
+    CONFIRM_TEXT="Operator $(id -un)@$(hostname -s) at the terminal prompt of scripts/teleop $1 on $(date '+%Y-%m-%d %H:%M:%S %Z'): both real YAM arms, half speed, until Ctrl-C. Shown as conditions that must all be true: someone is at the arms right now, agrees, and has the YAM e-stop in reach; nobody is near the arms and nothing is under them that a dropping arm could hit; nothing else will command the YAM arms; both arms rest folded on their bases; the operator stands behind the arms, both facing away, both controllers on."
     ask_yes "Is all of this true? Start?"
     rig_status; RELOAD=0; ensure_cameras 21600 "$YAM_VIEWS"; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')"
-    n=yam_$(date +%Y%m%d-%H%M%S); echo "$n" > "$R/current_yam_session"; echo "$CONFIRM_TEXT" > "$D/confirm_$n.txt"
-    [ -n "${TELEOP_DRY_RUN:-}" ] && { echo "DRY RUN, nothing started: yam_session.sh $n $D/confirm_$n.txt"; exit 0; }
-    exec bash "$P/scripts/ops/yam_session.sh" "$n" "$D/confirm_$n.txt";;
-  *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 1;;
+    n=$([ "$1" = yam-record ] && echo yamrec || echo yam)_$(date +%Y%m%d-%H%M%S); echo "$n" > "$R/current_yam_session"; echo "$CONFIRM_TEXT" > "$D/confirm_$n.txt"
+    [ -n "${TELEOP_DRY_RUN:-}" ] && { echo "DRY RUN, nothing started: yam_session.sh $n $D/confirm_$n.txt $([ "$1" = yam-record ] && echo rec)"; exit 0; }
+    exec bash "$P/scripts/ops/yam_session.sh" "$n" "$D/confirm_$n.txt" $([ "$1" = yam-record ] && echo rec);;
+  *) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 1;;
 esac
