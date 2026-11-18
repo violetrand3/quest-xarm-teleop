@@ -172,8 +172,13 @@ def scenarios(pair, lim: Limits) -> list[tuple[str, bool, str]]:
     out.append(("lowers both arms to rest from the middle", done and not worse,
                 f"at rest after {steps * lim.dt:.1f} s at 0.3 rad/s; no part brought closer than allowed on the way"))
 
+    # 99.9% of the steps within half a period, none over two. A rare late step is harmless (I2RT keeps sending the
+    # last command) and happens on the shared lab host when other users' programs run: 10-20 ms once in ~8000 steps
+    # in a full test run on 2026-11-18, never above 8 ms run alone; real sessions showed up to 33 ms before then.
     ms = sorted(STEP_MS)
-    out.append(("one control step for both arms is fast enough", ms[-1] < lim.dt * 1000 / 2, f"{ms[len(ms) // 2]:.1f} ms typical, {ms[-1]:.1f} ms worst (step is {lim.dt * 1000:.0f} ms)"))
+    p999 = ms[min(len(ms) - 1, int(len(ms) * 0.999))]
+    out.append(("one control step for both arms is fast enough", p999 < lim.dt * 1000 / 2 and ms[-1] < lim.dt * 1000 * 2,
+                f"{ms[len(ms) // 2]:.1f} ms typical, 99.9% within {p999:.1f} ms, {ms[-1]:.1f} ms worst (step is {lim.dt * 1000:.0f} ms)"))
     return out
 
 
