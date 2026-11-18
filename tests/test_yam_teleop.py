@@ -34,12 +34,16 @@ class Hand:
 
     def __init__(self, p=(0.0, 1.0, -0.3), q=UP):
         self.p, self.q, self.grip, self.trigger, self.ok, self.seq = p, q, 0.0, 0.0, True, 0
+        self.frozen, self.gen, self._last = False, 1, None
 
     def view(self, now_ns):
+        if self.frozen and self._last is not None:  # a link stall: nothing new arrives, the last sample ages
+            return self._last
         self.seq += 1
-        s = InputSample(now_ns, self.seq, now_ns, IDENT, 1, self.ok, () if self.ok else ("pos_untracked",), self.p, self.q,
-                        self.grip, self.trigger)  # fmt: skip
-        return InputView(True, True, False, 1, s, (), 0)
+        s = InputSample(now_ns, self.seq, now_ns, IDENT, self.gen, self.ok, () if self.ok else ("pos_untracked",), self.p,
+                        self.q, self.grip, self.trigger)  # fmt: skip
+        self._last = InputView(True, True, False, self.gen, s, (), 0)
+        return self._last
 
 
 class Rig:
@@ -143,6 +147,70 @@ class LatchTests(unittest.TestCase):
         self.assertTrue(any("local_space_change" in n and "press Enter" in n for n in rep["left"].notes))
         self.assertIn("left: acknowledged", " ".join(r.t.acknowledge()))
         self.assertEqual(r.step()["left"].clutch, ARMED)  # released grip seen again: may engage after a press
+
+
+class StallTests(unittest.TestCase):
+    """A link stall (input older than 400 ms) lets go; it resumes by itself within 2 s if the grip stayed held."""
+
+    def stall(self, r, h, steps):
+        r.hands[h].frozen = True
+        rep = r.step(steps)
+        r.hands[h].frozen = False
+        return rep
+
+    def test_a_short_stall_resumes_without_a_jump(self):
+        r = Rig()
+        r.engage("left")
+        rep = self.stall(r, "left", 30)  # 0.6 s
+        self.assertEqual(rep["left"].clutch, "STALLED")
+        x = r.pair.cmd["left"][0]
+        r.hands["left"].p = (0.0, 1.0, -0.4)  # the hand moved 10 cm during the stall
+        rep = r.step()
+        self.assertEqual(rep["left"].clutch, ACTIVE)
+        self.assertIn("resumed after the link stall", rep["left"].notes)
+        self.assertAlmostEqual(r.pair.cmd["left"][0], x, places=9)  # re-anchored: no catching up
+        r.hands["left"].p = (0.0, 1.0, -0.44)  # 4 cm more after the stall
+        r.step(40)
+        self.assertAlmostEqual(r.pair.cmd["left"][0] - x, 0.02, places=6)
+
+    def test_released_during_the_stall_needs_a_press(self):
+        r = Rig()
+        r.engage("left")
+        self.stall(r, "left", 30)
+        r.hands["left"].grip = 0.0
+        rep = r.step()
+        self.assertNotEqual(rep["left"].clutch, ACTIVE)
+        r.hands["left"].grip = 1.0
+        self.assertNotEqual(r.step(5)["left"].clutch, ACTIVE)  # no release seen since: still not engaged
+        self.assertEqual(r.engage("left")["left"].clutch, ACTIVE)
+
+    def test_a_long_stall_needs_release_and_press(self):
+        r = Rig()
+        r.engage("left")
+        rep = self.stall(r, "left", 130)  # 2.6 s
+        self.assertEqual(rep["left"].clutch, "WAIT_RELEASE")
+        self.assertNotEqual(r.step(5)["left"].clutch, ACTIVE)
+        self.assertEqual(r.engage("left")["left"].clutch, ACTIVE)
+
+    def test_a_headset_continuity_break_does_not_resume(self):
+        r = Rig()
+        r.engage("left")
+        self.stall(r, "left", 30)
+        r.hands["left"].gen = 2
+        rep = r.step(5)
+        self.assertNotEqual(rep["left"].clutch, ACTIVE)
+
+    def test_the_gripper_keeps_following_the_trigger_after_a_resume(self):
+        r = Rig()
+        r.hands["left"].trigger = 1.0
+        r.engage("left")
+        r.step(40)
+        self.assertAlmostEqual(r.pair.cmd["left"][6], 0.0)
+        self.stall(r, "left", 30)
+        r.hands["left"].trigger = 0.5
+        rep = r.step(30)
+        self.assertEqual(rep["left"].gripper, "following")
+        self.assertAlmostEqual(r.pair.cmd["left"][6], 0.5)
 
 
 class GripperTests(unittest.TestCase):

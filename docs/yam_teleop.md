@@ -192,3 +192,10 @@ for 10 s". The lab program ran normally throughout (every control step 20 ms); t
 answer times up to 1.6-1.9 s and then over 2 s, with the camera page closed too. The PC's sender gave up at 2 s ("ack
 timeout"). YAM sessions now pass `--ack-timeout 8` (the xArm keeps 2 s). During a stall the poses go stale, the
 clutch lets go and the arms hold; press the side grip again afterwards.
+
+Short stalls also let the arm go mid-motion (input older than 400 ms): in yamrec_20261117-223800 the left hand was let
+go 23 times in ~5 min this way, each needing a re-grip. Since then (YAM only, the xArm still needs the re-press) a
+hand let go by a stall shows `STALLED` and resumes by itself when fresh input returns within 2 s from the same headset
+session and continuity with the side grip held. It re-anchors where the hand and the tool are then (no catching up);
+the gripper keeps following the trigger. A release, a longer stall or any other problem needs the usual release
+and press.
