@@ -20,7 +20,7 @@ Protocol v1 (`docs/step03_transport.md`, legacy app, world-frame matrices) is un
 | `scripts/quest_pose_stream_sender.py` | local | Owned logcat acquisition, per-record processing, rate limiter, sender session. |
 | `scripts/quest_pose_stream_receiver.py` | lab | Loopback-only receiver, identity and generation checks, watchdog display. |
 | `scripts/quest_transport.py`, `quest_stream_sender.py`, `quest_stream_receiver.py` | both / local / lab | v1 framing, session and server code, reused through small hooks (`proto_version`, `_decode`, `_hello_packet`, `decode_fn`, `log_fields`). |
-| `scripts/analyze_checkpoint5_live.py` | local | Offline analysis of one live run. |
+| `archive/scripts/analyze_checkpoint5_live.py` | local | Offline analysis of one live run. |
 | `tests/test_quest_pose_transport.py`, `tests/fixtures/fake_adb.py` | both | Synthetic offline tests. Sender and acquisition tests run locally only. |
 
 ## Wire format
@@ -120,7 +120,7 @@ python3 scripts/quest_pose_stream_sender.py --port 18765 --expect-build s4a-ff0d
 
 # offline
 python3 -m unittest discover -s tests
-python3 scripts/analyze_checkpoint5_live.py data/checkpoint5 live_20261001-151605
+python3 archive/scripts/analyze_checkpoint5_live.py data/checkpoint5 live_20261001-151605
 ```
 
 ## Test results (2026-10-01)

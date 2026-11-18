@@ -12,7 +12,7 @@ import math
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))  # archived: the modules stay in scripts/
 import quest_pose_v1 as qp  # noqa: E402
 from quest_transport import stats_ms  # noqa: E402
 
