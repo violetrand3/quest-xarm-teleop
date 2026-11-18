@@ -72,7 +72,7 @@ trap 'trap "" INT TERM HUP PIPE; echo; msg "Ending the session." 2> /dev/null; f
 ssh "${SSHO[@]:1}" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
   -L 127.0.0.1:$LINK_PORT:127.0.0.1:28766 -L 127.0.0.1:$VIEW_PORT:127.0.0.1:28767 "$H" > "$R/yam_tunnel.txt" 2>&1 < /dev/null &
 echo $! > "$R/yam_tunnel.pid"; for i in $(seq 1 40); do ss -ltn | grep -q "127.0.0.1:$LINK_PORT " && break; sleep 0.25; done
-( cd "$P/scripts" && exec python3 -u quest_pose_stream_sender.py --serial "$S" --port $LINK_PORT --max-rate 30 --source-log "$D/yam_src_$N.jsonl" \
+( cd "$P/scripts" && exec python3 -u quest_pose_stream_sender.py --serial "$S" --port $LINK_PORT --max-rate 30 --ack-timeout 8 --source-log "$D/yam_src_$N.jsonl" \
     --summary "$D/yam_tx_$N.summary.json" > "$D/yam_tx_$N.console.txt" 2>&1 ) &
 echo $! > "$R/yam_tx.pid"; sleep 2
 msg "Starting the headset app ..."

@@ -40,7 +40,9 @@ import quest_pose_v1 as qp
 from quest_input_monitor import MonitorError, find_adb, parse_logcat_line, pick_serial, redact
 from quest_stream_sender import (
     DEFAULT_LOCAL_PORT,
+    ACK_TIMEOUT_S,
     DEFAULT_MAX_RATE_HZ,
+    MAX_OUTSTANDING_ACKS,
     SenderSession,
     SessionFailed,
     connect,
@@ -366,6 +368,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--source-log", type=Path, help="JSONL of EVERY received source record (must not exist)")
     ap.add_argument("--summary", type=Path, help="summary JSON (must not exist)")
     ap.add_argument("--acq-file", type=Path, help="JSON status of the owned acquisition child (rewritten on change)")
+    ap.add_argument("--ack-timeout", type=float, default=ACK_TIMEOUT_S,
+                    help="give up when the receiver has not answered for this long, s (the xArm keeps the default)")  # fmt: skip
     args = ap.parse_args(argv)
     for p in (args.log, args.source_log, args.summary):
         if p is not None and p.exists():
@@ -386,7 +390,9 @@ def main(argv: list[str] | None = None) -> int:
     source_log = args.source_log.open("x", encoding="utf-8", buffering=1) if args.source_log else None
     sender_run = new_id()
     slot = PoseSlot(args.expect_build, args.stale_ms, source_log)
-    session = PoseSenderSession(sock, slot, sender_run, max_rate_hz=args.max_rate, log=log)
+    session = PoseSenderSession(sock, slot, sender_run, max_rate_hz=args.max_rate, ack_timeout_s=args.ack_timeout,
+                                # room for every packet of a stall that long (30 Hz + heartbeats < 64/s); the default stays 256
+                                max_outstanding=max(MAX_OUTSTANDING_ACKS, int(args.ack_timeout * 64)), log=log)
     try:
         ack = session.handshake()
         if ack.get("protocol") != pt.PROTOCOL:

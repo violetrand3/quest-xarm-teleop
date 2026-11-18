@@ -186,3 +186,9 @@ when the hand comes back with the trigger released; a gripper you have not moved
   when the stream stopped.
 - I2RT's simulated arm puts the joints straight at each command (no motor dynamics): the simulation checks the
   decisions, not how smoothly real motors follow.
+
+Link stalls (2026-11-17 evening): four yam-record sessions in a row ended with "no connection from the operator's PC
+for 10 s". The lab program ran normally throughout (every control step 20 ms); the operator's PC to the lab host had
+answer times up to 1.6-1.9 s and then over 2 s, with the camera page closed too. The PC's sender gave up at 2 s ("ack
+timeout"). YAM sessions now pass `--ack-timeout 8` (the xArm keeps 2 s). During a stall the poses go stale, the
+clutch lets go and the arms hold; press the side grip again afterwards.
