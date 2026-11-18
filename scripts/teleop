@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One command for Quest -> xArm teleoperation. Run it on the PC the headset is plugged into.
+# One command for Quest teleoperation of the xArm and of the two YAM arms. Run it on the PC the headset is plugged into.
 # It starts and stops the lab-host side by itself (no terminal is needed there).
 #
 #   scripts/teleop record [minutes]   demo recording: thumb button A starts a demo and, pressed again, saves it; B discards
@@ -90,6 +90,26 @@ sync_differs() {   # every file sync installs (docs and tests too) that differs 
   (cd "$P" && sync_files | xargs sha256sum) \
     | ssh "${SSHO[@]}" "$LAB_HOST" "if cd ~/$LAB_DIR 2>/dev/null; then sha256sum -c --quiet 2>/dev/null || true; else cat > /dev/null; echo 'NO_LAB_DIR: FAILED'; fi" \
     | sed -n 's/: FAILED.*//p'; }
+lab_stale() {   # files in the lab copy's scripts/tests/docs/config that this checkout no longer has (left by older versions)
+  comm -23 <(lab "cd ~/$LAB_DIR 2>/dev/null && find scripts tests docs config -type f ! -path '*/__pycache__/*' ! -path config/teleop_session.conf 2>/dev/null" | sort) \
+           <(cd "$P" && sync_files | sort); }
+lab_readme() {   # what the lab copy is, for whoever looks at it on the lab host
+  cat <<TXT
+This folder is an INSTALLED COPY of the GitHub repository Shezitt/quest-xarm-teleop, not a git checkout.
+Version: $1 (also in SYNCED_FROM.txt).
+
+Do not edit the programs here: the next "scripts/teleop sync" replaces them, and nobody else gets the change.
+To change something: edit it in a clone of the repository, commit, git push, then run "scripts/teleop sync"
+from that clone. sync installs only a version that is committed, pushed to GitHub and not older than this one,
+and the session commands refuse to start when this copy differs from the operator's checkout.
+
+Only here: logs/ (session logs), episodes/ (recorded demos, with the raw camera files), and the backup_*
+folders (earlier copies, and files that sync moved out because the repository no longer has them).
+TXT
+}
+yam_free() {   # one YAM program at a time on the lab host (yam_live.py also locks the real arms itself)
+  lab "pgrep -f '[s]cripts/yam_live.py' > /dev/null" && die "a YAM session is already running on the lab host (maybe someone else's): it must end first (scripts/teleop status shows it)"
+  return 0; }
 lab_version() { lab "cat ~/$LAB_DIR/SYNCED_FROM.txt 2>/dev/null"; }   # e.g. "452b17c 2026-11-02, installed by dev@pc on ..."
 lab_same_as() {   # the lab-side programs on the lab host are exactly those of commit $1
   local f; f=$(lab_files) || return 1
@@ -137,7 +157,7 @@ $(echo "$c" | head -8)"
   git -C "$P" rev-parse -q --verify '@{u}' > /dev/null || die "this branch has no GitHub branch to compare with (git push -u origin $(git -C "$P" branch --show-current))"
   git -C "$P" merge-base --is-ancestor '@{u}' HEAD || die "GitHub has newer commits than this checkout; git pull first"
   git -C "$P" merge-base --is-ancestor HEAD '@{u}' || die "this checkout has commits that are not on GitHub; git push first"
-  [ -n "$(lab_differs)$(sync_differs)" ] || { echo "The lab host already has this version ($(version_here | tr -d '\n')). Nothing to install."; return 0; }
+  [ -n "$(lab_differs)$(sync_differs)$(lab_stale)" ] || { echo "The lab host already has this version ($(version_here | tr -d '\n')). Nothing to install."; return 0; }
   v=$(lab_version); o=$(lab_order "$v")
   [ -z "$v" ] && lab "[ ! -d ~/$LAB_DIR/scripts ]" && o=older   # nothing installed yet
   if [ "$o" = newer ] || [ "$o" = unknown ]; then
@@ -147,7 +167,15 @@ $(echo "$c" | head -8)"
   lab "pgrep -f '[s]cripts/live_teleop.py|[s]cripts/yam_live.py' > /dev/null" && die "a teleop session is running on the lab host; sync after it ends"
   (cd "$P" && sync_files | rsync -a --delay-updates --files-from=- -e "ssh ${SSHO[*]}" ./ "$LAB_HOST:$LAB_DIR/") || die "copying to the lab host failed"
   lab "mkdir -p ~/$LAB_DIR/logs ~/$LAB_DIR/episodes && echo '$(version_here | tr -d '\n'), installed by $(id -un)@$(hostname -s) on $(date '+%Y-%m-%d %H:%M')' > ~/$LAB_DIR/SYNCED_FROM.txt"
-  [ -z "$(lab_differs)$(sync_differs)" ] || die "the lab host's copy still differs after copying"
+  local stale b; stale=$(lab_stale)
+  if [ -n "$stale" ]; then   # kept, not deleted: moved aside with their paths
+    b=backup_$(date +%Y%m%d-%H%M%S)_removed
+    echo "$stale" | ssh "${SSHO[@]}" "$LAB_HOST" "cd ~/$LAB_DIR && while read -r f; do mkdir -p \"$b/\$(dirname \"\$f\")\" && mv \"\$f\" \"$b/\$f\"; done" \
+      || die "moving the files this version no longer has out of the lab copy failed"
+    echo "Moved $(echo "$stale" | wc -l) file(s) this version no longer has to ~/$LAB_DIR/$b/: $(echo "$stale" | head -5 | tr '\n' ' ')"
+  fi
+  lab_readme "$(version_here | tr -d '\n')" | ssh "${SSHO[@]}" "$LAB_HOST" "cat > ~/$LAB_DIR/README.txt"
+  [ -z "$(lab_differs)$(sync_differs)$(lab_stale)" ] || die "the lab host's copy still differs after copying"
   echo "The lab host now runs this checkout ($(version_here | tr -d '\n'))."
 }
 
@@ -177,7 +205,7 @@ try:
 except Exception:
     last = None
 print(json.dumps({"time": time.strftime("%H:%M:%S"), "stepper": {k: st.get(k) for k in ("pose", "state", "err", "busy", "pending", "fence", "_error")},
-                  "stepper_pids": [p for p, _ in find("stepper.py")], "arm_conn_pids": conn, "live": find("scripts/live_teleop.py"),
+                  "stepper_pids": [p for p, _ in find("stepper.py")], "arm_conn_pids": conn, "live": find("scripts/live_teleop.py"), "yam": find("scripts/yam_live.py"),
                   "relay": relay(), "viewers": {k: v.get("viewers") for k, v in (cam.get("cameras") or {}).items()},
                   "camera_error": cam.get("_error"), "free_gb": round(shutil.disk_usage(os.path.expanduser("~")).free / 1e9, 1), "lab_log_last": last}))
 PY
@@ -210,6 +238,8 @@ else:
         block.append("the lab's own arm program is busy or has a step pending")
 if d["live"]:
     block.append("a teleop session is already running on the lab host (scripts/teleop stop ends it)")
+if d.get("yam"):
+    print(f"  YAM session running on the lab host: pid {', '.join(str(x[0]) for x in d['yam'])}")
 others = [p for p in d["arm_conn_pids"] if p not in d["stepper_pids"] and p not in [x[0] for x in d["live"]]]
 print(f"  programs connected to the arm: {len(d['arm_conn_pids'])}" + (" (the lab's own program)" if d["arm_conn_pids"] and not others else ""))
 if others:
@@ -380,14 +410,14 @@ case "${1:-}" in
         [ -n "$n" ] && lab "kill -INT \$(cat ~/$L/pid_$n 2>/dev/null) 2>/dev/null && echo 'stop sent to the lab program of $n; it parks the arm (software stop, not the physical stop)' || echo 'no running xArm lab program ($n)'"
         [ -n "$y" ] && lab "p=\$(cat ~/$L/yam_pid_$y 2>/dev/null); ps -o args= -p \"\$p\" 2>/dev/null | grep -q yam_live.py && kill -INT \$p && echo 'stop sent to the YAM program of $y: it lowers both arms to rest (software stop, not the e-stop); if it already could not lower them, this lets them go (they drop)' || echo 'no running YAM program ($y)'";;
   yam-sim)   # simulation only: no arm moves
-    LAB_STARTS=$YAM_STARTS; lab_check
+    LAB_STARTS=$YAM_STARTS; lab_check; yam_free
     ps -eo args | grep -q '[b]ash .*teleop_live_session' && die "an xArm session is running on this PC; end it first"
     [ "$(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] || die "need exactly one headset on USB (adb devices)"
     rig_status; RELOAD=0; ensure_cameras 21600 "$YAM_VIEWS"; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')"
     n=sim_$(date +%Y%m%d-%H%M%S); echo "$n" > "$R/current_yam_session"
     exec bash "$P/scripts/ops/yam_session.sh" "$n";;
   yam-try|yam-record)   # THE REAL YAM ARMS MOVE
-    LAB_STARTS=$YAM_STARTS; lab_check
+    LAB_STARTS=$YAM_STARTS; lab_check; yam_free
     ps -eo args | grep -q '[b]ash .*teleop_live_session\|[b]ash .*yam_session' && die "another session is running on this PC; end it first"
     [ "$(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] || die "need exactly one headset on USB (adb devices)"
     lab "test -s /home/dev/yam/yam_hardware.json" || die "the YAM bring-up is not recorded on the lab host (/home/dev/yam/yam_hardware.json: gripper limits and rest poses); see docs/yam_teleop.md"
