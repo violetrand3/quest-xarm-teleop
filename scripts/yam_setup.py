@@ -78,8 +78,12 @@ def limits_at(speed_cm_s: float, base: Limits | None = None) -> Limits:
 
 BASE_SPACING = 0.50  # m, centre to centre (measured by the operator 2026-11-17; was the estimate 0.35)
 # Each box reaches 0.10 m past the middle into the other arm's side; the clearance check keeps the arms apart there.
-LEFT = ArmSetup("left", "can_left", (0.0, BASE_SPACING / 2, 0.0), 0.0, (0.10, 0.55, -0.10, BASE_SPACING / 2 + 0.45, 0.03, 0.55))
-RIGHT = ArmSetup("right", "can_right", (0.0, -BASE_SPACING / 2, 0.0), 0.0, (0.10, 0.55, -BASE_SPACING / 2 - 0.45, 0.10, 0.03, 0.55))
+# The box floor is the table top (z 0): the table rule is the floor, fingertips may touch the table but not press into
+# it, every other part keeps the clearance above it. Was 3 cm, which kept the fingertips ~3 cm up, too high to grasp a
+# bag lying flat (2026-11-18, the operator).
+BOX_FLOOR = 0.0
+LEFT = ArmSetup("left", "can_left", (0.0, BASE_SPACING / 2, 0.0), 0.0, (0.10, 0.55, -0.10, BASE_SPACING / 2 + 0.45, BOX_FLOOR, 0.55))
+RIGHT = ArmSetup("right", "can_right", (0.0, -BASE_SPACING / 2, 0.0), 0.0, (0.10, 0.55, -BASE_SPACING / 2 - 0.45, 0.10, BOX_FLOOR, 0.55))
 ARMS = (LEFT, RIGHT)
 
 
