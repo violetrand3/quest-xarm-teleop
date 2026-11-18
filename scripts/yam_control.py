@@ -19,11 +19,14 @@ A joint measured further than track_err from its command (real arms) stops both 
 
 from __future__ import annotations
 
+import math
+
 import collections
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
-from yam_limits import TargetLimiter, dist, joint_step
+from teleop_rotation import q_angle, q_step_toward
+from yam_limits import JointStep, TargetLimiter, dist, joint_step
 from yam_setup import ArmSetup, Limits
 
 GRIP_KEEP = None  # a request's grip of None keeps the gripper's current command
@@ -95,11 +98,12 @@ class BimanualControl:
                 self.engaged[n] = False
                 reports[n] = ArmReport("let go", proposal[n], notes=[ts.glitch + ": the arm is let go; release and grip again"])
                 continue
-            q_ik, e_pos, e_rot = self.pair.solve(n, ts.target, q6)
             notes = list(ts.notes)
-            if e_pos > self.lim.reach_tol or e_rot > self.lim.reach_tol_rot:
+            js, e_pos, gave = self._solve(n, ts.target, q6)
+            if js.q is not None and gave:
+                notes.append(f"wrist at its limit: following the position, the gripper angle {math.degrees(gave):.0f} deg short")
+            if js.q is not None and e_pos > self.lim.reach_tol:
                 notes.append(f"out of reach by {e_pos * 1000:.0f} mm: following as far as it goes")
-            js = joint_step(q6, q_ik, self.pair.joint_ranges(n), self.lim)
             notes += js.notes
             if js.q is None:
                 reports[n] = ArmReport("held", proposal[n], ts.target, notes + [js.refused], e_pos)
@@ -113,6 +117,56 @@ class BimanualControl:
             self.pair.command(n, self.q[n])
             self._recent[n].append(list(self.q[n][:6]))
         return reports
+
+    def _solve(self, n: str, target: tuple, q6: list[float]):
+        """-> (JointStep, position error of its pose m, the gripper angle given way rad or 0).
+
+        The IK weighs the gripper's position and angle equally. When the full pose is out of reach (usually the
+        wrist at an end stop) it would trade position for angle, and step by step take the tool AWAY from the hand
+        (in simulation, 2026-11-18: 60 cm away, following a turn about the vertical). So: the full answer, and one
+        where the angle gives way to the position (orientation weight wrist_give); of those that are real steps
+        (joint_step passes them) the one closest to the hand is taken; and a step that would leave the tool further
+        from the hand than now, beyond reach_tol, is not taken: the arm holds."""
+        tool = self.pair.fk(n, q6)
+        now = dist(tool[0], target[0])
+        refused = None
+        # Near full stretch, a target far ahead makes the IK jump to another arm posture (refused); a target part of
+        # the way there usually does not: the arm creeps on toward the edge of its reach (at speed level 50 it was
+        # held 5 cm short until the hand came back, 2026-11-18).
+        for f in (1.0, 0.4):  # at most three IK solves per arm and step (a step has 20 ms for both arms)
+            part = target if f == 1.0 else (tuple(a + (b - a) * f for a, b in zip(tool[0], target[0])),
+                                             q_step_toward(tool[1], target[1], q_angle(tool[1], target[1]) * f))
+            best, js = self._candidates(n, part, q6, give=f == 1.0)
+            if best is not None:
+                break
+            refused = refused or js
+        if best is None:
+            return refused, now, 0.0  # refused (another arm posture): it says why
+        if best[1] <= self.lim.reach_tol and not best[2] and f == 1.0:
+            return best[0], best[1], 0.0  # the whole pose is reached
+        # where the step actually takes the tool (joint_step may have slowed or cut it)
+        e_step = dist(self.pair.fk(n, best[0].q)[0], target[0])
+        if e_step > max(now, self.lim.reach_tol) + 1e-4:
+            return JointStep(None, best[0].notes, f"would take the gripper away from the hand ({e_step * 1000:.0f} mm off, now "
+                             f"{now * 1000:.0f} mm): held; turn the hand back"), now, 0.0  # fmt: skip
+        return best[0], e_step, best[2]
+
+    def _candidates(self, n: str, target: tuple, q6: list[float], give: bool = True):
+        """-> ((JointStep, position error, angle given way) of the best real step toward target, or None; the full
+        answer's JointStep). The full answer, and if it misses the pose, the angle-giving-way one."""
+        ranges = self.pair.joint_ranges(n)
+        q_ik, e_pos, e_rot = self.pair.solve(n, target, q6)
+        js = joint_step(q6, q_ik, ranges, self.lim)
+        if js.q is not None and e_pos <= self.lim.reach_tol and e_rot <= self.lim.reach_tol_rot:
+            return (js, e_pos, 0.0), js
+        best = (js, e_pos, 0.0) if js.q is not None else None
+        if not give:
+            return best, js
+        q_g, e_pos_g, e_rot_g = self.pair.solve(n, target, q6, orientation_cost=self.lim.wrist_give)
+        js_g = joint_step(q6, q_g, ranges, self.lim)
+        if js_g.q is not None and (best is None or e_pos_g < best[1] - 0.001):
+            best = (js_g, e_pos_g, e_rot_g)
+        return best, js
 
     # --- lowering to rest (every way a session ends) ---------------------------------------------------------
     def park_tick(self, rest: Mapping[str, Sequence[float]], joint_speed: float, grip_max: float | None = None) -> tuple[bool, dict[str, str]]:

@@ -19,6 +19,7 @@ both arms at their bases and the table; a pair of parts is a problem when
 
 from __future__ import annotations
 
+import copy
 import math
 from typing import Mapping, Sequence
 
@@ -81,7 +82,14 @@ class SimYamPair:
         self.model = mujoco.MjModel.from_xml_path(self.xml)
         for a in arms:
             self.cfg[a.name] = mink.Configuration(self.model)
-        self.ik_limits = [mink.ConfigurationLimit(self.model)]
+        # The IK keeps joint_margin off the six arm joints' end stops itself, so it finds the best pose inside them
+        # (rather than an answer past them that joint_step would cut short, putting the tool somewhere else). Only
+        # the arm joints: the gripper's finger joints travel 0.048 in all, less than the margin (mink's
+        # min_distance_from_limits on every joint made the IK unsolvable, 2026-11-18).
+        lm = copy.deepcopy(self.model)
+        for i in range(N_ARM):
+            lm.jnt_range[i] = (lm.jnt_range[i][0] + lim.joint_margin, lm.jnt_range[i][1] - lim.joint_margin)
+        self.ik_limits = [mink.ConfigurationLimit(lm)]
         self.ranges = [tuple(float(v) for v in self.model.jnt_range[i]) for i in range(N_ARM)]
         self.slide = tuple(float(v) for v in self.model.jnt_range[N_ARM])  # gripper finger slide, m
         self._build_clearance_model()
@@ -114,10 +122,12 @@ class SimYamPair:
         T_b = c.get_transform_frame_to_world(SITE, "site").as_matrix()
         return T_to_pose(self.T_wb[name] @ T_b)
 
-    def solve(self, name: str, pose: Sequence, q6_init: Sequence[float]) -> tuple[list[float], float, float]:
+    def solve(self, name: str, pose: Sequence, q6_init: Sequence[float], orientation_cost: float = 1.0) -> tuple[list[float], float, float]:
+        """-> (joints, position error m, orientation error rad). orientation_cost < 1 lets the orientation give way
+        to the position when both cannot be reached."""
         c = self.cfg[name]
         c.update(self._q_model(q6_init))
-        task = mink.FrameTask(frame_name=SITE, frame_type="site", position_cost=1.0, orientation_cost=1.0, lm_damping=1.0)
+        task = mink.FrameTask(frame_name=SITE, frame_type="site", position_cost=1.0, orientation_cost=orientation_cost, lm_damping=1.0)
         task.set_target(mink.SE3.from_matrix(self.T_bw[name] @ pose_to_T(pose)))
         err = task.compute_error(c)
         for _ in range(self.ik_iters):

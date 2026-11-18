@@ -78,10 +78,39 @@ class TargetLimiterTests(unittest.TestCase):
         self.start = pose(0.3, 0.3, 0.3)
         self.t.reset(self.start)
 
-    def test_speed_limit(self):
-        s = self.t.step(pose(0.4, 0.3, 0.3), self.start)
-        self.assertAlmostEqual(dist(s.target[0], self.start[0]), V)
+    def test_speeds_up_gently_to_the_speed_limit(self):
+        p, steps = self.start, []
+        for _ in range(15):
+            s = self.t.step(pose(0.6, 0.3, 0.3), p)
+            steps.append(dist(s.target[0], p[0]))
+            p = s.target
+        self.assertAlmostEqual(steps[0], LIM.tool_accel * LIM.dt * LIM.dt)  # the first step is small
+        self.assertTrue(all(b - a <= LIM.tool_accel * LIM.dt * LIM.dt + 1e-12 for a, b in zip(steps, steps[1:])))
+        self.assertAlmostEqual(steps[-1], V)  # full speed after 0.15 s, never more
+        self.assertLessEqual(max(steps), V + 1e-12)
         self.assertIn("speed limit", s.notes)
+
+    def test_slows_down_and_stops_on_the_target_without_overshoot(self):
+        p, goal, steps = self.start, 0.36, []
+        for _ in range(80):
+            s = self.t.step(pose(goal, 0.3, 0.3), p)
+            steps.append(s.target[0][0] - p[0][0])
+            p = s.target
+        self.assertAlmostEqual(p[0][0], goal, places=9)
+        self.assertLessEqual(max(x for x in [q[0] for q in [p[0]]]), goal + 1e-9)
+        self.assertTrue(all(x >= -1e-12 for x in steps))  # never went past and back
+        moving = [x for x in steps if x > 1e-9]
+        self.assertLess(moving[-1], V / 2)  # it slowed down before stopping
+
+    def test_reverses_smoothly(self):
+        p = self.start
+        for _ in range(15):  # the hand moves forward, 3 cm ahead of the target
+            p = self.t.step(pose(p[0][0] + 0.03, 0.3, 0.3), p).target
+        x0, v0 = p[0][0], self.t.vel[0]
+        s = self.t.step(pose(x0 - 0.03, 0.3, 0.3), p)  # the hand turned back: the target slows, it does not jump back
+        self.assertFalse(s.glitch)
+        self.assertGreater(s.target[0][0], x0)
+        self.assertAlmostEqual(v0 - self.t.vel[0], LIM.tool_accel * LIM.dt)
 
     def test_box(self):
         p = self.start
@@ -106,8 +135,14 @@ class TargetLimiterTests(unittest.TestCase):
 
     def test_turn_speed(self):
         q = q_from_rotvec((0, 0, math.radians(90)))
-        s = self.t.step(pose(0.3, 0.3, 0.3, q), self.start)
-        self.assertAlmostEqual(q_angle(UP, s.target[1]), LIM.tool_rot_speed * LIM.dt, places=6)
+        p, turns = self.start, []
+        for _ in range(15):  # the arm follows exactly, so the lag rule does not hold the turn
+            s = self.t.step(pose(0.3, 0.3, 0.3, q), p)
+            turns.append(q_angle(p[1], s.target[1]))
+            p = s.target
+        self.assertAlmostEqual(turns[0], LIM.tool_rot_accel * LIM.dt * LIM.dt, places=9)
+        self.assertAlmostEqual(turns[-1], LIM.tool_rot_speed * LIM.dt, places=6)
+        self.assertLessEqual(max(turns), LIM.tool_rot_speed * LIM.dt + 1e-9)
 
     def test_start_outside_the_box_stretches_it(self):
         t = TargetLimiter(LEFT.box, LIM)
@@ -142,6 +177,38 @@ class JointStepTests(unittest.TestCase):
         self.assertAlmostEqual(s.q[1] / s.q[0], 0.5)
 
 
+class WristPair(FakePair):
+    """The full pose cannot be reached: the full IK answer lands `off_full` m beside the target (trading position
+    for angle, as the real IK does), the angle-giving-way answer `off_give` m beside it, `angle` rad short."""
+
+    def __init__(self, off_full, off_give, angle=0.3):
+        super().__init__()
+        self.off_full, self.off_give, self.angle = off_full, off_give, angle
+
+    def solve(self, n, p, q6_init, orientation_cost=1.0):
+        off = self.off_full if orientation_cost >= 1.0 else self.off_give
+        return [p[0][0], p[0][1] + off, p[0][2]] + list(q_to_rotvec(p[1])), off, self.angle
+
+
+class WristTests(unittest.TestCase):
+    def test_the_angle_gives_way_and_the_position_follows(self):
+        c, p = control(WristPair(off_full=0.05, off_give=0.0))
+        c.engage("left")
+        for _ in range(30):
+            r = c.tick({"left": Request(pose(0.32, 0.3, 0.3))})
+        self.assertEqual(r["left"].state, "following")
+        self.assertAlmostEqual(p.cmd["left"][1], 0.3)  # not pulled 5 cm aside
+        self.assertTrue(any(n.startswith("wrist at its limit") for n in r["left"].notes))
+
+    def test_a_step_that_takes_the_tool_away_from_the_hand_is_not_taken(self):
+        c, p = control(WristPair(off_full=0.05, off_give=0.04))
+        c.engage("left")
+        r = c.tick({"left": Request(pose(0.3001, 0.3, 0.3))})
+        self.assertEqual(r["left"].state, "held")
+        self.assertIn("away from the hand", r["left"].notes[-1])
+        self.assertAlmostEqual(p.cmd["left"][1], 0.3)
+
+
 class ControlTests(unittest.TestCase):
     def test_idle_arms_are_commanded_where_they_are(self):
         c, p = control()
@@ -155,7 +222,7 @@ class ControlTests(unittest.TestCase):
     def test_follows_after_engagement_and_stops_on_release(self):
         c, p = control()
         c.engage("left")
-        for _ in range(10):
+        for _ in range(30):
             r = c.tick({"left": Request(pose(0.33, 0.3, 0.3)), "right": Request(pose(0.3, -0.3, 0.3))})
         self.assertEqual(r["left"].state, "following")
         self.assertAlmostEqual(p.cmd["left"][0], 0.33)
@@ -181,7 +248,7 @@ class ControlTests(unittest.TestCase):
     def test_a_move_toward_a_problem_is_held_the_other_arm_still_moves(self):
         c, p = control(FakePair(problems=lambda q: {"left gripper and right gripper": 0.005} if q["left"][1] < 0.29 else {}))
         c.engage("left"), c.engage("right")
-        for _ in range(20):
+        for _ in range(40):
             r = c.tick({"left": Request(pose(0.3, 0.2, 0.3)), "right": Request(pose(0.3, -0.25, 0.3))})
         self.assertGreaterEqual(p.cmd["left"][1], 0.29)
         self.assertEqual(r["left"].state, "held")
@@ -195,7 +262,7 @@ class ControlTests(unittest.TestCase):
         c.engage("left")
         c.tick({"left": Request(pose(0.3, 0.3, 0.09))})  # closer: held
         self.assertAlmostEqual(p.cmd["left"][2], 0.1)
-        for _ in range(5):
+        for _ in range(20):
             c.tick({"left": Request(pose(0.3, 0.3, 0.103))})  # away: allowed
         self.assertAlmostEqual(p.cmd["left"][2], 0.103)
 

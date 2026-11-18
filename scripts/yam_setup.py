@@ -33,6 +33,8 @@ class Limits:
     dt: float = 0.02  # control period, s (50 Hz)
     tool_speed: float = 0.15  # m/s: how fast a target may move
     tool_rot_speed: float = math.radians(45)  # rad/s
+    tool_accel: float = 1.0  # m/s^2: the target speeds up and slows down this gently (full speed in 0.15 s)
+    tool_rot_accel: float = math.radians(300)  # rad/s^2
     jump: float = 0.08  # m: the hand target moving this far in one step is a glitch, not a movement
     jump_rot: float = math.radians(40)
     lag: float = 0.04  # m: the target never runs further than this ahead of the arm
@@ -40,6 +42,9 @@ class Limits:
     joint_speed: float = 1.5  # rad/s per joint, after the IK
     joint_flip: float = 0.35  # rad in one step: the IK switched to another arm posture -> refused
     joint_margin: float = 0.05  # rad kept from each joint's end stop
+    wrist_give: float = 0.05  # orientation weight (position = 1) when the full pose is out of the wrist's reach: the
+    # tool still goes where the hand goes and only its angle stops short (the wrist sat on an end stop 26% of the time
+    # at speed level 15, 2026-11-18, holding the whole arm back)
     reach_tol: float = 0.005  # m: the IK answer this far from the target = out of reach (reported, followed partly)
     reach_tol_rot: float = math.radians(3)
     clearance: float = 0.01  # m kept between the two arms, and between an arm and the table
@@ -51,12 +56,13 @@ class Limits:
 
 
 # Speed levels, named by the tool's top speed in cm/s: (tool m/s, tool turn deg/s, joint rad/s, gripper opening/s,
-# clearance m). 7.5 is what the real arms ran at from 2026-11-17 (half of 15, the simulation's); the faster ones
+# clearance m). The accelerations follow from the speeds: full speed in 0.15 s. 7.5 is what the real arms ran at from 2026-11-17 (half of 15, the simulation's); the faster ones
 # keep a wider gap between the arms, because a real arm trails its command (0.04-0.12 s measured at 7.5, i.e. up to
 # 5 cm at 50 cm/s) and the clearance is checked on the commands. A human hand reaching for something moves at
 # roughly 0.5-1 m/s; the operator's hand reached 0.21 m/s (95th percentile) and 0.43 m/s (99th) while engaged, held
 # back by the 7.5 cm/s limit 37% of the time (5 demos, 2026-11-17). Each level must be tried in the simulation and
 # then on the arms, one level at a time, before the next.
+RAMP_S = 0.15  # s from standstill to full speed (and back): smooth starts and stops
 SPEEDS = {7.5: (0.075, 22.5, 0.75, 1.0, 0.01), 15: (0.15, 45.0, 1.5, 2.0, 0.01),
           30: (0.30, 90.0, 2.5, 3.0, 0.02), 50: (0.50, 150.0, 3.5, 4.0, 0.03)}  # fmt: skip
 
@@ -67,7 +73,7 @@ def limits_at(speed_cm_s: float, base: Limits | None = None) -> Limits:
         raise ValueError(f"speed {speed_cm_s:g} cm/s is not a level; the levels are {', '.join(f'{s:g}' for s in SPEEDS)}")
     v, w, j, g, c = SPEEDS[speed_cm_s]
     return dataclasses.replace(base or Limits(), tool_speed=v, tool_rot_speed=math.radians(w), joint_speed=j,
-                               grip_speed=g, clearance=c)  # fmt: skip
+                               grip_speed=g, clearance=c, tool_accel=v / RAMP_S, tool_rot_accel=math.radians(w) / RAMP_S)  # fmt: skip
 
 
 BASE_SPACING = 0.50  # m, centre to centre (measured by the operator 2026-11-17; was the estimate 0.35)

@@ -73,6 +73,7 @@ def moved(pose, dx=0.0, dy=0.0, dz=0.0):
 
 def scenarios(pair, lim: Limits) -> list[tuple[str, bool, str]]:
     out = []
+    STEP_MS.clear()  # this run's steps only (the tests run every speed level in one process)
     v = lim.tool_speed * lim.dt
 
     r = Run(pair, lim=lim)
@@ -136,6 +137,21 @@ def scenarios(pair, lim: Limits) -> list[tuple[str, bool, str]]:
     w = math.degrees(max(angles)) / lim.dt
     out.append(("turns at the turn speed limit", q_angle(r.tool("left")[1], turned[1]) < math.radians(1) and w <= math.degrees(lim.tool_rot_speed) * 1.05,
                 f"fastest turn {w:.0f} deg/s (limit {math.degrees(lim.tool_rot_speed):.0f})"))
+
+    # The hand turns far past what the wrist allows while moving 5 cm: the gripper angle stops short, the grasp
+    # point still goes where the hand goes (before 2026-11-18 the whole arm was held back at a wrist end stop).
+    worst, gave, short = 0.0, 0, []
+    for axis in ((0, 1, 0), (1, 0, 0), (0, 0, 1)):
+        r = Run(pair, lim=lim)
+        goal = moved(r.start["left"], dx=0.05)
+        turned = (goal[0], q_mul(q_from_rotvec(tuple(math.radians(170) * v for v in axis)), r.start["left"][1]))
+        r.go(int(math.radians(170) / (lim.tool_rot_speed * lim.dt)) + 100, lambda k: {"left": Request(turned)})
+        worst = max(worst, dist(r.tool("left")[0], goal[0]))
+        gave += "wrist at its limit" in r.notes("left")
+        short.append(f"{math.degrees(q_angle(r.tool('left')[1], turned[1])):.0f}")
+    out.append(("a turn past the wrist's range: the grasp point still follows", worst < lim.reach_tol + 0.001 and gave >= 1,
+                f"grasp point at most {worst * 1000:.1f} mm from the hand's; the angle gave way for {gave} of 3 turns "
+                f"(gripper angle short by {', '.join(short)} deg)"))
 
     r = Run(pair, lim=lim)
     r.go(int(OPEN / (lim.grip_speed * lim.dt)) + 5, lambda k: {"left": Request(r.start["left"], grip=0.0)})  # enough steps at this level

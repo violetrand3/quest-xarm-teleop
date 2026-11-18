@@ -4,8 +4,9 @@ pass before it is commanded. Pure math, one instance per arm; nothing here talks
 In each control step, for each arm:
   1. TargetLimiter.step: a requested pose that jumped (a tracking glitch, not a hand movement) is refused and
      the arm is let go; otherwise the request is held inside the arm's box, and the target moves toward it at
-     no more than the tool speed limits, never more than `lag` ahead of the arm (so an arm that is slowed or
-     held does not leave a target running away, to be caught up with later).
+     no more than the tool speed limits, speeding up and slowing down at no more than the tool accelerations
+     (so it starts and stops smoothly instead of jumping to full speed), never more than `lag` ahead of the arm
+     (so an arm that is slowed or held does not leave a target running away, to be caught up with later).
   2. the IK solves for that target (yam_sim / the arm layer);
   3. joint_step: the solved joints are kept off the end stops, a sudden switch to another arm posture is
      refused, and a step faster than the joint speed limit is scaled down (the arm slows, keeping its path).
@@ -63,11 +64,14 @@ class TargetLimiter:
         self.box = self.box0
         self.target: Pose | None = None
         self.prev_request: Pose | None = None
+        self.vel = (0.0, 0.0, 0.0)  # the target's velocity, m/s
+        self.w = 0.0  # its turning speed, rad/s
 
     def reset(self, tool_now: Pose) -> list[str]:
         """Start from where the tool is (at engagement)."""
         self.box = stretch_box(self.box0, tool_now[0])
         self.target, self.prev_request = (tuple(tool_now[0]), q_norm(tool_now[1])), None
+        self.vel, self.w = (0.0, 0.0, 0.0), 0.0
         return [] if self.box == self.box0 else [f"the tool is outside its box at {_mm(tool_now[0])}; the box is stretched to it"]
 
     def step(self, request: Pose, tool_now: Pose) -> TargetStep:
@@ -84,21 +88,51 @@ class TargetLimiter:
         p_c, sides = clamp_box(p_req, self.box)
         if sides:
             notes.append("at the box edge (" + ", ".join(sides) + ")")
-        d = dist(p_c, p_t)
-        v = lim.tool_speed * lim.dt
-        p_new = p_c if d <= v else tuple(a + (b - a) * v / d for a, b in zip(p_t, p_c))
-        if d > v:
-            notes.append("speed limit")
-        q_new = q_step_toward(q_t, q_req, lim.tool_rot_speed * lim.dt)
+        p_new = self._move(p_t, p_c, notes)
+        q_new = self._turn(q_t, q_req)
         # Never run ahead of the arm: a step that takes the target further from the tool than `lag` is not taken.
         if dist(p_new, tool_now[0]) > lim.lag and dist(p_new, tool_now[0]) > dist(p_t, tool_now[0]):
-            p_new = p_t
+            p_new, self.vel = p_t, (0.0, 0.0, 0.0)
             notes.append("waiting for the arm")
         if q_angle(q_new, tool_now[1]) > lim.lag_rot and q_angle(q_new, tool_now[1]) > q_angle(q_t, tool_now[1]):
-            q_new = q_t
+            q_new, self.w = q_t, 0.0
             notes.append("waiting for the arm to turn")
         self.target = (p_new, q_new)
         return TargetStep(self.target, notes)
+
+    def _move(self, p_t: tuple, p_c: tuple, notes: list[str]) -> tuple:
+        """One step of the target toward p_c: the wanted velocity points at p_c, at most the tool speed and no faster
+        than allows stopping there at the tool acceleration; the velocity changes by at most accel * dt."""
+        lim, dt = self.lim, self.lim.dt
+        d = dist(p_c, p_t)
+        if d < 1e-9:
+            self.vel = (0.0, 0.0, 0.0)
+            return p_t
+        speed = min(lim.tool_speed, math.sqrt(2.0 * lim.tool_accel * d))
+        if lim.tool_speed * dt < d and speed >= lim.tool_speed:
+            notes.append("speed limit")
+        want = tuple((b - a) / d * speed for a, b in zip(p_t, p_c))
+        dv = tuple(w - v for w, v in zip(want, self.vel))
+        n = math.sqrt(sum(x * x for x in dv))
+        k = 1.0 if n <= lim.tool_accel * dt else lim.tool_accel * dt / n
+        vel = tuple(v + x * k for v, x in zip(self.vel, dv))
+        step = tuple(v * dt for v in vel)
+        if dist(step, (0.0, 0.0, 0.0)) >= d:  # this step reaches p_c: stop there
+            self.vel = tuple((b - a) / dt for a, b in zip(p_t, p_c))
+            return p_c
+        self.vel = vel
+        return tuple(a + s for a, s in zip(p_t, step))
+
+    def _turn(self, q_t: tuple, q_req: tuple) -> tuple:
+        """The same for the orientation, with the turning speed as one number."""
+        lim, dt = self.lim, self.lim.dt
+        a = q_angle(q_t, q_req)
+        want = min(lim.tool_rot_speed, math.sqrt(2.0 * lim.tool_rot_accel * a))
+        self.w = min(max(want, self.w - lim.tool_rot_accel * dt), self.w + lim.tool_rot_accel * dt)
+        if self.w * dt >= a:
+            self.w = a / dt
+            return q_req
+        return q_step_toward(q_t, q_req, self.w * dt)
 
 
 @dataclass

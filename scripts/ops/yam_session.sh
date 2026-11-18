@@ -18,6 +18,10 @@ msg() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$1"; }
 for p in $LINK_PORT $VIEW_PORT; do ss -ltn | grep -q "127.0.0.1:$p " && { msg "Port $p on this PC is in use (another session?). Ending."; exit 2; }; done
 
 finish() {   # $1 = notstarted: the lab program exited at start-up, so there is nothing to lower
+  # Exactly once: Ctrl-C can land while the loop below is in a $(...) subshell, which then runs this too, and a
+  # second stop signal while the arms are held (lowering could not finish) would let them go (they drop).
+  [ -e "$R/yam_finishing_$N" ] && return
+  : > "$R/yam_finishing_$N"
   if [ "${1:-}" = notstarted ]; then
     T=$(cat "$R/yam_tx.pid" 2>/dev/null); kill -INT "$T" 2>/dev/null
     T=$(cat "$R/yam_tunnel.pid" 2>/dev/null); ps -o args= -p "$T" 2>/dev/null | grep -q -- "-L 127.0.0.1:$LINK_PORT:" && kill "$T"
@@ -87,6 +91,7 @@ msg "Left controller -> left arm, right controller -> right arm (switch the left
 [ "$REC" = 1 ] && msg "Demos: right thumb A starts one and, pressed again, saves it; B discards the one in progress."
 prev=""; seen_ep=0; TTY=0; { : < /dev/tty; } 2> /dev/null && TTY=1   # Enter is read only when there is a terminal
 while true; do
+  [ -e "$R/yam_finishing_$N" ] && exit 130   # the ending already ran (from Ctrl-C)
   if grep -q '^ENDING:\|^{"result"' "$D/yam_$N.console.txt" 2>/dev/null; then
     msg "The YAM program is ending by itself: $(sed -n 's/^ENDING: //p' "$D/yam_$N.console.txt" | head -1)"; finish; exit 0
   fi

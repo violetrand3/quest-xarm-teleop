@@ -76,7 +76,9 @@ The second word is the arm: `following`, `held` (a limit stopped it; the notes i
 | `at the box edge`, `out of reach` | Each arm has a box it may move in; move back inside |
 | `too close: ...` | The two arms, or an arm and the table, are within 1-3 cm (by speed level); the arm refuses moves that bring them closer, and follows moves that take them apart |
 | `joint N at its end stop` | That joint is at its limit; turn or move the other way |
-| `joint N would swing ... at once (another arm posture)` | The pose needs a wrist joint to flip; refused. Turn your hand back a little |
+| `wrist at its limit: following the position, the gripper angle N deg short` | Your hand turned further than the wrist can. The gripper still goes where your hand goes; only its angle stops short. Turn your hand back to get the angle back |
+| `would take the gripper away from the hand ...: held` | No pose the arm can reach is closer to your hand than where it is; the arm holds. Turn or move your hand back |
+| `joint N would swing ... at once (another arm posture)` | The pose needs the arm to switch posture (a joint flipping); refused. Turn or move your hand back a little |
 | `grip=waiting for the trigger to match ...` | After you grip again, the gripper waits until the trigger matches what it holds, so nothing is dropped. The note says how far to press or release |
 | `... arm joint N is ... rad from its command ...: both arms stopped where they are` | A real joint did not follow (blocked, or it hit something). Look at the arms, then Enter; then grip again |
 
@@ -115,8 +117,8 @@ midway between the two bases, x away from the operator, y to the left, z up. Onl
 
 ## Known limitations
 
-- **Wrist flips are refused.** Some hand angles need a wrist joint to swing 20-70 degrees at once; the arm waits
-  until your hand turns back (about 28 s per arm in a 5-minute session on 2026-11-17).
+- **The wrist's range is small** (joint 4: -97 to +90 degrees). Past it, the gripper follows your hand's position
+  but not its full angle (since 2026-11-18; before, the whole arm was held back, 26% of the time at level 15).
 - **Speed**: the real arms have run only at 7.5 cm/s so far. The faster levels pass every check in the simulation and
   are to be tried on the arms one level at a time (`YAM_SPEED`, below).
 - **Slow links pause the arms.** Over a slow connection to the lab host, short stalls show as `STALLED` (it resumes
@@ -210,9 +212,15 @@ Tests on any PC: `tests/test_yam_control.py`, `test_yam_teleop.py`, `test_yam_re
 1. A hand target that jumps more than 8 cm or 40 deg in one step is a tracking glitch: the arm is let go (release
    and grip again).
 2. The target is held inside the arm's box (an arm that starts outside may come back in, never go further out),
-   moves at most at the speed level's tool and turn speeds, and never runs more than 4 cm / 20 deg ahead
+   moves at most at the speed level's tool and turn speeds, speeds up and slows down smoothly (full speed in 0.15 s,
+   slowing so it stops on the target without overshoot), and never runs more than 4 cm / 20 deg ahead
    of the arm.
-3. The IK solves from the last command; a target out of reach is followed as far as it goes.
+3. The IK solves from the last command, keeping 0.05 rad off the arm joints' end stops. When the full pose is out of
+   reach, a second answer lets the gripper angle give way to the position; of the answers that pass rule 4, the one
+   closest to the hand is taken, and a step that would take the gripper further from the hand than it is (beyond
+   5 mm) is not taken at all (the IK alone would trade position for angle: in simulation it drifted 60 cm away).
+   When every answer is refused (a posture switch near full stretch), a target 40% of the way is tried, so the arm
+   creeps on to the edge of its reach.
 4. Joints stay 0.05 rad off their end stops; a step that would swing a joint more than 0.35 rad at once (the IK
    switching to another arm posture) is refused; faster than the level's joint speed is slowed, keeping
    the path.
@@ -268,3 +276,7 @@ positions checked, each arm enabled holding its pose, both grippers calibrated, 
   sessions now allow 8 s (`--ack-timeout 8`; the xArm keeps 2 s). Stalls over 400 ms also let the arm go mid-motion
   (23 times in 5 minutes for one hand): hence the stall resume (rule 6).
 - "Too close" stops were frequent while the model had the bases 0.35 m apart (an estimate); measured 0.50 m.
+- Level 15 on the arms (2026-11-18, 9 min): real joints within 58% of the tracking allowance. Engaged time spent at a
+  joint end stop 28% (joint 4, the right wrist sat on its -94 deg limit over half the time), at the speed limit 26%,
+  out of reach 24%, at a box edge 16%, the gripper waiting for the trigger 12%. Hence the position-first IK (rule 3)
+  and the smooth starts and stops (rule 2).
