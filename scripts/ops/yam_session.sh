@@ -72,9 +72,14 @@ if ! grep -q "Listening on" "$D/yam_$N.console.txt"; then
   msg "NOT STARTED. The YAM program says: $(grep -v 'INFO' "$D/yam_$N.console.txt" | grep '^[A-Za-z]*Error\|^error' | tail -1 | cut -c1-300)"
   finish notstarted; exit 3
 fi
-# Ctrl-C reaches every process of the session. Only the main one ends it; a $(...) subshell that catches it just exits
-# (2026-11-18: one ran the ending while the main loop went on, and the ending was cut short; the arms were at rest).
-trap '[ "$BASHPID" = "$$" ] || exit 130; trap "" INT TERM HUP PIPE; echo; msg "Ending the session." 2> /dev/null; finish 2> /dev/null; exit 130' INT TERM HUP PIPE
+# Ctrl-C reaches every process of the session; only the main one ends it (a $(...) subshell just exits). During the
+# loop below the trap only notes the stop and the loop runs the ending: a trap that runs while `read -t` waits is cut
+# short by read's own timer, wherever it is (2026-11-18, twice: the ending stopped half way, the loop went on, and the
+# tunnel and the console tail were left running; the lab program had lowered the arms to rest).
+STOP=0; IN_LOOP=0
+end_now() { trap "" INT TERM HUP PIPE; echo; msg "Ending the session." 2> /dev/null; finish 2> /dev/null; exit 130; }
+on_stop() { [ "$BASHPID" = "$$" ] || exit 130; if [ "$IN_LOOP" = 1 ]; then STOP=1; else end_now; fi; }
+trap on_stop INT TERM HUP PIPE
 ssh "${SSHO[@]:1}" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
   -L 127.0.0.1:$LINK_PORT:127.0.0.1:28766 -L 127.0.0.1:$VIEW_PORT:127.0.0.1:28767 "$H" > "$R/yam_tunnel.txt" 2>&1 < /dev/null &
 echo $! > "$R/yam_tunnel.pid"; for i in $(seq 1 40); do ss -ltn | grep -q "127.0.0.1:$LINK_PORT " && break; sleep 0.25; done
@@ -92,12 +97,15 @@ msg "Each hand: hold the side grip (middle finger) to move its arm, release to s
 msg "Left controller -> left arm, right controller -> right arm (switch the left controller on too). Ctrl-C ends; Enter acknowledges a latched problem."
 [ "$REC" = 1 ] && msg "Demos: right thumb A starts one and, pressed again, saves it; B discards the one in progress."
 prev=""; seen_ep=0; TTY=0; { : < /dev/tty; } 2> /dev/null && TTY=1   # Enter is read only when there is a terminal
+IN_LOOP=1
 while true; do
+  [ "$STOP" = 1 ] && end_now
   if grep -q '^ENDING:\|^{"result"' "$D/yam_$N.console.txt" 2>/dev/null; then
     msg "The YAM program is ending by itself: $(sed -n 's/^ENDING: //p' "$D/yam_$N.console.txt" | head -1)"; finish; exit 0
   fi
   if [ "$TTY" = 1 ]; then
-    IFS= read -r -t 0.5 _ < /dev/tty && { ssh "${SSHO[@]}" "$H" "kill -USR1 \$(cat ~/$L/yam_pid_$N)" && msg "Acknowledged."; }
+    IFS= read -r -t 0.5 _ < /dev/tty && [ "$STOP" = 0 ] && { ssh "${SSHO[@]}" "$H" "kill -USR1 \$(cat ~/$L/yam_pid_$N)" && msg "Acknowledged."; }
+    [ "$STOP" = 1 ] && end_now
   else sleep 0.5; fi
   line=$(grep ' YAM \(SIMULATION\|REAL ARMS\)' "$D/yam_$N.console.txt" | tail -n 1 | sed 's/^ *[0-9.]*s YAM [^|]*| //')
   now=$(echo "$line" | sed 's/ \[[^]]*\]//g; s/ | ep=.*//')   # a line is shown when a hand's state changes, with its notes
