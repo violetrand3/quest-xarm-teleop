@@ -110,6 +110,19 @@ class LiveProgramTests(unittest.TestCase):
                 self.assertEqual(yam_live.main(argv), 2)
             self.assertIn("nothing was opened", err.getvalue())
 
+    def test_only_one_program_may_hold_the_real_arms(self):
+        import yam_live
+
+        with tempfile.TemporaryDirectory() as d:
+            lock = Path(d) / "arms.lock"
+            first = yam_live.take_arms_lock(lock)
+            self.assertIsNotNone(first)
+            self.assertIsNone(yam_live.take_arms_lock(lock))  # a second program is refused
+            first.close()  # the first program ended
+            again = yam_live.take_arms_lock(lock)
+            self.assertIsNotNone(again)
+            again.close()
+
     def test_first_runs_are_at_half_speed(self):
         import yam_live
 

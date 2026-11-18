@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import fcntl
 import json
+import os
 import signal
 import sys
 import threading
@@ -43,6 +45,20 @@ from yam_teleop import YamTeleop
 WORK = [0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0]  # simulation start: elbow bent, gripper forward and open
 PORT, VIEW_PORT = 28766, 28767  # loopback on the lab host; not the xArm teleop's 28765, not 8765
 REAL_FACTOR = 0.5  # real arms: every speed limit halved until the arms have been seen to follow smoothly
+ARMS_LOCK = Path("/tmp/yam_real_arms.lock")  # held while this program has the real arms open (any copy, any session)
+
+
+def take_arms_lock(path: Path = ARMS_LOCK):
+    """-> the open lock file (keep it open: closing it, or the program ending in any way, releases it), or None when
+    another program holds it. Two programs must never command the same arms."""
+    f = path.open("a+")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    f.seek(0), f.truncate(), f.write(f"{os.getpid()}\n"), f.flush()
+    return f
 
 
 def first_run_limits(lim: Limits) -> Limits:
@@ -90,6 +106,12 @@ def main(argv: list[str] | None = None) -> int:
     lim = first_run_limits(Limits()) if real else Limits()
     if real:
         from yam_real import GRIP_REST_MAX, HARDWARE_FILE, GripperStartError, HardwareFileError, RealYamPair
+
+        arms_lock = take_arms_lock()  # noqa: F841  held until this program ends
+        if arms_lock is None:
+            print(f"error: another program has the real YAM arms open ({ARMS_LOCK} is held, pid "
+                  f"{ARMS_LOCK.read_text().strip() or '?'}); nothing was opened", file=sys.stderr)  # fmt: skip
+            return 2
 
         try:
             pair = RealYamPair(ARMS, lim, a.hardware_file or HARDWARE_FILE)
