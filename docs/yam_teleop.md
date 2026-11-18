@@ -1,201 +1,250 @@
-# Bimanual YAM teleop (simulation working; real arms written, waiting for the bring-up)
+# Bimanual YAM teleop
 
-Two I2RT YAM arms on the lab host (`can_left`, `can_right`), driven by the two Quest controllers: the left
-hand drives the left arm, the right hand the right arm. It shares the Quest side, the recorder and the launcher
-with the xArm teleop, and nothing else: the YAM code never imports the xArm code, and the reverse (a test checks).
+Two I2RT YAM arms on the lab host (CAN links `can_left`, `can_right`), driven by the two Quest controllers: the left
+hand drives the left arm, the right hand the right arm. It shares the Quest side, the recorder and the launcher with
+the xArm teleop, and nothing else: the YAM code never imports the xArm code, and the reverse (a test checks).
 
-**Status (2026-11-17): steps 1-3 done, in simulation; the real-arm path is written but has never run on hardware.**
-`yam_sim.py` creates every robot with `sim=True` and has no path to the CAN links; only `yam_real.py` opens the real
-arms, used only by `scripts/teleop yam-try` after its questions, and it refuses until the bring-up is recorded.
+**Status (2026-11-18): works on the real arms and records demos**, at half the simulation's speed limits. First run
+on the arms 2026-11-17; tuned from those runs (tracking check, link stalls, base distance). Still rough: see "Known
+limitations" below.
 
-| Step | What | State |
-|---|---|---|
-| 1 | Two simulated arms driven to tool targets through the IK, with the safety rules below | done |
-| 2 | Replay recorded hand motion (xArm sessions) through the simulated arms | done |
-| 3 | Live Quest -> simulated arms: both controllers, one clutch per hand, a browser view | done; tried with the headset on 2026-11-17 |
-| 4 | Real arms: the code is written (`scripts/teleop yam-try`, below), never run on hardware; waits for the bring-up | needs the lab |
+Setting up your PC (once): `getting_started.md`. The first part of this page is for running a session; the second
+part (from "How it works") is the reference.
 
-## Trying it (simulation)
+## Commands
 
 ```
-scripts/teleop yam-sim
+scripts/teleop yam-sim       # simulated arms on the lab host: nothing moves. Watch them at http://127.0.0.1:18767/
+scripts/teleop yam-try       # THE REAL ARMS MOVE, no recording
+scripts/teleop yam-record    # THE REAL ARMS MOVE, recording demos
+scripts/teleop stop          # from a second terminal: ends the session (the arms are lowered to rest first)
 ```
 
-On the PC the headset is plugged into, after `scripts/teleop sync` has installed this version on the lab host.
-It starts the simulation on the lab host, the sender and the headset app, and prints when the controllers are
-found. Watch the two simulated arms at **http://127.0.0.1:18767/** (a 3D view: drag to turn it).
+`git pull` first: a session refuses to start when the lab host runs a different version than your checkout
+(`getting_started.md` explains `scripts/teleop sync`). Only one YAM session can run at a time; a second one refuses
+to start, and the real arms are locked by the program that has them open.
 
-- Switch BOTH controllers on. Left controller -> left arm, right controller -> right arm.
-- Hold the side grip (middle finger) to move that arm, release to stop. A grip already held when the session
-  starts must be released once first.
-- While the side grip is held, the index trigger closes that arm's gripper (as on the xArm); released, the gripper
-  stays as it is. The first time in a session it follows at once; after that, when you grip again it waits until
-  the trigger matches what the gripper holds (the terminal says how far to press), so nothing held is dropped.
-- Enter acknowledges a latched problem (e.g. after the headset's view was re-centred); Ctrl-C ends. The
-  simulation on the lab host also ends by itself after 60 s without a connection from this PC.
-- The terminal prints a line whenever a hand's state changes, with what limited it (box edge, speed limit,
-  "too close", an end stop, ...). Everything is also logged on the lab host: `~/quest-xarm-teleop-dryrun/logs/yam_<session>.*`.
+## Before a session (real arms)
+
+`yam-try` and `yam-record` ask, and you answer `yes` only when all of this is true:
+
+- someone is at the arms right now, agrees, and has the YAM e-stop in reach;
+- nobody is near the arms and nothing is under them that a dropping arm could hit;
+- nothing else will command the YAM arms (no other session, agent or program);
+- both arms rest folded on their bases. A gripper more than about 60% open at start-up makes the start refuse
+  (the arms are switched off again: they go limp), so close it first;
+- you stand behind the arms, both facing away from you; both controllers are on.
+
+The headset goes as for the xArm: front pointing the way you face (`OPERATOR_YAW` in `config/teleop_session.conf`).
+
+## During a session
+
+Watch the arms on the camera page, **http://127.0.0.1:18091/**: the RealSense, which sees both arms, and the two
+wrist webcams. Click a picture to turn it upside down. The 3D view (http://127.0.0.1:18767/) shows what the arms are
+*commanded* to do, not what they do.
+
+| Control | Effect |
+|---|---|
+| Side grip (middle finger), each hand | Hold: that arm follows your hand. Release: it stops where it is |
+| Index trigger, each hand | While the side grip is held: closes that arm's gripper (released = open) |
+| Right thumb **A** | `yam-record`: starts a demo; pressed again, saves it |
+| Right thumb **B** | `yam-record`: discards the demo in progress |
+| **Enter** (terminal) | Acknowledges a latched problem (after you looked at it) |
+| **Ctrl-C** (terminal) | Ends the session: both arms are lowered to rest, then switched off |
+
+Your hand's movement is scaled to 2/3 at the tool; its rotation is 1:1. The tool moves at most 7.5 cm/s.
+
+The terminal prints a line whenever something changes, for example
+`left: ACTIVE following grip=following | right: ARMED idle grip=holds ... | ep=recording saved=1`.
+Per hand, the first word is the clutch:
+
+| Clutch | Meaning |
+|---|---|
+| `WAIT_RELEASE` | Release the side grip first (it was held at the start, or the arm was let go) |
+| `ARMED` | Ready: press the side grip to move |
+| `ACTIVE` | The arm follows your hand |
+| `STALLED` | The link from your PC to the lab host stalled. Keep holding the side grip: it resumes by itself within 2 s, from where your hand is then (no jump). Longer than 2 s: release and press again |
+| `FAULT_LATCHED` | Something on the headset changed (e.g. its view was re-centred). Check, then press Enter |
+
+The second word is the arm: `following`, `held` (a limit stopped it; the notes in brackets say which), `idle`,
+`let go`. The usual notes:
+
+| Note | What to do |
+|---|---|
+| `speed limit`, `waiting for the arm` | Nothing: you moved faster than the arm may; it catches up |
+| `at the box edge`, `out of reach` | Each arm has a box it may move in; move back inside |
+| `too close: ...` | The two arms (or an arm and the table) are within 1 cm; the arm refuses moves that bring them closer, and follows moves that take them apart |
+| `joint N at its end stop` | That joint is at its limit; turn or move the other way |
+| `joint N would swing ... at once (another arm posture)` | The pose needs a wrist joint to flip; refused. Turn your hand back a little |
+| `grip=waiting for the trigger to match ...` | After you grip again, the gripper waits until the trigger matches what it holds, so nothing is dropped. The note says how far to press or release |
+| `... arm joint N is ... rad from its command ...: both arms stopped where they are` | A real joint did not follow (blocked, or it hit something). Look at the arms, then Enter; then grip again |
+
+## How a session ends
+
+Ctrl-C, `scripts/teleop stop`, no connection from your PC for 10 s, or a failure: every
+ending first **lowers both arms to their rest poses** (slowly, under the same clearance rules), closes the grippers
+to at most 40% open (so the next start is valid), and only then switches the motors off. The terminal ends with
+`Both arms are at rest and the program has ended.`
+
+If an arm cannot reach rest within 40 s, the program keeps holding both arms and the terminal says so. Then
+`scripts/teleop stop` lets them go (they drop) or use the e-stop. On the lab host, `/home/dev/yam/yam_stop.sh` kills
+the programs and switches all 14 motors off (the arms drop). **If the program dies or the power is cut, the arms go
+limp and drop**: the motors' watchdog is on.
+
+## Demos (`yam-record`)
+
+As on the xArm: a demo still recording after `DEMO_MAX_MIN` (settings) is saved and closed; any end of the session
+saves the one in progress before the arms are lowered (the lowering is never part of a demo); recording needs
+`MIN_FREE_GB` free on the lab host. Afterwards the videos are made on the lab host and the demos are copied to
+`data/episodes/<session>/` on your PC, without the raw camera files (which stay on the lab host,
+`~/quest-xarm-teleop-dryrun/episodes/<session>/`; `scripts/ops/episodes_fetch.sh <session>` copies them).
+
+Each demo (`episode_0001/`, ...):
+
+| File | What |
+|---|---|
+| `steps.jsonl` | one row per control step (50 Hz). For each arm, `left` and `right`: clutch and arm state, commanded and measured joints with the gripper opening (`q_cmd`, `q_meas`; 0 = closed, 1 = open), the tool pose from the measured joints (`tcp_p`, `tcp_q`: metres, quaternion x y z w, world frame), the tool target, the gripper command, trigger, side grip, the controller's pose, and the notes |
+| `view_rs_color.mp4` | the RealSense video, for watching |
+| `cam_rs_color.frames.jsonl` (+ `.mjpeg` on the lab host) | every RealSense frame with its time on the rows' clock |
+| `events.jsonl`, `meta.json` | clutch changes and faults; duration, following time, travel, gripper range, camera statistics |
+
+`session.json` describes every field (format `quest-yam-bimanual-episode-v1`). The world frame: origin on the table
+midway between the two bases, x away from the operator, y to the left, z up. Only the RealSense is recorded
+(`YAM_RECORD_CAMS`); the wrist webcams are shown on the camera page but not recorded yet.
+
+## Known limitations
+
+- **Wrist flips are refused.** Some hand angles need a wrist joint to swing 20-70 degrees at once; the arm waits
+  until your hand turns back (about 28 s per arm in a 5-minute session on 2026-11-17).
+- **Half speed** (the tool at most 7.5 cm/s), kept on purpose for now.
+- **Slow links pause the arms.** Over a slow connection to the lab host, short stalls show as `STALLED` (it resumes
+  by itself); a stall over 8 s ends the session. A wired connection helps.
+- **The wrist webcams** are not recorded, and their pictures come at about 1.5 per second (from the lab host's
+  `/home/dev/yam/yamcam.py`).
+- **The 3D view** shows the commands, not the real arms.
+
+## When something goes wrong
+
+| What you see | What to do |
+|---|---|
+| `NOT STARTED. The YAM program says: ... gripper reads ... of its stroke` | A gripper was more than ~60% open at start-up. Close it below half open, then start again |
+| `NOT STARTED ...` naming a motor that did not answer | A CAN hiccup; usually fine on the next start. If it repeats, have the CAN links checked |
+| `a YAM session is already running on the lab host` | Someone's session is still running: `scripts/teleop status` shows it; it must end first |
+| `another program has the real YAM arms open` | Another program (not a session of this tool) has the arms. Find out whose before doing anything |
+| `The YAM program is ending by itself: no connection from the operator's PC for 10 s` | The link to the lab host was lost; the arms were lowered to rest. Start again; check your network |
+| `WARNING: ... COULD NOT LOWER BOTH ARMS TO REST` | The arms are still held. Look at them; `scripts/teleop stop` lets them go (they drop), or use the e-stop |
+| An arm does not follow although `ACTIVE` | Read the note in brackets (table above) |
+
+## Settings
+
+In `config/teleop_session.conf` (shared with the xArm): `OPERATOR_YAW`, `DEMO_MAX_MIN`, `MIN_FREE_GB`. In the
+environment: `YAM_VIEWS` (cameras on the page), `YAM_RECORD_CAMS` (cameras recorded). Where the arms stand, their
+boxes and every limit: `scripts/yam_setup.py`. The arms' measured gripper limits and rest poses:
+`/home/dev/yam/yam_hardware.json` on the lab host (written in the bring-up; a session refuses to start without it).
+
+---
+
+## How it works
+
+```
+Quest (USB) -> your PC: quest_pose_stream_sender.py --SSH tunnel--> lab host: yam_live.py (I2RT's Python)
+                                                                       yam_teleop:  clutch + hand-to-tool, per hand
+                                                                       yam_control: limits, IK, clearance, tracking
+                                                                       yam_real / yam_sim: the arms
+```
+
+Each control step (50 Hz), per hand: the clutch (`teleop_input.Engagement`, the xArm's rules) decides whether the arm
+follows. While it does, the tool target is the tool pose at engagement plus the hand's movement since then (scaled
+by 2/3, in the world frame) and the hand's rotation (1:1). `BimanualControl` limits that target, solves the IK
+(mink) from the last command, checks both arms together against the clearance model (MuJoCo), and commands the
+joints. On the real arms I2RT's own thread sends the commands to the motors.
 
 ## Files
 
 | File | Runs on | What |
 |---|---|---|
-| `scripts/yam_setup.py` | any PC | where the arms stand, their boxes, every limit (one place to change them) |
+| `scripts/yam_setup.py` | any PC | where the arms stand (bases 0.50 m apart, measured), their boxes, every limit |
 | `scripts/yam_limits.py` | any PC | target limiter (box, speed, jump, lag) and joint step guard (end stops, posture switch, joint speed) |
-| `scripts/yam_control.py` | any PC | one control step for both arms: clutch, limits, IK, keeping clear, tracking fault |
-| `scripts/yam_sim.py` | lab host, I2RT's environment | two simulated arms: IK (mink), clearance model (MuJoCo), commands |
-| `scripts/yam_sim_check.py` | lab host, I2RT's environment | drives the simulated arms through every safety rule; PASS/FAIL per rule |
+| `scripts/yam_control.py` | any PC | one control step for both arms: clutch, limits, IK, keeping clear, tracking fault, lowering to rest |
 | `scripts/yam_input.py` | any PC | both controllers from the Quest stream; each judged on its own controller |
-| `scripts/yam_teleop.py` | any PC | per hand: clutch (the xArm's rules), hand-to-tool mapping, gripper pickup |
-| `scripts/yam_replay.py` | lab host, I2RT's environment | replays a recorded session (`data/sessions/src_*.jsonl`) through the simulated arms |
-| `scripts/yam_live.py` | lab host, I2RT's environment | the live program: Quest stream in, simulated (`--arms sim`) or real (`--arms real`) arms, browser view, lowering to rest |
-| `scripts/yam_real.py` | lab host, I2RT's environment | the real arms behind the same interface (opening them enables the motors) |
+| `scripts/yam_teleop.py` | any PC | per hand: clutch, stall resume, hand-to-tool mapping, gripper pickup |
+| `scripts/yam_sim.py` | lab host, I2RT's Python | two simulated arms: IK (mink), clearance model (MuJoCo), commands; the 3D view |
+| `scripts/yam_real.py` | lab host, I2RT's Python | the real arms behind the same interface (opening them enables the motors) |
+| `scripts/yam_live.py` | lab host, I2RT's Python | the live program: Quest stream in, simulated (`--arms sim`) or real (`--arms real`) arms, lowering to rest, the arms lock |
 | `scripts/yam_recorder.py` | lab host | demo recording for two arms (the xArm's recorder with its own row) |
-| `scripts/ops/yam_session.sh` | operator's PC | one session, started by `scripts/teleop yam-sim`, `yam-try` or `yam-record` |
+| `scripts/yam_replay.py` | lab host, I2RT's Python | replays a recorded session (`data/sessions/src_*.jsonl`) through the simulated arms |
+| `scripts/yam_sim_check.py` | lab host, I2RT's Python | drives the simulated arms through every safety rule; PASS/FAIL per rule |
+| `scripts/ops/yam_session.sh` | your PC | one session, started by `scripts/teleop yam-sim`, `yam-try` or `yam-record` |
 
-Run the check on the lab host (from a synced copy):
+On the lab host, from the installed copy:
 
 ```
 /home/dev/yam/i2rt/.venv/bin/python scripts/yam_sim_check.py
+/home/dev/yam/i2rt/.venv/bin/python -m unittest tests.test_yam_sim
 ```
 
-Tests: `tests/test_yam_control.py`, `tests/test_yam_teleop.py`, `tests/test_yam_real.py` (any PC) and
-`tests/test_yam_sim.py` (lab host, skipped elsewhere).
+Tests on any PC: `tests/test_yam_control.py`, `test_yam_teleop.py`, `test_yam_real.py`, `test_yam_recorder.py`.
 
-## Safety rules (per control step, 50 Hz)
+## Safety rules (every control step)
 
-1. A hand target that jumps more than 8 cm or 40 deg in one step is a tracking glitch: the arm is let go
-   (release and grip again).
+1. A hand target that jumps more than 8 cm or 40 deg in one step is a tracking glitch: the arm is let go (release
+   and grip again).
 2. The target is held inside the arm's box (an arm that starts outside may come back in, never go further out),
-   moves at most 0.15 m/s and 45 deg/s, and never runs more than 4 cm / 20 deg ahead of the arm.
+   moves at most 0.15 m/s and 45 deg/s (half that on the real arms), and never runs more than 4 cm / 20 deg ahead
+   of the arm.
 3. The IK solves from the last command; a target out of reach is followed as far as it goes.
 4. Joints stay 0.05 rad off their end stops; a step that would swing a joint more than 0.35 rad at once (the IK
-   switching to another arm posture) is refused; faster than 1.5 rad/s is slowed, keeping the path.
-5. The two arms are checked together: no move may bring the arms within 1 cm of each other, an arm (other than
-   its base) within 1 cm of the table, a fingertip into the table, or an arm into itself, unless it moves them
-   apart. The other arm still moves if its own move is fine.
-6. No hand input for an engaged arm: it is let go and stays where it is.
-7. Real arms only (sim reads back its command): a joint measured more than 0.15 rad from its command stops both
-   arms where they are, latched.
-8. The gripper (opening 0 = closed, 1 = open, I2RT's convention) moves at most 2.0 per second.
+   switching to another arm posture) is refused; faster than 1.5 rad/s (0.75 on the real arms) is slowed, keeping
+   the path.
+5. The two arms are checked together: no move may bring the arms within 1 cm of each other, an arm (other than its
+   base) within 1 cm of the table, a fingertip into the table, or an arm into itself, unless it moves them apart.
+   The other arm still moves if its own move is fine.
+6. No fresh hand input (older than 400 ms) for an engaged arm: it is let go and stays where it is. If that was a
+   link stall and the side grip stayed held, it resumes within 2 s, re-anchored where hand and tool are then.
+7. Real arms only: a joint measured further from its command than 0.10 rad plus 0.25 s of its fastest commanded
+   speed in the last 0.5 s stops both arms where they are, latched (Enter clears it). Measured 2026-11-17: real
+   joints trail their command by 0.04-0.12 s and stayed within half of this allowance.
+8. The gripper (opening 0 = closed, 1 = open, I2RT's convention) moves at most 2.0 per second (1.0 on the real
+   arms).
+9. Only one program may have the real arms open (`/tmp/yam_real_arms.lock` on the lab host).
 
-All the numbers are in `yam_setup.py`. They are first guesses, to be tuned in step 3 and checked on the arms.
+All the numbers are in `yam_setup.py`; the real arms' halving is `REAL_FACTOR` in `yam_live.py`.
 
-## Assumptions to confirm on the rig
+## The real arms: what the hardware does
 
-- Arm model: the standard YAM (I2RT's default). The gripper, LINEAR_4310, was confirmed on 2026-11-17.
-- Placement: both bases on the table, both facing away from the operator, who stands behind them (confirmed);
-  0.50 m apart centre to centre (measured by the operator 2026-11-17; BASE_SPACING in
-  `yam_setup.py`). The boxes follow from it.
-
-## The real arms (`scripts/teleop yam-try`): NOT RUN YET
-
-What the hardware does (read from I2RT's code and, read-only, from the motors on 2026-11-17):
+Read from I2RT's code (i2rt 234d895) and, read-only, from the motors on 2026-11-17:
 
 - Opening an arm enables its motors. `yam_real.py` opens it holding every joint where it is, so nothing moves at
   start-up; I2RT refuses to start when a joint reads outside its limits (a wrong zero position).
-- The LINEAR_4310 gripper calibrates itself at start-up by DRIVING to its ends, unless its limits are given; and
-  its zero is unreliable today. So its limits are measured once in the bring-up and given every time.
+- The LINEAR_4310 gripper calibrates itself at start-up by DRIVING to its ends, unless its limits are given. Its
+  limits were measured once in the bring-up and are given every time (`yam_hardware.json`).
 - Every motor's watchdog is on (TIMEOUT 8000): when commands stop, the motor goes limp. I2RT's own thread keeps
-  commanding while the program runs; **if the program dies or the power is cut, the arms go limp and drop.**
-- I2RT's `close()` sets every torque to zero: the arms go limp. So every way a session ends (Ctrl-C,
-  `scripts/teleop stop`, the time limit, no connection from the operator's PC for 10 s, a failure of the control
-  step) first **lowers both arms to their rest poses** at 0.3 rad/s, under the same clearance rules as teleop,
-  and only then lets them go. If that cannot finish within 40 s, the arms stay held where they are and the
-  terminal says so; `scripts/teleop stop` then lets them go (they drop) or the e-stop is used.
+  commanding while the program runs. I2RT's `close()` sets every torque to zero. Hence the lowering to rest.
 - At every start-up I2RT shifts a motor's zero by a full turn when it reads outside +-pi. The gripper's stroke is
-  ~5 rad (right arm, measured 2026-11-17: closed +0.001, open -5.069 rad), so jaws more than ~60% open at start-up
-  come back 2*pi off and the measured limits no longer apply. `yam_real.py` reads each gripper's opening right
-  after opening the arm, before any command: outside 0..1 it switches both arms off again and refuses (close
-  that gripper and start again). Lowering to rest closes each gripper to at most 40% open, so the next start-up
-  is valid.
-- There is no controller-side fence or error stop as on the xArm: the rules above and the YAM e-stop are all.
+  ~5 rad (right arm: closed +0.001, open -5.069 rad), so jaws more than ~60% open at start-up come back 2*pi off
+  and the measured limits no longer apply. `yam_real.py` reads each gripper's opening right after opening the arm,
+  before any command: outside 0..1 it switches both arms off again and refuses.
+- There is no controller-side fence or error stop as on the xArm: the rules above and the e-stop are all.
 
-**Bring-up first** (done by the linux2 session, each step with the user's explicit approval given to it):
+The bring-up (2026-11-17, by the lab host's own agent session, each step with the operator's approval): joint zero
+positions checked, each arm enabled holding its pose, both grippers calibrated, rest poses confirmed, and
+`/home/dev/yam/yam_hardware.json` written (format in `scripts/yam_real.py`).
 
-1. Check each arm's joint zero positions: the joint readings against what the arm looks like.
-2. Enable one arm holding its pose with someone watching, then the other.
-3. Calibrate both grippers (I2RT's calibration, which drives them) and note their [closed, open] limits.
-4. Confirm each arm's rest pose: where it sits safely when it goes limp.
-5. Write `/home/dev/yam/yam_hardware.json` on the lab host (format in `scripts/yam_real.py`); `yam-try` refuses
-   to start without it.
+## Findings
 
-**Then the first run:** `scripts/teleop yam-try`, half the simulation's speed limits (the tool at most 7.5 cm/s),
-after its go/no-go questions: someone at the arms with the e-stop in reach, nobody near the arms and nothing under
-them, nothing else commanding them. Start with small, slow movements of one hand; the arms work low over the table.
-
-Watch the arms on the camera page (`yam-try` and `yam-sim` start it and print its address, http://127.0.0.1:18091/):
-the RealSense, which sees both arms, and the two wrist webcams (`wrist_c920`, `wrist_emeet`, served on the lab host
-by /home/dev/yam/yamcam.py on 127.0.0.1:8096; about 1.5 frames/s from that program on 2026-11-17). YAM_VIEWS in the
-environment changes the list. The 3D page shows what the arms are COMMANDED to do, not what they do.
-
-Tracking: a joint measured too far from its command stops both arms where they are (the only check that notices a
-blocked arm). A moving joint trails its command, so the allowance is 0.10 rad plus 0.25 s of the joint's fastest
-commanded speed in the last 0.5 s. Set from the measured joints of a real run (2026-11-17, 86 s at half speed):
-still within 0.044 rad, lag 0.04-0.12 s per joint, at worst 51% of the allowance. (The first real run had stopped
-on a fixed 0.15 rad: right joint 4 trailing at 0.75 rad/s.) Enter clears the stop once you have looked; the arms keep holding, and a hand is released and pressed
-again to move its arm. Each step logs the commanded ("q") and measured ("meas") joints, to tune this from data.
-
-Stopping: release a side grip (that arm stops where it is); Ctrl-C or `scripts/teleop stop` (both arms are lowered
-to rest, then let go); on the lab host `/home/dev/yam/yam_stop.sh` (the linux2 session's emergency software stop:
-it kills the programs and switches all 14 motors off, so the arms drop); the e-stop (the arms drop).
-Before `yam-try`, both arms must rest folded on their bases: a refused start-up switches them off again.
-
-## Recording demos (`scripts/teleop yam-record`)
-
-`yam-try` with demo recording, as `record` on the xArm: right thumb **A** starts a demo and, pressed again, saves it;
-**B** discards the one in progress. A demo still recording after DEMO_MAX_MIN (settings) is saved and closed; any end
-of the session saves the one in progress before the arms are lowered (the lowering is never part of a demo).
-Recording needs MIN_FREE_GB free on the lab host. Afterwards the videos are made on the lab host and the demos copied
-to `data/episodes/<session>/` (without the raw camera files), as for the xArm.
-
-Each demo (`episodes/<session>/episode_0001/` on the lab host):
-
-| File | What |
-|---|---|
-| `steps.jsonl` | one row per control step (50 Hz): for each arm, `left` and `right`: clutch and arm state, commanded and measured joints with the gripper opening (`q_cmd`, `q_meas`), the tool pose from the measured joints (`tcp_p`, `tcp_q`, metres, world frame), the tool target, the gripper command, trigger, side grip, the controller's pose and the notes (what limited the arm) |
-| `cam_rs_color.mjpeg` + `.frames.jsonl` | the RealSense (sees both arms), every frame with its time on the rows' clock |
-| `events.jsonl`, `meta.json` | clutch changes and faults; duration, following time, travel, gripper range, camera statistics, problems |
-
-`session.json` describes every field (format `quest-yam-bimanual-episode-v1`). The cameras saved are YAM_RECORD_CAMS
-(default `rs_color`; the wrist webcams are shown on the camera page but not recorded yet).
-
-Tested 2026-11-17 in simulation with a recorded xArm demo session played back in place of the headset (its own A/B
-presses): 1 demo saved, 2 discarded, as pressed; the saved one 23.9 s, 1194 rows at 50 Hz, the arms following 18.4 s,
-804 RealSense frames.
-
-## Hand to arm
-
-While a hand's grip is held, its arm's tool follows the hand from where both were when the grip was pressed:
-the hand's movement scaled by 0.667 (as on the xArm), the hand's rotation 1:1. The axes are the xArm's (the
-operator faces the way the arms face; OPERATOR_YAW in config/teleop_session.conf applies as on the xArm). The gripper follows the
-trigger only while the side grip is held (as on the xArm). Once you have moved a gripper with the trigger, it follows
-again after a release only when the trigger has come within 0.1 of it, so an arm holding something does not drop it
-when the hand comes back with the trigger released; a gripper you have not moved yet in the session follows at once.
-
-## Found in simulation
-
-- The IK takes under 1 ms; a whole step for both arms (IK, limits, clearance check) 1-2 ms, worst ~5 ms of the
-  20 ms available.
-- Pointing straight down, the grasp point cannot go much above 20 cm (the wrist would be out of reach), so
-  top-down grasps happen low over the table.
-- Replaying 332 s of the 2026-11-16 xArm session (the right hand, mirrored for the left): both arms engaged
-  221 s, every release honoured, no clearance problem; the operator's wrist turns reach the YAM's joint 4 end
-  stop (its wrist range is smaller than the xArm's). End to end through the real sender and tunnel (a recorded
-  session played back in place of the headset): all 3131 packets accepted, both arms followed, both let go
-  when the stream stopped.
-- I2RT's simulated arm puts the joints straight at each command (no motor dynamics): the simulation checks the
-  decisions, not how smoothly real motors follow.
-
-Link stalls (2026-11-17 evening): four yam-record sessions in a row ended with "no connection from the operator's PC
-for 10 s". The lab program ran normally throughout (every control step 20 ms); the operator's PC to the lab host had
-answer times up to 1.6-1.9 s and then over 2 s, with the camera page closed too. The PC's sender gave up at 2 s ("ack
-timeout"). YAM sessions now pass `--ack-timeout 8` (the xArm keeps 2 s). During a stall the poses go stale, the
-clutch lets go and the arms hold; press the side grip again afterwards.
-
-Short stalls also let the arm go mid-motion (input older than 400 ms): in yamrec_20261117-223800 the left hand was let
-go 23 times in ~5 min this way, each needing a re-grip. Since then (YAM only, the xArm still needs the re-press) a
-hand let go by a stall shows `STALLED` and resumes by itself when fresh input returns within 2 s from the same headset
-session and continuity with the side grip held. It re-anchors where the hand and the tool are then (no catching up);
-the gripper keeps following the trigger. A release, a longer stall or any other problem needs the usual release
-and press.
+- Simulation: the IK takes under 1 ms; a whole step for both arms (IK, limits, clearance check) 1-2 ms, worst ~5 ms
+  of the 20 ms available. Pointing straight down, the grasp point cannot go much above 20 cm, so top-down grasps
+  happen low over the table. I2RT's simulated arm puts the joints straight at each command (no motor dynamics): the
+  simulation checks the decisions, not how smoothly real motors follow.
+- Replaying 332 s of a 2026-11-16 xArm session through the simulated arms: every release honoured, no clearance
+  problem; the operator's wrist turns reach the YAM's joint 4 end stop (its wrist range is smaller than the xArm's).
+- First real run (2026-11-17): stopped by the tracking check on a fixed 0.15 rad (right joint 4 trailing at
+  0.75 rad/s); replaced by the speed-aware allowance (rule 7), then tightened from the measured joints.
+- The app's start-up reference notices latched both hands; the session now acknowledges them once by itself.
+- The gripper waited for a 60% trigger press after the lowering left it 40% open; a gripper not yet moved in the
+  session now follows at once.
+- Link stalls (2026-11-17 evening, the operator's PC to the lab host): answer times up to 2 s and more, while the lab
+  program ran normally (every step 20 ms). The PC's sender gave up at 2 s, ending four sessions in a row; YAM
+  sessions now allow 8 s (`--ack-timeout 8`; the xArm keeps 2 s). Stalls over 400 ms also let the arm go mid-motion
+  (23 times in 5 minutes for one hand): hence the stall resume (rule 6).
+- "Too close" stops were frequent while the model had the bases 0.35 m apart (an estimate); measured 0.50 m.

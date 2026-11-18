@@ -1,43 +1,89 @@
 # quest-xarm-teleop
 
-Remote teleoperation of an xArm6 with a custom (Dynamixel) gripper from a Meta Quest 3S controller.
-The operator is remote: the Quest is connected by USB to a local PC, and the robot is reached
-through a lab host over SSH tunnels.
+Remote teleoperation of the lab's robot arms from a Meta Quest 3S, with demo recording:
 
-**Status (2026-10-28):** live teleoperation of the real arm and gripper works and records demos
-(arm pose, joints, targets, jaws and two camera videos per episode). Day-to-day use is one command,
-`scripts/teleop`. **New here: `docs/getting_started.md`**, then `docs/teleop_usage.md`. Step-by-step
-history and measurements are in `reports/`.
+- **xArm6** with the lab's Dynamixel gripper: the right controller drives the arm.
+- **Two I2RT YAM arms** (bimanual): the left controller drives the left arm, the right controller the right arm.
+
+The operator can be anywhere: the Quest is plugged into the operator's PC by USB, and the robots are reached
+through the lab host (linux2) over SSH. One command, `scripts/teleop`, runs a whole session from that PC.
+
+**Status (2026-11-18):** both work on the real robots and record demos (arm pose, joints, gripper, camera video):
+the xArm since 2026-10-12, the YAM arms since 2026-11-17 (`docs/yam_teleop.md` says what is still rough).
+
+## Start here
+
+1. `docs/getting_started.md`: setting up your PC, the headset app and SSH to the lab host, and how the lab host's
+   copy of the programs is kept in step with GitHub. Once per PC.
+2. `docs/teleop_usage.md`: an xArm session.
+3. `docs/yam_teleop.md`: a YAM session.
+
+```
+scripts/teleop status        # read-only: robot, cameras, headset, disk, is the lab copy up to date
+scripts/teleop record        # xArm, recording demos           (scripts/teleop try: the same without recording)
+scripts/teleop yam-sim       # YAM in simulation: nothing moves (a good first try)
+scripts/teleop yam-record    # YAM, recording demos            (scripts/teleop yam-try: without recording)
+scripts/teleop sync          # install this checkout on the lab host (only a committed, pushed version)
+```
+
+`scripts/teleop` with no arguments lists every command.
 
 ## Safety
-The rig is shared. `scripts/teleop record` and `scripts/teleop try` MOVE THE ARM. They ask go/no-go
-questions first: someone must be on site, clear of the robot, with the physical stop in reach, and nothing
-else may be commanding the arm. The software never clears controller errors and never changes the
-controller's safety settings (fence, reduced mode); those are lab-side decisions. Ctrl-C and
-`scripts/teleop stop` are software stops, not the physical stop.
+
+The robots are shared. Every command that moves a robot (`record`, `try`, `yam-record`, `yam-try`) asks go/no-go
+questions first: someone is at the robot with its stop button in reach, nobody is near it, and nothing else is
+commanding it. What you answer is saved with the session. Ctrl-C and `scripts/teleop stop` are software stops, not
+the physical stop.
+
+The software never clears an xArm controller error and never changes a controller's safety settings (fence, reduced
+mode, the YAM motors' watchdog); those are lab-side decisions. The YAM arms go limp when their program stops, so
+every YAM session lowers both arms to rest before it ends.
 
 ## Layout
+
 | Path | What |
 |---|---|
-| `scripts/quest_pose_*.py`, `quest_transport.py`, `quest_stream_*.py` | Quest telemetry decoder and the versioned link to the lab host (`docs/checkpoint5_pose_transport_v2.md`) |
-| `scripts/teleop_*.py` | Adapter: engagement clutch, anchored-translation mapping, limits, scheduler, fake backend, dry-run entry point |
-| `scripts/gripctl_client.py`, `live_gripper_test.py` | Index trigger to the real gripper through the lab's `gripctl` service |
-| `scripts/xarm_readonly_preflight.py` | Read-only inspector of the arm's configuration (wire-level allowlist of read registers) |
-| `scripts/xarm_command_link.py`, `xarm_live_backend.py` | Commanding link to the arm (four validated writes only: enable, mode, state, line move inside a hard box) and the adapter backend that uses it |
-| `scripts/arm_first_move_test.py` | First supervised movement test: one small move, queue-or-replace, and stop behaviour |
-| `scripts/lab_cam_relay.py` | Low-rate, view-only relay of the lab cameras for the remote operator |
-| `scripts/teleop`, `config/teleop_session.conf` | The one command for sessions, and its settings |
-| `scripts/live_teleop.py`, `episode_*.py` | Live teleop program (lab side) and episode recording |
-| `scripts/ops/` | `teleop_live_session.sh`, `lab_teleop_live_run.sh` and `episode*.sh` are used by `scripts/teleop`; the others are earlier test sessions, kept with their reports |
-| `tests/` | Offline tests; none of them touches hardware |
-| `patches/` | Our changes to the Quest OpenXR reader app (`oculus_reader` fork), as patches |
-| `reports/`, `docs/` | Step-by-step reports and protocol documentation |
+| `scripts/teleop`, `config/teleop_session.conf` | the one command for sessions, and its settings |
+| `scripts/ops/` | the session scripts `scripts/teleop` runs (`teleop_live_session.sh` and `lab_teleop_live_run.sh` for the xArm, `yam_session.sh`, `episodes_*.sh`) |
+| **Shared by both robots** | |
+| `scripts/quest_pose_*.py`, `quest_transport.py`, `quest_stream_*.py`, `quest_input_monitor.py` | the headset app's controller data, and the versioned link to the lab host (`docs/checkpoint5_pose_transport_v2.md`) |
+| `scripts/controller_wait.py` | waits for the controllers at the start of a session and says what is wrong |
+| `scripts/teleop_input.py`, `teleop_rotation.py` | the clutch (side grip) and the rotation maths |
+| `scripts/episode_recorder.py`, `episode_cameras.py`, `episode_inspect.py` | demo recording (folders, A/B buttons, cameras, limits) and checking recorded demos |
+| `scripts/lab_cam_relay.py` | the camera page the operator watches |
+| **xArm** | |
+| `scripts/live_teleop.py` | the live program on the lab host |
+| `scripts/teleop_adapter.py`, `teleop_mapping.py`, `teleop_limits.py`, `teleop_backend*.py`, `teleop_replay.py`, `teleop_dryrun.py` | hand-to-arm mapping, limits, the arm backends, offline replay |
+| `scripts/xarm_command_link.py`, `xarm_live_backend.py`, `arm_kinematics.py`, `xarm_readonly_preflight.py` | the commanding link to the arm (a few validated writes only), its wrist geometry, the read-only inspector |
+| `scripts/gripctl_client.py`, `live_gripper_test.py` | the gripper, through the lab's `gripctl` service |
+| `scripts/arm_first_move_test.py`, `gripper_step_check.py`, `lab_frame_capture.py`, `frames_refdiff.py`, `wrist_frames_measure.py` | commissioning tests and measurements (still used by tests and lab scripts) |
+| **YAM** | |
+| `scripts/yam_*.py` | the bimanual YAM teleop: setup and limits, control, simulation, real arms, live program, recorder (each listed in `docs/yam_teleop.md`) |
+| **Other** | |
+| `tests/` | offline tests; none touches hardware |
+| `docs/` | setting up and using it; the link protocol |
+| `reports/` | step-by-step reports and measurements from building the xArm teleop |
+| `patches/` | our changes to the Quest app (an `oculus_reader` fork) |
+| `archive/` | one-off test sessions and analyses the reports were made with; not used any more |
 
-Not in the repository: `data/` (recordings), `external/` (the Quest app sources and other cloned repositories).
+Not in the repository: `data/` (recordings and session logs), `external/` (the Quest app sources and other cloned
+repositories). The YAM teleop uses I2RT's package on the lab host (`/home/dev/yam/i2rt`, with its own Python).
+
+## The lab host's copy
+
+The lab host runs its own copy of the programs, `~/quest-xarm-teleop-dryrun` (the name is historical), shared by
+everyone using the lab account. It is **not a git checkout**, on purpose: the lab host would need a GitHub login for
+this private repository, and nobody should edit the programs there. `scripts/teleop sync` installs it from your
+checkout, and only a version that is committed and pushed, so anyone can match it with `git pull`. The session
+commands refuse to start when it differs from your checkout. Its `README.txt` says which commit it is. Details:
+`docs/getting_started.md`.
 
 ## Tests
+
 ```
 python3 -m unittest discover -s tests
 ```
-Tests that replay saved recordings are skipped when `data/` is absent. The SDK loopback tests
-need the xArm Python SDK (or `XARM_SDK_SRC` pointing at a copy of its source).
+
+Tests that replay saved recordings are skipped when `data/` is absent, and the YAM simulation tests off the lab host
+(on it: `/home/dev/yam/i2rt/.venv/bin/python -m unittest tests.test_yam_sim`). The SDK loopback tests need the xArm
+Python SDK (or `XARM_SDK_SRC` pointing at a copy of its source).

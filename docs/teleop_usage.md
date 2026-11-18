@@ -1,7 +1,10 @@
-# Using the teleop
+# Using the teleop (xArm)
+
+How to run an xArm6 session. The two YAM arms: `yam_teleop.md`. Setting up a new PC: `getting_started.md`.
 
 Everything is run from the PC the Quest is plugged into. The command starts and stops the lab-host
-(linux2) side by itself; nothing has to be started there by hand. Setting up a new PC: `getting_started.md`.
+(linux2) side by itself; nothing has to be started there by hand. `git pull` first: the session refuses to start
+when the lab host runs a different version than your checkout.
 
 ```
 cd quest-xarm-teleop         # wherever you cloned it
@@ -139,9 +142,11 @@ This program never clears a controller error itself.
 | `FAULT: …` with a controller error | See "When the arm stops with a fault" above |
 | `NOT STARTED. The arm program says: …` | Read the reason; the two rows above are the usual ones |
 | Camera page frozen | `scripts/teleop cameras`, then reload the page |
-| Gripper picture upside down | The phone app turned its picture 180° (it did when the wrist was tilted, 2026-10-14). The camera page turns it back by itself while the blue jaws are in view. Recorded demos keep the picture as the phone sends it |
+| Gripper picture upside down | The phone app turns its picture 180° when the wrist tilts. Click the picture on the camera page to turn it; your browser remembers it per camera. Recorded demos keep the picture as the phone sends it |
 | `DEMO NOT STARTED` naming a camera | That camera sends no picture (the ZED, 2026-10-14). Take it out of `CAMERAS` in the settings and start again |
 | `need exactly one headset` | Check the USB cable and allow debugging in the headset |
+| `the lab host runs a newer version` | `git pull`, then start again |
+| `this checkout is newer` | Your checkout has a version the lab host does not run yet: `scripts/teleop sync` (see `getting_started.md`) |
 
 ## Settings
 

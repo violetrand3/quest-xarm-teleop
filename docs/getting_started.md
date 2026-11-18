@@ -1,14 +1,15 @@
 # Getting started
 
-How to set up a new operator PC for teleoperating the lab's xArm6 with a Meta Quest 3S. Daily use is in
-`teleop_usage.md`.
+How to set up a new operator PC for teleoperating the lab's robots with a Meta Quest 3S: the xArm6, and the two
+YAM arms. The setup is the same for both. Daily use: `teleop_usage.md` (xArm), `yam_teleop.md` (YAM).
 
 ## How it fits together
 
 ```
 Quest 3S --USB--> your PC: scripts/teleop --SSH--> lab host (linux2, user dev): ~/quest-xarm-teleop-dryrun
-                  (reads the controller,                         live_teleop.py talks to the arm, the
-                   shows the camera page)                        gripper service and the cameras
+                  (reads the controllers,                        xArm: live_teleop.py talks to the arm, the
+                   shows the camera page)                              gripper service and the cameras
+                                                                 YAM:  yam_live.py drives both arms (CAN)
 ```
 
 Everything runs from your PC. `scripts/teleop` starts and stops the program on the lab host over SSH, and
@@ -94,20 +95,40 @@ says why:
 | GitHub has newer commits, or the lab host runs a newer version | `git pull` (then there is usually nothing to sync) |
 | the lab host's copy is not a version on GitHub | someone installed work in progress with an older launcher. Ask them to push it, or replace it with `scripts/teleop sync --overwrite` |
 
+## Working with others
+
+Several people can use the rig from their own PCs, one session at a time. They share the lab host's copy, so:
+
+- **`git pull` before every session.** When the lab host runs a newer version than your checkout, the session
+  commands refuse to start and say so; `git pull` fixes it. Never `sync --overwrite` someone else's version
+  unless they agree.
+- **Change the programs only in your clone**, then commit, push and `scripts/teleop sync`. The lab host's copy is
+  not a git checkout (the lab host would need a GitHub login for this private repository): `sync` installs it from
+  your checkout. Its `README.txt` and `SYNCED_FROM.txt` say which commit it is and who installed it, and `sync`
+  moves files that the repository no longer has into a `backup_*_removed` folder there.
+- **One session at a time** (one xArm, one pair of YAM arms, one camera page). `scripts/teleop status` says when
+  one is running.
+
+To give someone access: invite them to the GitHub repository (it is private), and have their SSH public key added
+to the lab account on linux2 by whoever manages it. They then follow this page from "What you need".
+
 ## Then
 
-Read `teleop_usage.md` (before a session, the controls, and troubleshooting), then run:
+Read `teleop_usage.md` (xArm) or `yam_teleop.md` (YAM): before a session, the controls, and troubleshooting. Then:
 
 ```
-scripts/teleop record
+scripts/teleop record          # xArm
+scripts/teleop yam-sim         # YAM, simulated: nothing moves; then scripts/teleop yam-record
 ```
 
 ## Rules of the rig
 
-- The arm is shared and safety-sensitive. Someone must be at the rig with the physical stop in reach,
-  nobody near the arm, and no other program commanding it (for example a policy started from the lab's
-  stepper page).
+- The arms are shared and safety-sensitive. Someone must be at the rig with the physical stop (xArm) or the
+  e-stop (YAM) in reach, nobody near the arms, and no other program commanding them (for example a policy
+  started from the lab's stepper page, or another agent on the lab host).
 - The software never clears controller errors and never changes the controller's safety settings (fence,
   reduced mode). Those are lab-side decisions.
-- Only one session at a time: there is one arm. `status` says when a session is already running.
+- Only one session at a time. `status` says when a session is already running.
+- The YAM arms go limp and drop when their program or the power stops; a YAM session lowers them to rest first
+  (`yam_teleop.md`).
 - Ctrl-C and `scripts/teleop stop` are software stops, not the physical stop.
