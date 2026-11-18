@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="iPhone video recordings from each teleoperation episode.">
+  <title>Episode videos · {{SESSION}}</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/gallery.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#episodes">Skip to videos</a>
+  <main>
+    <header>
+      <div>
+        <h1>Episode videos</h1>
+        <p class="session">{{SESSION}}</p>
+      </div>
+      <p class="summary">{{COUNT}} episodes <span aria-hidden="true">/</span> iPhone view</p>
+    </header>
+    <section id="episodes" class="gallery" aria-label="Episode videos">
+      {{CARDS}}
+    </section>
+    <footer>view_iphone.mp4 · Select a video to play. Use the player controls to seek or enter fullscreen.</footer>
+  </main>
+</body>
+</html>

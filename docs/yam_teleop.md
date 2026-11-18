@@ -4,7 +4,7 @@ Two I2RT YAM arms on the lab host (CAN links `can_left`, `can_right`), driven by
 hand drives the left arm, the right hand the right arm. It shares the Quest side, the recorder and the launcher with
 the xArm teleop, and nothing else: the YAM code never imports the xArm code, and the reverse (a test checks).
 
-**Status (2026-11-18): works on the real arms and records demos**, at half the simulation's speed limits. First run
+**Status (2026-11-18): works on the real arms and records demos**, so far at the slowest speed level (7.5 cm/s). First run
 on the arms 2026-11-17; tuned from those runs (tracking check, link stalls, base distance). Still rough: see "Known
 limitations" below.
 
@@ -52,7 +52,8 @@ wrist webcams. Click a picture to turn it upside down. The 3D view (http://127.0
 | **Enter** (terminal) | Acknowledges a latched problem (after you looked at it) |
 | **Ctrl-C** (terminal) | Ends the session: both arms are lowered to rest, then switched off |
 
-Your hand's movement is scaled to 2/3 at the tool; its rotation is 1:1. The tool moves at most 7.5 cm/s.
+Your hand's movement is scaled by `YAM_SCALE` (2/3) at the tool; its rotation is 1:1. The tool's top speed is the speed
+level (`YAM_SPEED`, below).
 
 The terminal prints a line whenever something changes, for example
 `left: ACTIVE following grip=following | right: ARMED idle grip=holds ... | ep=recording saved=1`.
@@ -73,7 +74,7 @@ The second word is the arm: `following`, `held` (a limit stopped it; the notes i
 |---|---|
 | `speed limit`, `waiting for the arm` | Nothing: you moved faster than the arm may; it catches up |
 | `at the box edge`, `out of reach` | Each arm has a box it may move in; move back inside |
-| `too close: ...` | The two arms (or an arm and the table) are within 1 cm; the arm refuses moves that bring them closer, and follows moves that take them apart |
+| `too close: ...` | The two arms, or an arm and the table, are within 1-3 cm (by speed level); the arm refuses moves that bring them closer, and follows moves that take them apart |
 | `joint N at its end stop` | That joint is at its limit; turn or move the other way |
 | `joint N would swing ... at once (another arm posture)` | The pose needs a wrist joint to flip; refused. Turn your hand back a little |
 | `grip=waiting for the trigger to match ...` | After you grip again, the gripper waits until the trigger matches what it holds, so nothing is dropped. The note says how far to press or release |
@@ -116,7 +117,8 @@ midway between the two bases, x away from the operator, y to the left, z up. Onl
 
 - **Wrist flips are refused.** Some hand angles need a wrist joint to swing 20-70 degrees at once; the arm waits
   until your hand turns back (about 28 s per arm in a 5-minute session on 2026-11-17).
-- **Half speed** (the tool at most 7.5 cm/s), kept on purpose for now.
+- **Speed**: the real arms have run only at 7.5 cm/s so far. The faster levels pass every check in the simulation and
+  are to be tried on the arms one level at a time (`YAM_SPEED`, below).
 - **Slow links pause the arms.** Over a slow connection to the lab host, short stalls show as `STALLED` (it resumes
   by itself); a stall over 8 s ends the session. A wired connection helps.
 - **The wrist webcams** are not recorded, and their pictures come at about 1.5 per second (from the lab host's
@@ -137,7 +139,25 @@ midway between the two bases, x away from the operator, y to the left, z up. Onl
 
 ## Settings
 
-In `config/teleop_session.conf` (shared with the xArm): `OPERATOR_YAW`, `DEMO_MAX_MIN`, `MIN_FREE_GB`. In the
+In `config/teleop_session.conf` (shared with the xArm): `YAM_SPEED`, `YAM_SCALE`, `OPERATOR_YAW`, `DEMO_MAX_MIN`,
+`MIN_FREE_GB`.
+
+`YAM_SPEED` is the speed level, named by the tool's top speed in cm/s (the simulation uses the same level, so you can
+practise at it first):
+
+| Level | Tool | Turn | Joints | Gripper | Gap kept (arms, table) | State |
+|---|---|---|---|---|---|---|
+| 7.5 | 7.5 cm/s | 22 deg/s | 0.75 rad/s | 1.0/s | 1 cm | used on the arms since 2026-11-17 |
+| 15 | 15 cm/s | 45 deg/s | 1.5 rad/s | 2.0/s | 1 cm | simulation checks pass; not tried on the arms |
+| 30 | 30 cm/s | 90 deg/s | 2.5 rad/s | 3.0/s | 2 cm | simulation checks pass; not tried on the arms |
+| 50 | 50 cm/s | 150 deg/s | 3.5 rad/s | 4.0/s | 3 cm | simulation checks pass; not tried on the arms |
+
+Go up one level at a time, with `yam-try` (no recording), small movements first, someone at the e-stop. The faster
+levels keep a wider gap (between the arms, and from an arm to the table; fingertips may still touch the table)
+because a real arm trails its command (by 0.04-0.12 s at 7.5 cm/s: up to 5 cm at
+50 cm/s) and the clearance is checked on the commands. A reaching human hand moves at roughly 0.5-1 m/s.
+
+In the
 environment: `YAM_VIEWS` (cameras on the page), `YAM_RECORD_CAMS` (cameras recorded). Where the arms stand, their
 boxes and every limit: `scripts/yam_setup.py`. The arms' measured gripper limits and rest poses:
 `/home/dev/yam/yam_hardware.json` on the lab host (written in the bring-up; a session refuses to start without it).
@@ -190,25 +210,25 @@ Tests on any PC: `tests/test_yam_control.py`, `test_yam_teleop.py`, `test_yam_re
 1. A hand target that jumps more than 8 cm or 40 deg in one step is a tracking glitch: the arm is let go (release
    and grip again).
 2. The target is held inside the arm's box (an arm that starts outside may come back in, never go further out),
-   moves at most 0.15 m/s and 45 deg/s (half that on the real arms), and never runs more than 4 cm / 20 deg ahead
+   moves at most at the speed level's tool and turn speeds, and never runs more than 4 cm / 20 deg ahead
    of the arm.
 3. The IK solves from the last command; a target out of reach is followed as far as it goes.
 4. Joints stay 0.05 rad off their end stops; a step that would swing a joint more than 0.35 rad at once (the IK
-   switching to another arm posture) is refused; faster than 1.5 rad/s (0.75 on the real arms) is slowed, keeping
+   switching to another arm posture) is refused; faster than the level's joint speed is slowed, keeping
    the path.
-5. The two arms are checked together: no move may bring the arms within 1 cm of each other, an arm (other than its
-   base) within 1 cm of the table, a fingertip into the table, or an arm into itself, unless it moves them apart.
+5. The two arms are checked together: no move may bring the arms within 1-3 cm (by level) of each other, an arm (other than its
+   base) that close to the table, a fingertip into the table, or an arm into itself, unless it moves them apart.
    The other arm still moves if its own move is fine.
 6. No fresh hand input (older than 400 ms) for an engaged arm: it is let go and stays where it is. If that was a
    link stall and the side grip stayed held, it resumes within 2 s, re-anchored where hand and tool are then.
 7. Real arms only: a joint measured further from its command than 0.10 rad plus 0.25 s of its fastest commanded
    speed in the last 0.5 s stops both arms where they are, latched (Enter clears it). Measured 2026-11-17: real
    joints trail their command by 0.04-0.12 s and stayed within half of this allowance.
-8. The gripper (opening 0 = closed, 1 = open, I2RT's convention) moves at most 2.0 per second (1.0 on the real
-   arms).
+8. The gripper (opening 0 = closed, 1 = open, I2RT's convention) moves at most the level's gripper speed.
 9. Only one program may have the real arms open (`/tmp/yam_real_arms.lock` on the lab host).
 
-All the numbers are in `yam_setup.py`; the real arms' halving is `REAL_FACTOR` in `yam_live.py`.
+All the numbers are in `yam_setup.py` (`Limits`, and `SPEEDS` for the levels). `yam_sim_check.py --speed <level>`
+checks one level.
 
 ## The real arms: what the hardware does
 

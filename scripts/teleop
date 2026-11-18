@@ -15,7 +15,7 @@
 #   scripts/teleop studio             open UFactory Studio, the arm's own control page (clearing errors, turning joints)
 #   scripts/teleop yam-sim            both controllers drive two SIMULATED YAM arms on the lab host (no hardware; see
 #                                     docs/yam_teleop.md); watch them at http://127.0.0.1:18767/
-#   scripts/teleop yam-try            the same with the REAL YAM arms: THEY MOVE (half speed; go/no-go questions first;
+#   scripts/teleop yam-try            the same with the REAL YAM arms: THEY MOVE (YAM_SPEED in the settings; go/no-go questions first;
 #                                     needs the bring-up recorded on the lab host). stop / Ctrl-C lower them to rest
 #   scripts/teleop yam-record         yam-try recording demos (right thumb A starts / saves, B discards; the RealSense)
 #
@@ -107,7 +107,8 @@ Only here: logs/ (session logs), episodes/ (recorded demos, with the raw camera 
 folders (earlier copies, and files that sync moved out because the repository no longer has them).
 TXT
 }
-yam_free() {   # one YAM program at a time on the lab host (yam_live.py also locks the real arms itself)
+yam_free() {   # one YAM program at a time on the lab host (yam_live.py also locks the real arms itself); a valid speed level
+  case "${YAM_SPEED:-7.5}" in 7.5|15|30|50) ;; *) die "YAM_SPEED=${YAM_SPEED} in the settings is not a speed level (7.5, 15, 30 or 50 cm/s)";; esac
   lab "pgrep -f '[s]cripts/yam_live.py' > /dev/null" && die "a YAM session is already running on the lab host (maybe someone else's): it must end first (scripts/teleop status shows it)"
   return 0; }
 lab_version() { lab "cat ~/$LAB_DIR/SYNCED_FROM.txt 2>/dev/null"; }   # e.g. "452b17c 2026-11-02, installed by dev@pc on ..."
@@ -424,7 +425,7 @@ case "${1:-}" in
     lab "pgrep -f '[y]am_live.py|[l]ive_teleop.py' > /dev/null" && die "a teleop program is already running on the lab host"
     echo
     [ "$1" = yam-record ] && echo && echo "Demos are recorded on the lab host (episodes/<session>/): right thumb A starts one and saves it, B discards it."
-    echo "THE YAM ARMS WILL MOVE: both arms, at half the simulation's speed limits (the tool at most 7.5 cm/s), until Ctrl-C."
+    echo "THE YAM ARMS WILL MOVE: both arms, at speed level ${YAM_SPEED:-7.5} (the tool at most ${YAM_SPEED:-7.5} cm/s), hand scale ${YAM_SCALE:-0.667}, until Ctrl-C."
     echo "Ending (Ctrl-C, scripts/teleop stop, a lost connection, a fault) lowers both arms to rest before the motors are switched off."
     echo "If the program or the power stops, the motors go limp and the ARMS DROP. All of this must be true:"
     echo "  - someone is at the arms RIGHT NOW, agrees, and has the YAM e-stop in reach"
@@ -432,7 +433,7 @@ case "${1:-}" in
     echo "  - nothing else will command the YAM arms (no other session, agent or program)"
     echo "  - both arms rest folded on their bases (a refused start-up switches them off again: they go limp)"
     echo "  - you stand behind the arms, both facing away from you; both controllers are on"
-    CONFIRM_TEXT="Operator $(id -un)@$(hostname -s) at the terminal prompt of scripts/teleop $1 on $(date '+%Y-%m-%d %H:%M:%S %Z'): both real YAM arms, half speed, until Ctrl-C. Shown as conditions that must all be true: someone is at the arms right now, agrees, and has the YAM e-stop in reach; nobody is near the arms and nothing is under them that a dropping arm could hit; nothing else will command the YAM arms; both arms rest folded on their bases; the operator stands behind the arms, both facing away, both controllers on."
+    CONFIRM_TEXT="Operator $(id -un)@$(hostname -s) at the terminal prompt of scripts/teleop $1 on $(date '+%Y-%m-%d %H:%M:%S %Z'): both real YAM arms, speed level ${YAM_SPEED:-7.5} cm/s, hand scale ${YAM_SCALE:-0.667}, until Ctrl-C. Shown as conditions that must all be true: someone is at the arms right now, agrees, and has the YAM e-stop in reach; nobody is near the arms and nothing is under them that a dropping arm could hit; nothing else will command the YAM arms; both arms rest folded on their bases; the operator stands behind the arms, both facing away, both controllers on."
     ask_yes "Is all of this true? Start?"
     rig_status; RELOAD=0; ensure_cameras 21600 "$YAM_VIEWS"; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')"
     n=$([ "$1" = yam-record ] && echo yamrec || echo yam)_$(date +%Y%m%d-%H%M%S); echo "$n" > "$R/current_yam_session"; echo "$CONFIRM_TEXT" > "$D/confirm_$n.txt"

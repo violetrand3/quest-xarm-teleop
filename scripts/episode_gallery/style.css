@@ -1,0 +1,39 @@
+:root {
+  color-scheme: dark;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #f1f2ef;
+  background: #161916;
+  accent-color: #b4d9a2;
+  font-synthesis: none;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { max-width: 1280px; padding: 48px 32px 28px; margin: 0 auto; }
+header { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 32px; }
+h1 { font-size: clamp(1.75rem, 4vw, 2.4rem); font-weight: 600; letter-spacing: -0.03em; line-height: 1.15; margin: 0 0 10px; }
+.session { margin: 0; color: #b3bcb0; font-size: 0.9rem; overflow-wrap: anywhere; }
+.summary { margin: 0 0 2px; font-size: 0.9rem; color: #b3bcb0; white-space: nowrap; }
+.summary span { margin: 0 8px; color: #a2ae9d; }
+.gallery { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 36px 28px; }
+article { min-width: 0; }
+video { display: block; width: 100%; height: auto; aspect-ratio: 4 / 3; background: #090b09; border-radius: 8px; object-fit: contain; }
+.episode-info { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 13px; }
+h2 { font-size: 1rem; font-weight: 550; margin: 0 0 5px; }
+.episode-info p { margin: 0; color: #b3bcb0; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+a { color: #b4d9a2; text-underline-offset: 4px; }
+.episode-info a { display: inline-flex; align-items: center; gap: 7px; font-size: 0.85rem; min-height: 44px; padding: 8px 0 8px 8px; }
+a:hover { color: #d8f5c9; }
+:focus-visible { outline: 2px solid #b4d9a2; outline-offset: 5px; }
+::selection { background: #b4d9a2; color: #161916; }
+.video-error { color: #f2bb9d; font-size: 0.9rem; line-height: 1.5; }
+.empty { color: #b3bcb0; line-height: 1.6; }
+footer { margin-top: 42px; border-top: 1px solid #3b4338; padding-top: 20px; color: #b3bcb0; font-size: 0.8rem; line-height: 1.6; }
+.skip-link { position: fixed; z-index: 2; top: 12px; left: 12px; padding: 12px 18px; background: #f1f2ef; color: #161916; transform: translateY(-160%); }
+.skip-link:focus { transform: translateY(0); }
+.skip-link:hover { color: #161916; }
+@media (max-width: 720px) {
+  main { padding: 28px 18px 24px; }
+  header { align-items: flex-start; flex-direction: column; gap: 14px; margin-bottom: 24px; }
+  .gallery { grid-template-columns: 1fr; gap: 28px; }
+  footer { margin-top: 32px; }
+}

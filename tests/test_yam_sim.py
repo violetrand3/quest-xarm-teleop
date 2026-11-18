@@ -23,19 +23,22 @@ class SimScenarioTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         import yam_sim_check
-        from yam_setup import ARMS, Limits
+        from yam_setup import ARMS, SPEEDS, limits_at
         from yam_sim import SimYamPair
 
-        pair = SimYamPair(ARMS, Limits())
-        try:
-            cls.results = yam_sim_check.scenarios(pair)
-        finally:
-            pair.close()
+        cls.results = {}
+        for speed in SPEEDS:  # every speed level
+            lim = limits_at(speed)
+            pair = SimYamPair(ARMS, lim)
+            try:
+                cls.results[speed] = yam_sim_check.scenarios(pair, lim)
+            finally:
+                pair.close()
 
-    def test_every_scenario_passes(self):
-        failed = [f"{name}: {why}" for name, ok, why in self.results if not ok]
+    def test_every_scenario_passes_at_every_speed_level(self):
+        failed = [f"{speed:g} cm/s, {name}: {why}" for speed, res in self.results.items() for name, ok, why in res if not ok]
         self.assertFalse(failed, "\n".join(failed))
-        self.assertGreaterEqual(len(self.results), 10)
+        self.assertTrue(all(len(res) >= 10 for res in self.results.values()))
 
 
 

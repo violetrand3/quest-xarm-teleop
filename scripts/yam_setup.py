@@ -4,13 +4,14 @@ World frame: origin on the table top midway between the two arm bases; x forward
 away from the operator), y to the operator's left, z up. Metres and radians throughout the YAM code.
 
 Placement (2026-11-17, from the operator): both bases stand on the table, both facing away from the operator, who
-stands behind them; about 0.35 m apart centre to centre (the operator's ESTIMATE: measure it). Assumed: the arms
+stands behind them; 0.50 m apart centre to centre (measured by the operator 2026-11-17). Assumed: the arms
 are the standard YAM (I2RT's default). The gripper, LINEAR_4310, was confirmed by the operator on
 2026-11-17. The operator's left hand drives the left arm (can_left), the right hand the right arm (can_right).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 from dataclasses import dataclass
@@ -47,6 +48,26 @@ class Limits:
     track_lag_s: float = 0.25  # ... plus this many seconds of the joint's fastest commanded speed in the last 0.5 s: a
     # moving real joint trails its command. Measured 2026-11-17 (run yam_20261117-180314, 86 s, half speed): still
     # within 0.044 rad, lag 0.04-0.12 s per joint, at worst 51% of this allowance (right joint 5). Was 0.15 + 0.3 s.
+
+
+# Speed levels, named by the tool's top speed in cm/s: (tool m/s, tool turn deg/s, joint rad/s, gripper opening/s,
+# clearance m). 7.5 is what the real arms ran at from 2026-11-17 (half of 15, the simulation's); the faster ones
+# keep a wider gap between the arms, because a real arm trails its command (0.04-0.12 s measured at 7.5, i.e. up to
+# 5 cm at 50 cm/s) and the clearance is checked on the commands. A human hand reaching for something moves at
+# roughly 0.5-1 m/s; the operator's hand reached 0.21 m/s (95th percentile) and 0.43 m/s (99th) while engaged, held
+# back by the 7.5 cm/s limit 37% of the time (5 demos, 2026-11-17). Each level must be tried in the simulation and
+# then on the arms, one level at a time, before the next.
+SPEEDS = {7.5: (0.075, 22.5, 0.75, 1.0, 0.01), 15: (0.15, 45.0, 1.5, 2.0, 0.01),
+          30: (0.30, 90.0, 2.5, 3.0, 0.02), 50: (0.50, 150.0, 3.5, 4.0, 0.03)}  # fmt: skip
+
+
+def limits_at(speed_cm_s: float, base: Limits | None = None) -> Limits:
+    """The limits for one of the SPEEDS levels; every other limit stays as in Limits."""
+    if speed_cm_s not in SPEEDS:
+        raise ValueError(f"speed {speed_cm_s:g} cm/s is not a level; the levels are {', '.join(f'{s:g}' for s in SPEEDS)}")
+    v, w, j, g, c = SPEEDS[speed_cm_s]
+    return dataclasses.replace(base or Limits(), tool_speed=v, tool_rot_speed=math.radians(w), joint_speed=j,
+                               grip_speed=g, clearance=c)  # fmt: skip
 
 
 BASE_SPACING = 0.50  # m, centre to centre (measured by the operator 2026-11-17; was the estimate 0.35)

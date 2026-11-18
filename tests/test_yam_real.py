@@ -123,11 +123,22 @@ class LiveProgramTests(unittest.TestCase):
             self.assertIsNotNone(again)
             again.close()
 
-    def test_first_runs_are_at_half_speed(self):
+    def test_the_real_arms_default_to_the_slowest_level_and_refuse_other_speeds(self):
         import yam_live
+        from yam_setup import limits_at
 
-        h = yam_live.first_run_limits(LIM)
-        self.assertEqual((h.tool_speed, h.joint_speed), (LIM.tool_speed / 2, LIM.joint_speed / 2))
+        self.assertEqual(yam_live.REAL_SPEED, 7.5)
+        slow = limits_at(7.5)
+        self.assertEqual((slow.tool_speed, slow.joint_speed, slow.clearance), (0.075, 0.75, 0.01))
+        self.assertEqual(limits_at(15).tool_speed, LIM.tool_speed)  # the simulation's level is Limits() itself
+        fast = limits_at(50)
+        self.assertGreater(fast.clearance, slow.clearance)
+        with self.assertRaises(ValueError):
+            limits_at(40)
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertEqual(yam_live.main(["--arms", "sim", "--speed", "40"]), 2)
+        self.assertIn("not a level", err.getvalue())
 
 
 if __name__ == "__main__":

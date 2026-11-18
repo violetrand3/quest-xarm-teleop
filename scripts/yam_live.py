@@ -24,6 +24,7 @@ import argparse
 import dataclasses
 import fcntl
 import json
+import math
 import os
 import signal
 import sys
@@ -39,12 +40,12 @@ from quest_stream_receiver import DiagnosticServer
 from teleop_input import ChannelReceiverState
 from yam_control import BimanualControl
 from yam_input import BimanualChannel
-from yam_setup import ARMS, Limits
+from yam_setup import ARMS, SPEEDS, limits_at
 from yam_teleop import YamTeleop
 
 WORK = [0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0]  # simulation start: elbow bent, gripper forward and open
 PORT, VIEW_PORT = 28766, 28767  # loopback on the lab host; not the xArm teleop's 28765, not 8765
-REAL_FACTOR = 0.5  # real arms: every speed limit halved until the arms have been seen to follow smoothly
+REAL_SPEED = 7.5  # cm/s, the real arms' default speed level (yam_setup.SPEEDS); the simulation's is 15
 ARMS_LOCK = Path("/tmp/yam_real_arms.lock")  # held while this program has the real arms open (any copy, any session)
 
 
@@ -61,11 +62,6 @@ def take_arms_lock(path: Path = ARMS_LOCK):
     return f
 
 
-def first_run_limits(lim: Limits) -> Limits:
-    return dataclasses.replace(lim, tool_speed=lim.tool_speed * REAL_FACTOR, tool_rot_speed=lim.tool_rot_speed * REAL_FACTOR,
-                               joint_speed=lim.joint_speed * REAL_FACTOR, grip_speed=lim.grip_speed * REAL_FACTOR)  # fmt: skip
-
-
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--arms", choices=("sim", "real"), default="sim")
@@ -75,6 +71,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--view-port", type=int, default=VIEW_PORT)
     ap.add_argument("--scale", type=float, default=0.667)
+    ap.add_argument("--speed", type=float, help=f"speed level, the tool's top speed in cm/s: {', '.join(f'{s:g}' for s in SPEEDS)} "
+                    f"(default {REAL_SPEED:g} on the real arms, 15 in the simulation)")  # fmt: skip
     ap.add_argument("--operator-yaw", type=float, default=0.0)
     ap.add_argument("--input-fresh-ms", type=float, default=400.0)
     ap.add_argument("--duration", type=float, default=0.0, help="end after this many seconds (0 = until stopped)")
@@ -103,7 +101,13 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     banner = "YAM REAL ARMS (THE ARMS MOVE)" if real else "YAM SIMULATION (no hardware)"
 
-    lim = first_run_limits(Limits()) if real else Limits()
+    speed = a.speed if a.speed is not None else (REAL_SPEED if real else 15)
+    if speed not in SPEEDS:
+        print(f"error: --speed {speed:g} is not a level ({', '.join(f'{s:g}' for s in SPEEDS)}); nothing was opened", file=sys.stderr)
+        return 2
+    lim = limits_at(speed)
+    print(f"speed level {speed:g} cm/s: tool {lim.tool_speed:.3f} m/s, {math.degrees(lim.tool_rot_speed):.0f} deg/s, "
+          f"joints {lim.joint_speed:g} rad/s, arms kept {lim.clearance * 100:.0f} cm apart; hand scale {a.scale:g}", flush=True)
     if real:
         from yam_real import GRIP_REST_MAX, HARDWARE_FILE, GripperStartError, HardwareFileError, RealYamPair
 

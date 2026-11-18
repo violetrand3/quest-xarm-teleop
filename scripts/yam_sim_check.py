@@ -71,31 +71,30 @@ def moved(pose, dx=0.0, dy=0.0, dz=0.0):
     return ((pose[0][0] + dx, pose[0][1] + dy, pose[0][2] + dz), pose[1])
 
 
-def scenarios(pair) -> list[tuple[str, bool, str]]:
+def scenarios(pair, lim: Limits) -> list[tuple[str, bool, str]]:
     out = []
-    lim = Limits()
     v = lim.tool_speed * lim.dt
 
-    r = Run(pair)
+    r = Run(pair, lim=lim)
     goal = moved(r.start["left"], dx=0.06)
     r.go(75, lambda k: {"left": Request(goal)})
     e = dist(r.tool("left")[0], goal[0])
     out.append(("follows a 6 cm move", e < 0.002 and r.max_step("left") <= v + 1e-4,
                 f"ends {e * 1000:.1f} mm from the target; fastest step {r.max_step('left') * 1000:.1f} mm (limit {v * 1000:.1f})"))
 
-    r = Run(pair)
+    r = Run(pair, lim=lim)
     r.go(200, lambda k: {"left": Request(moved(r.start["left"], dz=0.5))})
     z = r.tool("left")[0][2]
     out.append(("stops at the box ceiling", abs(z - LEFT.box[5]) < 0.003 and "at the box edge" in r.notes("left"),
                 f"grasp point at z {z * 1000:.0f} mm, box top {LEFT.box[5] * 1000:.0f} mm"))
 
-    r = Run(pair)
+    r = Run(pair, lim=lim)
     r.go(5, lambda k: {"left": Request(moved(r.start["left"], dx=0.004 * k + (0.12 if k == 4 else 0)))})
     st = r.reports[-1]["left"]
     out.append(("a 12 cm jump in one step lets the arm go", st.state == "let go" and not r.c.engaged["left"] and r.max_step("left") <= v + 1e-4,
                 f"state {st.state}: {st.notes[0] if st.notes else ''}"))
 
-    r = Run(pair)
+    r = Run(pair, lim=lim)
     r.go(150, lambda k: {"left": Request(moved(r.start["left"], dy=-0.62)), "right": Request(moved(r.start["right"], dy=0.62))})
     cross = [w for p in r.problems for w in p if w.startswith("left") and "right" in w and "and the table" not in w]
     gap = dist(r.tool("left")[0], r.tool("right")[0])
@@ -104,13 +103,13 @@ def scenarios(pair) -> list[tuple[str, bool, str]]:
 
     low = [dataclasses.replace(a, box=a.box[:4] + (-0.20, a.box[5])) for a in ARMS]  # box floor below the table
     down = lambda work: ((0.30, work[0][1], 0.15), DOWN)  # noqa: E731  gripper pointing down, 15 cm up (pointing down it reaches ~20 cm at most)
-    r = Run(pair, arms=low, start=down)
+    r = Run(pair, arms=low, start=down, lim=lim)
     r.go(250, lambda k: {"left": Request(moved(r.start["left"], dz=-0.4))})
     table = [w for p in r.problems for w in p if "table" in w]
     out.append(("stops above the table when the box allows lower", not table and "too close" in r.notes("left"),
                 f"grasp point stopped at z {r.tool('left')[0][2] * 1000:.0f} mm"))
 
-    r = Run(pair)
+    r = Run(pair, lim=lim)
     r.go(10, lambda k: {"left": Request(moved(r.start["left"], dx=0.01))})
     before = list(r.c.q["left"])
     r.go(10, lambda k: {"left": Request(None)})
@@ -118,7 +117,7 @@ def scenarios(pair) -> list[tuple[str, bool, str]]:
                 "arm commands unchanged after the input stopped"))
 
     big = [dataclasses.replace(a, box=(-1, 1, -1, 1, 0.03, 1)) for a in ARMS]
-    r = Run(pair, arms=big)
+    r = Run(pair, arms=big, lim=lim)
     r.go(400, lambda k: {"left": Request(moved(r.start["left"], dx=0.6))})
     lo_hi = pair.joint_ranges("left")
     inside = all(lo - 1e-9 <= q <= hi + 1e-9 for rep in r.reports for q, (lo, hi) in zip(rep["left"].q[:6], lo_hi))
@@ -129,22 +128,22 @@ def scenarios(pair) -> list[tuple[str, bool, str]]:
                 f"stopped {dist(r.tool('left')[0], moved(r.start['left'], dx=0.6)[0]) * 1000:.0f} mm short; joints inside their ranges; "
                 f"fastest joint step {math.degrees(fastest):.1f} deg (limit {math.degrees(lim.joint_speed * lim.dt):.1f})"))
 
-    r = Run(pair)
+    r = Run(pair, lim=lim)
     turned = (r.start["left"][0], q_mul(r.start["left"][1], q_from_rotvec((0, 0, math.radians(60)))))  # about the gripper's own axis
-    r.go(100, lambda k: {"left": Request(turned)})
+    r.go(int(math.radians(60) / (lim.tool_rot_speed * lim.dt)) + 20, lambda k: {"left": Request(turned)})  # enough steps at this level
     angles = [q_angle(a[1], b[1]) for a, b in zip([r.start["left"]] + [pair.fk("left", x["left"].q[:6]) for x in r.reports],
                                                      [pair.fk("left", x["left"].q[:6]) for x in r.reports])]  # fmt: skip
     w = math.degrees(max(angles)) / lim.dt
     out.append(("turns at the turn speed limit", q_angle(r.tool("left")[1], turned[1]) < math.radians(1) and w <= math.degrees(lim.tool_rot_speed) * 1.05,
                 f"fastest turn {w:.0f} deg/s (limit {math.degrees(lim.tool_rot_speed):.0f})"))
 
-    r = Run(pair)
-    r.go(30, lambda k: {"left": Request(r.start["left"], grip=0.0)})
+    r = Run(pair, lim=lim)
+    r.go(int(OPEN / (lim.grip_speed * lim.dt)) + 5, lambda k: {"left": Request(r.start["left"], grip=0.0)})  # enough steps at this level
     g = [x["left"].q[6] for x in r.reports]
     out.append(("gripper closes at its speed limit", g[-1] == 0.0 and max(a - b for a, b in zip([OPEN] + g, g)) <= lim.grip_speed * lim.dt + 1e-9,
-                f"opening {OPEN} -> {g[-1]} in {g.index(0.0) + 1} steps"))
+                f"opening {OPEN} -> {g[-1]}" + (f" in {g.index(0.0) + 1} steps" if 0.0 in g else "")))
 
-    r = Run(pair)  # both arms reach toward the middle, then everything is lowered to rest
+    r = Run(pair, lim=lim)  # both arms reach toward the middle, then everything is lowered to rest
     r.go(150, lambda k: {"left": Request(moved(r.start["left"], dy=-0.3, dz=-0.1)), "right": Request(moved(r.start["right"], dy=0.3, dz=-0.1))})
     rest = {n: pair.rest(n) for n in pair.names}
     steps, done, worse = 0, False, []
@@ -162,12 +161,20 @@ def scenarios(pair) -> list[tuple[str, bool, str]]:
     return out
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    from yam_setup import SPEEDS, limits_at
     from yam_sim import SimYamPair
 
-    pair = SimYamPair(ARMS, Limits())
+    ap = argparse.ArgumentParser(description="drive the simulated arms through every safety rule")
+    ap.add_argument("--speed", type=float, default=15, help=f"speed level in cm/s: {', '.join(f'{s:g}' for s in SPEEDS)}")
+    lim = limits_at(ap.parse_args(argv).speed)
+    print(f"speed level: tool {lim.tool_speed:g} m/s, {math.degrees(lim.tool_rot_speed):.0f} deg/s, joints {lim.joint_speed:g} rad/s, "
+          f"clearance {lim.clearance * 1000:.0f} mm")
+    pair = SimYamPair(ARMS, lim)
     try:
-        results = scenarios(pair)
+        results = scenarios(pair, lim)
     finally:
         pair.close()
     for name, ok, why in results:
