@@ -18,8 +18,8 @@ msg() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$1"; }
 for p in $LINK_PORT $VIEW_PORT; do ss -ltn | grep -q "127.0.0.1:$p " && { msg "Port $p on this PC is in use (another session?). Ending."; exit 2; }; done
 
 finish() {   # $1 = notstarted: the lab program exited at start-up, so there is nothing to lower
-  # Exactly once: Ctrl-C can land while the loop below is in a $(...) subshell, which then runs this too, and a
-  # second stop signal while the arms are held (lowering could not finish) would let them go (they drop).
+  # Exactly once, and only in this script's main process (the traps below make sure of it): a second stop signal
+  # while the arms are held (lowering could not finish) would let them go (they drop).
   [ -e "$R/yam_finishing_$N" ] && return
   : > "$R/yam_finishing_$N"
   if [ "${1:-}" = notstarted ]; then
@@ -72,7 +72,9 @@ if ! grep -q "Listening on" "$D/yam_$N.console.txt"; then
   msg "NOT STARTED. The YAM program says: $(grep -v 'INFO' "$D/yam_$N.console.txt" | grep '^[A-Za-z]*Error\|^error' | tail -1 | cut -c1-300)"
   finish notstarted; exit 3
 fi
-trap 'trap "" INT TERM HUP PIPE; echo; msg "Ending the session." 2> /dev/null; finish 2> /dev/null; exit 130' INT TERM HUP PIPE
+# Ctrl-C reaches every process of the session. Only the main one ends it; a $(...) subshell that catches it just exits
+# (2026-11-18: one ran the ending while the main loop went on, and the ending was cut short; the arms were at rest).
+trap '[ "$BASHPID" = "$$" ] || exit 130; trap "" INT TERM HUP PIPE; echo; msg "Ending the session." 2> /dev/null; finish 2> /dev/null; exit 130' INT TERM HUP PIPE
 ssh "${SSHO[@]:1}" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
   -L 127.0.0.1:$LINK_PORT:127.0.0.1:28766 -L 127.0.0.1:$VIEW_PORT:127.0.0.1:28767 "$H" > "$R/yam_tunnel.txt" 2>&1 < /dev/null &
 echo $! > "$R/yam_tunnel.pid"; for i in $(seq 1 40); do ss -ltn | grep -q "127.0.0.1:$LINK_PORT " && break; sleep 0.25; done
@@ -91,7 +93,6 @@ msg "Left controller -> left arm, right controller -> right arm (switch the left
 [ "$REC" = 1 ] && msg "Demos: right thumb A starts one and, pressed again, saves it; B discards the one in progress."
 prev=""; seen_ep=0; TTY=0; { : < /dev/tty; } 2> /dev/null && TTY=1   # Enter is read only when there is a terminal
 while true; do
-  [ -e "$R/yam_finishing_$N" ] && exit 130   # the ending already ran (from Ctrl-C)
   if grep -q '^ENDING:\|^{"result"' "$D/yam_$N.console.txt" 2>/dev/null; then
     msg "The YAM program is ending by itself: $(sed -n 's/^ENDING: //p' "$D/yam_$N.console.txt" | head -1)"; finish; exit 0
   fi
