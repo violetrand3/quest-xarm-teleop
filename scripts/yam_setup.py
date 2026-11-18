@@ -49,7 +49,7 @@ class Limits:
     # within 0.044 rad, lag 0.04-0.12 s per joint, at worst 51% of this allowance (right joint 5). Was 0.15 + 0.3 s.
 
 
-BASE_SPACING = 0.35  # m, centre to centre (estimate, 2026-11-17)
+BASE_SPACING = 0.50  # m, centre to centre (measured by the operator 2026-11-17; was the estimate 0.35)
 # Each box reaches 0.10 m past the middle into the other arm's side; the clearance check keeps the arms apart there.
 LEFT = ArmSetup("left", "can_left", (0.0, BASE_SPACING / 2, 0.0), 0.0, (0.10, 0.55, -0.10, BASE_SPACING / 2 + 0.45, 0.03, 0.55))
 RIGHT = ArmSetup("right", "can_right", (0.0, -BASE_SPACING / 2, 0.0), 0.0, (0.10, 0.55, -BASE_SPACING / 2 - 0.45, 0.10, 0.03, 0.55))

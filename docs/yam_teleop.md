@@ -85,7 +85,7 @@ All the numbers are in `yam_setup.py`. They are first guesses, to be tuned in st
 
 - Arm model: the standard YAM (I2RT's default). The gripper, LINEAR_4310, was confirmed on 2026-11-17.
 - Placement: both bases on the table, both facing away from the operator, who stands behind them (confirmed);
-  about 0.35 m apart centre to centre (an estimate, 2026-11-17: measure it and set BASE_SPACING in
+  0.50 m apart centre to centre (measured by the operator 2026-11-17; BASE_SPACING in
   `yam_setup.py`). The boxes follow from it.
 
 ## The real arms (`scripts/teleop yam-try`): NOT RUN YET
