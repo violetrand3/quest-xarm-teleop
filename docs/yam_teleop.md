@@ -74,7 +74,7 @@ The second word is the arm: `following`, `held` (a limit stopped it; the notes i
 |---|---|
 | `speed limit`, `waiting for the arm` | Nothing: you moved faster than the arm may; it catches up |
 | `at the box edge`, `out of reach` | Each arm has a box it may move in; move back inside. The box's floor is the table top: the fingertips may touch the table (to grasp something lying flat) but not press into it |
-| `too close: ...` | The two arms, or an arm and the table, are within 1-3 cm (by speed level); the arm refuses moves that bring them closer, and follows moves that take them apart |
+| `too close: ...` | The two arms, or an arm and the table, are within 1-3 cm (by speed level; the two grippers' fingertips may come within 1 cm of each other at every level); the arm refuses moves that bring them closer, and follows moves that take them apart |
 | `joint N at its end stop` | That joint is at its limit; turn or move the other way |
 | `wrist at its limit: following the position, the gripper angle N deg short` | Your hand turned further than the wrist can. The gripper still goes where your hand goes; only its angle stops short. Turn your hand back to get the angle back |
 | `would take the gripper away from the hand ...: held` | No pose the arm can reach is closer to your hand than where it is; the arm holds. Turn or move your hand back |
@@ -141,8 +141,9 @@ midway between the two bases, x away from the operator, y to the left, z up. Onl
 
 ## Settings
 
-In `config/teleop_session.conf` (shared with the xArm): `YAM_SPEED`, `YAM_SCALE`, `OPERATOR_YAW`, `DEMO_MAX_MIN`,
-`MIN_FREE_GB`.
+In `config/teleop_session.conf` (shared with the xArm): `YAM_SPEED`, `YAM_SCALE`, `YAM_VELOCITY_FF`, `OPERATOR_YAW`,
+`DEMO_MAX_MIN`, `MIN_FREE_GB`. `YAM_VELOCITY_FF=1` (the default) sends each position command with the speed that goes
+with it, so the motors follow without trailing; `0` sends positions only, as before 2026-11-19.
 
 `YAM_SPEED` is the speed level, named by the tool's top speed in cm/s (the simulation uses the same level, so you can
 practise at it first):
@@ -276,6 +277,11 @@ positions checked, each arm enabled holding its pose, both grippers calibrated, 
   sessions now allow 8 s (`--ack-timeout 8`; the xArm keeps 2 s). Stalls over 400 ms also let the arm go mid-motion
   (23 times in 5 minutes for one hand): hence the stall resume (rule 6).
 - "Too close" stops were frequent while the model had the bases 0.35 m apart (an estimate); measured 0.50 m.
+- Level 30 on the arms (2026-11-19, 20 min of demos): end stops and out of reach nearly gone; box edges 18% (the left
+  arm at the edge nearest the operator, 10 cm then, 11%), speed limits 22%, fingertips on the table 8%, the two arms'
+  fingertips within 2 cm 5%; the right wrist trailed up to 78% of the tracking allowance. Hence the velocity with each
+  command (I2RT's motor control brakes any movement whose velocity is commanded as 0), the box edge at 3 cm, and the 1 cm
+  fingertip gap. I2RT's command_joint_state is not used: it installs an all-zero command before taking its lock.
 - Level 15 on the arms (2026-11-18, 9 min): real joints within 58% of the tracking allowance. Engaged time spent at a
   joint end stop 28% (joint 4, the right wrist sat on its -94 deg limit over half the time), at the speed limit 26%,
   out of reach 24%, at a box edge 16%, the gripper waiting for the trigger 12%. Hence the position-first IK (rule 3)

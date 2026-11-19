@@ -203,7 +203,8 @@ class SimYamPair:
                 return f"{arm_b} fingertip pressing into the table" if dist < 0 else ""
             return f"{arm_b} {part_b} and the table" if dist < self.lim.clearance else ""
         if arm_a != arm_b:
-            return f"{arm_a} {part_a} and {arm_b} {part_b}" if dist < self.lim.clearance else ""
+            gap = self.lim.tip_gap if part_a in TIPS and part_b in TIPS else self.lim.clearance
+            return f"{arm_a} {part_a} and {arm_b} {part_b}" if dist < gap else ""
         fa, fb = f"{arm_a}/{part_a}", f"{arm_b}/{part_b}"
         if self.cm_parent.get(fa) == fb or self.cm_parent.get(fb) == fa:
             return ""

@@ -102,5 +102,74 @@ class RealPairStartTests(unittest.TestCase):
         self.assertTrue(made and all(a.closed for a in made))
 
 
+@unittest.skipUnless(HAVE_SIM, "needs I2RT's environment (MuJoCo, mink, i2rt): run on the lab host")
+class VelocityCommandTests(unittest.TestCase):
+    """yam_real._command_pos_vel against a stand-in with I2RT's command parts: NO HARDWARE."""
+
+    def robot(self):
+        import threading
+
+        import numpy as np
+
+        class Remap:
+            def to_robot_joint_pos_space(self, x):
+                return x
+
+            def to_robot_joint_vel_space(self, x):
+                return x
+
+        class Robot:
+            def __init__(self):
+                self._command_lock, self.remapper, self.motor_chain = threading.Lock(), Remap(), [0] * 7
+                self._kp, self._kd, self._commands, self.pos_only = np.full(7, 80.0), np.full(7, 5.0), None, None
+                self.held_lock_when_set = None
+
+            def _clip_robot_joint_pos_command(self, pos):
+                return np.clip(pos, -3.0, 3.0)
+
+            def _joint_to_motor_pos(self, x):
+                return x * 2.0  # stands for the linkage maps: the result must be what is commanded
+
+            def _joint_to_motor_vel(self, x):
+                return x * 2.0
+
+            def command_joint_pos(self, pos):
+                self.pos_only = pos
+
+            def __setattr__(self, k, v):
+                if k == "_commands" and v is not None:
+                    object.__setattr__(self, "held_lock_when_set", self._command_lock.locked())
+                object.__setattr__(self, k, v)
+
+        return Robot()
+
+    def test_position_and_velocity_are_set_together_under_the_lock(self):
+        import numpy as np
+        from yam_real import _command_pos_vel
+
+        r = self.robot()
+        _command_pos_vel(r, np.array([0.1, 1.0, 1.0, 0.0, 5.0, 0.0, 0.4]), np.array([0.5, 0, 0, 0, 0, 0, 0.0]))
+        c = r._commands
+        self.assertTrue(r.held_lock_when_set)  # never an all-zero command visible to the motor thread
+        self.assertEqual(list(c.pos), [0.2, 2.0, 2.0, 0.0, 6.0, 0.0, 0.8])  # clipped, then mapped
+        self.assertEqual(list(c.vel), [1.0, 0, 0, 0, 0, 0, 0.0])
+        self.assertEqual((list(c.kp), list(c.kd)), ([80.0] * 7, [5.0] * 7))  # the gains are not changed
+        self.assertIsNone(r.pos_only)
+
+    def test_an_i2rt_without_these_parts_gets_positions_only(self):
+        import numpy as np
+        from yam_real import _command_pos_vel
+
+        class Plain:
+            pos_only = None
+
+            def command_joint_pos(self, pos):
+                self.pos_only = pos
+
+        r = Plain()
+        _command_pos_vel(r, np.zeros(7), np.ones(7))
+        self.assertIsNotNone(r.pos_only)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -71,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--view-port", type=int, default=VIEW_PORT)
     ap.add_argument("--scale", type=float, default=0.667)
+    ap.add_argument("--no-velocity-ff", action="store_true", help="real arms: send positions only (as before 2026-11-19)")
     ap.add_argument("--speed", type=float, help=f"speed level, the tool's top speed in cm/s: {', '.join(f'{s:g}' for s in SPEEDS)} "
                     f"(default {REAL_SPEED:g} on the real arms, 15 in the simulation)")  # fmt: skip
     ap.add_argument("--operator-yaw", type=float, default=0.0)
@@ -118,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         try:
-            pair = RealYamPair(ARMS, lim, a.hardware_file or HARDWARE_FILE)
+            pair = RealYamPair(ARMS, lim, a.hardware_file or HARDWARE_FILE, velocity_ff=not a.no_velocity_ff)
         except HardwareFileError as e:
             print(f"error: {e}; nothing was opened", file=sys.stderr)
             return 2

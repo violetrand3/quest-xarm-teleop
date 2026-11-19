@@ -63,7 +63,7 @@ if [ "$REC" = 1 ]; then
   ARMS="$ARMS --record-dir episodes/$N --record-max-s $((${DEMO_MAX_MIN:-5} * 60)) --record-min-free-gb ${MIN_FREE_GB:-6}"
   for c in ${YAM_RECORD_CAMS//,/ }; do ARMS="$ARMS --record-cam $c=${LAB_CAMERA_STATUS%/api/status}/cam/$c"; done
 fi
-ssh "${SSHO[@]}" "$H" "cd ~/$LAB_DIR && mkdir -p logs && (nohup setsid $LAB_PY -u scripts/yam_live.py $ARMS --speed ${YAM_SPEED:-7.5} --scale ${YAM_SCALE:-0.667} --operator-yaw ${OPERATOR_YAW:-0} --log logs/yam_$N.jsonl > logs/yam_$N.console.txt 2>&1 < /dev/null & echo \$! > logs/yam_pid_$N)"
+ssh "${SSHO[@]}" "$H" "cd ~/$LAB_DIR && mkdir -p logs && (nohup setsid $LAB_PY -u scripts/yam_live.py $ARMS --speed ${YAM_SPEED:-7.5} --scale ${YAM_SCALE:-0.667} $([ "${YAM_VELOCITY_FF:-1}" = 0 ] && echo --no-velocity-ff) --operator-yaw ${OPERATOR_YAW:-0} --log logs/yam_$N.jsonl > logs/yam_$N.console.txt 2>&1 < /dev/null & echo \$! > logs/yam_pid_$N)"
 : > "$D/yam_$N.console.txt"
 ssh "${SSHO[@]}" "$H" "tail -n +1 -F ~/$L/yam_$N.console.txt 2>/dev/null" > "$D/yam_$N.console.txt" 2>/dev/null &
 echo $! > "$R/yam_tail.pid"

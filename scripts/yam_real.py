@@ -29,6 +29,7 @@ from typing import Any, Sequence
 import numpy as np
 from i2rt.robots.get_robot import get_yam_robot
 
+from yam_limits import joint_velocity
 from yam_setup import ArmSetup, HardwareFileError, Limits, load_hardware
 from yam_sim import N_ARM, SimYamPair
 
@@ -44,9 +45,12 @@ class GripperStartError(RuntimeError):
 class RealYamPair(SimYamPair):
     sim = False
 
-    def __init__(self, arms: Sequence[ArmSetup], lim: Limits, hardware_file: Path = HARDWARE_FILE, **kw: Any):
+    def __init__(self, arms: Sequence[ArmSetup], lim: Limits, hardware_file: Path = HARDWARE_FILE,
+                 velocity_ff: bool = True, **kw: Any):  # fmt: skip
         self.hw = load_hardware(hardware_file, [a.name for a in arms])
         self.robots = {}
+        self.velocity_ff = velocity_ff
+        self._last_cmd: dict[str, list[float]] = {}
         try:
             super().__init__(arms, lim, **kw)
         except BaseException:
@@ -75,7 +79,20 @@ class RealYamPair(SimYamPair):
     def rest(self, name: str) -> list[float]:
         return list(self.hw[name]["rest_q"])
 
-    def place(self, name: str, q7: Sequence[float]) -> None:
+    def command(self, name: str, q7: Sequence[float]) -> None:
+        """The position command, with the velocity that goes with it (yam_limits.joint_velocity): I2RT's motor control
+        is kp * (position error) + kd * (velocity error), so with the velocity left at 0 (command_joint_pos) the kd term
+        brakes every movement and the joint trails its command (up to 78% of the tracking allowance on the right wrist
+        at level 30, 2026-11-19). The gains are not changed."""
+        q = [float(v) for v in q7]
+        vel = joint_velocity(self._last_cmd.get(name), q, self.lim) if self.velocity_ff else [0.0] * len(q)
+        self._last_cmd[name] = q
+        if not any(vel):
+            self.robots[name].command_joint_pos(np.asarray(q, dtype=float))
+            return
+        _command_pos_vel(self.robots[name], np.asarray(q, dtype=float), np.asarray(vel, dtype=float))
+
+    def place(self, name: str, q7: Sequence[float]) -> None:  # noqa: D102
         raise RuntimeError("place() is for the simulation only")
 
     def close(self) -> None:
@@ -85,3 +102,25 @@ class RealYamPair(SimYamPair):
                 r.close()
             except Exception as e:  # close the other arm whatever happens to this one
                 print(f"closing an arm failed: {e}", flush=True)
+
+
+def _command_pos_vel(robot: Any, pos: np.ndarray, vel: np.ndarray) -> None:
+    """command_joint_pos (i2rt motor_chain_robot, read 2026-11-19) plus a velocity, all under the command lock.
+    Not I2RT's command_joint_state: it replaces the commands with an all-zero set (kp = kd = 0, no position hold) BEFORE
+    taking the lock, so the motor thread can pick that up for a cycle. Falls back to command_joint_pos (no velocity)
+    when this I2RT version does not have the parts used here."""
+    try:
+        clip, lock = robot._clip_robot_joint_pos_command, robot._command_lock
+        to_pos, to_vel, remap = robot._joint_to_motor_pos, robot._joint_to_motor_vel, robot.remapper
+        kp, kd, n = robot._kp, robot._kd, len(robot.motor_chain)
+        from i2rt.robots.motor_chain_robot import JointCommands
+    except (AttributeError, ImportError):
+        robot.command_joint_pos(pos)
+        return
+    pos = clip(pos)
+    with lock:
+        c = JointCommands.init_all_zero(n)
+        c.pos = to_pos(remap.to_robot_joint_pos_space(pos))
+        c.vel = to_vel(remap.to_robot_joint_vel_space(vel))
+        c.kp, c.kd = kp, kd
+        robot._commands = c

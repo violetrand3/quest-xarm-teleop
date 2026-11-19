@@ -146,12 +146,12 @@ class TargetLimiterTests(unittest.TestCase):
 
     def test_start_outside_the_box_stretches_it(self):
         t = TargetLimiter(LEFT.box, LIM)
-        notes = t.reset(pose(0.05, 0.3, 0.3))  # x min is 0.10
+        notes = t.reset(pose(0.0, 0.3, 0.3))  # x min is BOX_NEAR, 0.03
         self.assertTrue(notes)
-        s = t.step(pose(0.0, 0.3, 0.3), pose(0.05, 0.3, 0.3))
-        self.assertAlmostEqual(s.target[0][0], 0.05)  # may stay, not go further out
-        s = t.step(pose(0.06, 0.3, 0.3), pose(0.05, 0.3, 0.3))
-        self.assertGreater(s.target[0][0], 0.05)  # may come back in
+        s = t.step(pose(-0.05, 0.3, 0.3), pose(0.0, 0.3, 0.3))
+        self.assertAlmostEqual(s.target[0][0], 0.0)  # may stay, not go further out
+        s = t.step(pose(0.01, 0.3, 0.3), pose(0.0, 0.3, 0.3))
+        self.assertGreater(s.target[0][0], 0.0)  # may come back in
 
 
 class JointStepTests(unittest.TestCase):
@@ -175,6 +175,24 @@ class JointStepTests(unittest.TestCase):
         s = joint_step([0.0] * 6, [0.1, 0.05, 0, 0, 0, 0], self.R, LIM)
         self.assertAlmostEqual(s.q[0], LIM.joint_speed * LIM.dt)
         self.assertAlmostEqual(s.q[1] / s.q[0], 0.5)
+
+
+class VelocityTests(unittest.TestCase):
+    def test_the_velocity_is_the_commanded_movement_per_step(self):
+        from yam_limits import joint_velocity
+
+        q0 = [0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.5]
+        q1 = [0.01, 1.0, 0.99, 0.0, 0.0, 0.02, 0.4]
+        v = joint_velocity(q0, q1, LIM)
+        self.assertEqual([round(x, 9) for x in v], [0.5, 0.0, -0.5, 0.0, 0.0, 1.0, 0.0])  # gripper: 0
+
+    def test_no_velocity_without_a_last_command_or_across_a_jump(self):
+        from yam_limits import joint_velocity
+
+        q = [0.0] * 7
+        self.assertEqual(joint_velocity(None, q, LIM), [0.0] * 7)
+        jump = [0.0, 0.0, 0.0, LIM.joint_speed * LIM.dt * 2, 0.0, 0.0, 0.0]  # faster than the limits allow
+        self.assertEqual(joint_velocity(q, jump, LIM), [0.0] * 7)
 
 
 class WristPair(FakePair):

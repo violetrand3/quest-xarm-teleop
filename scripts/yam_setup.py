@@ -48,6 +48,8 @@ class Limits:
     reach_tol: float = 0.005  # m: the IK answer this far from the target = out of reach (reported, followed partly)
     reach_tol_rot: float = math.radians(3)
     clearance: float = 0.01  # m kept between the two arms, and between an arm and the table
+    tip_gap: float = 0.01  # m kept between one arm's fingertips and the other's, at every speed level: two hands on one
+    # object (the arms otherwise keep `clearance`, 2-3 cm at the faster levels; 5% of the time at level 30, 2026-11-19)
     grip_speed: float = 2.0  # gripper opening (0..1) per second
     track_err: float = 0.10  # rad: a joint measured this far from its command stops both arms (real arms; 0 in sim) ...
     track_lag_s: float = 0.25  # ... plus this many seconds of the joint's fastest commanded speed in the last 0.5 s: a
@@ -82,8 +84,11 @@ BASE_SPACING = 0.50  # m, centre to centre (measured by the operator 2026-11-17;
 # it, every other part keeps the clearance above it. Was 3 cm, which kept the fingertips ~3 cm up, too high to grasp a
 # bag lying flat (2026-11-18, the operator).
 BOX_FLOOR = 0.0
-LEFT = ArmSetup("left", "can_left", (0.0, BASE_SPACING / 2, 0.0), 0.0, (0.10, 0.55, -0.10, BASE_SPACING / 2 + 0.45, BOX_FLOOR, 0.55))
-RIGHT = ArmSetup("right", "can_right", (0.0, -BASE_SPACING / 2, 0.0), 0.0, (0.10, 0.55, -BASE_SPACING / 2 - 0.45, 0.10, BOX_FLOOR, 0.55))
+# The box edge nearest the operator, m in front of the bases (x). Was 0.10; the left arm sat on it 11% of the time at
+# level 30 (2026-11-19). The clearance model keeps an arm off its own base and links.
+BOX_NEAR = 0.03
+LEFT = ArmSetup("left", "can_left", (0.0, BASE_SPACING / 2, 0.0), 0.0, (BOX_NEAR, 0.55, -0.10, BASE_SPACING / 2 + 0.45, BOX_FLOOR, 0.55))
+RIGHT = ArmSetup("right", "can_right", (0.0, -BASE_SPACING / 2, 0.0), 0.0, (BOX_NEAR, 0.55, -BASE_SPACING / 2 - 0.45, 0.10, BOX_FLOOR, 0.55))
 ARMS = (LEFT, RIGHT)
 
 

@@ -164,5 +164,19 @@ def joint_step(q_last: Sequence[float], q_ik: Sequence[float], ranges: Sequence[
     return JointStep(q, notes)
 
 
+def joint_velocity(q_prev: Sequence[float] | None, q_new: Sequence[float], lim: Limits) -> list[float]:
+    """The joint velocities (rad/s) that go with a position command: the change since the last command over one control
+    step, the 6 arm joints; 0 for the gripper. All 0 when there is no last command, or when any joint changed faster than
+    the joint speed limit allows (a jump in the commands: a stop where the arm is, a fault, the start), so that a
+    velocity is only ever sent for a movement the limits made."""
+    n = len(q_new)
+    if q_prev is None:
+        return [0.0] * n
+    v = [(b - a) / lim.dt for a, b in zip(q_prev[:6], q_new[:6])]
+    if any(abs(x) > lim.joint_speed * 1.05 + 1e-9 for x in v):
+        return [0.0] * n
+    return v + [0.0] * (n - 6)
+
+
 def _mm(p: Sequence[float]) -> str:
     return "(" + ", ".join(f"{v * 1000:.0f}" for v in p) + ") mm"

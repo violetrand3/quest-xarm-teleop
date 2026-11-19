@@ -129,6 +129,16 @@ def scenarios(pair, lim: Limits) -> list[tuple[str, bool, str]]:
                 f"stopped {dist(r.tool('left')[0], moved(r.start['left'], dx=0.6)[0]) * 1000:.0f} mm short; joints inside their ranges; "
                 f"fastest joint step {math.degrees(fastest):.1f} deg (limit {math.degrees(lim.joint_speed * lim.dt):.1f})"))
 
+    # The hand pulls back toward the operator: the grasp point comes closer to its base than the old 10 cm edge,
+    # stopping at the box edge (BOX_NEAR) or earlier, without any part of the arm running into itself or the table.
+    r = Run(pair, lim=lim)
+    r.go(int(0.5 / (lim.tool_speed * lim.dt)) + 60, lambda k: {"left": Request(moved(r.start["left"], dx=-0.6))})
+    x = r.tool("left")[0][0]
+    own = [w for p in r.problems for w in p if w.startswith("left") and ("overlap" in w or "table" in w)]
+    out.append(("pulls back close to its base without hitting itself", not own and x < 0.10,
+                f"grasp point stopped {x * 1000:.0f} mm in front of the base (box edge {LEFT.box[0] * 1000:.0f} mm, was 100 mm)"
+                + (f"; problems: {own[:2]}" if own else "")))
+
     r = Run(pair, lim=lim)
     turned = (r.start["left"][0], q_mul(r.start["left"][1], q_from_rotvec((0, 0, math.radians(60)))))  # about the gripper's own axis
     r.go(int(math.radians(60) / (lim.tool_rot_speed * lim.dt)) + 20, lambda k: {"left": Request(turned)})  # enough steps at this level
