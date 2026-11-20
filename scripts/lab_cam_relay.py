@@ -147,11 +147,13 @@ class View(threading.Thread):
 
 PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Lab cameras (low rate, view-only)</title>
 <style>body{margin:0;background:#111;color:#ccc;font:13px sans-serif}
-.row{display:flex;gap:6px;padding:6px;height:calc(100vh - 34px)}
+.row{display:flex;gap:6px;padding:6px;height:calc(100vh - 34px);box-sizing:border-box}
+.row.top{height:calc(58vh - 20px)}.row.bottom{height:calc(42vh - 14px);padding-top:0;justify-content:center}
+.row.bottom .v{flex:0 1 50%}
 .v{flex:1;display:flex;flex-direction:column;min-width:0}.v img{width:100%;height:100%;object-fit:contain;background:#000}
 .b{padding:6px 10px}.v img{cursor:pointer}.v img.t{transform:rotate(180deg)}.v span{color:#fc6}</style></head><body>
 <div class="b">Lab cameras, low rate, view-only (no robot controls). Click a picture to turn it upside down (this browser remembers it). __INFO__</div>
-<div class="row">__VIEWS__</div>
+__VIEWS__
 <script>
 // Manual 180-degree turn per camera, in this browser only (the phone on the gripper turns its own picture as the wrist
 // tilts, and the new beige jaws defeat the automatic check). The recorded frames are not changed.
@@ -165,7 +167,19 @@ document.querySelectorAll(".v img").forEach(function(img){show(img);
 </script></body></html>"""
 
 
-def make_handler(views: dict, fps: float, info: str):
+def tiles(keys) -> str:
+    return "".join(f'<div class="v"><div>{k}<span></span></div><img src="/cam/{k}" alt="{k}" data-k="{k}"></div>' for k in keys)
+
+
+def layout(views: dict, big: list) -> str:
+    """One row of views; or, with big views, those on a large top row (in the order given) and the others below."""
+    if not big:
+        return f'<div class="row">{tiles(views)}</div>'
+    rest = [k for k in views if k not in big]
+    return f'<div class="row top">{tiles(big)}</div>' + (f'<div class="row bottom">{tiles(rest)}</div>' if rest else "")
+
+
+def make_handler(views: dict, fps: float, info: str, big: list | None = None):
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -179,8 +193,8 @@ def make_handler(views: dict, fps: float, info: str):
         def do_GET(self) -> None:  # noqa: N802
             p = self.path.split("?")[0]
             if p in ("/", "/index.html"):
-                tiles = "".join(f'<div class="v"><div>{k}<span></span></div><img src="/cam/{k}" alt="{k}" data-k="{k}"></div>' for k in views)
-                self._send(200, "text/html; charset=utf-8", PAGE.replace("__VIEWS__", tiles).replace("__INFO__", info).encode())
+                page = PAGE.replace("__VIEWS__", layout(views, big or [])).replace("__INFO__", info)
+                self._send(200, "text/html; charset=utf-8", page.encode())
             elif p == "/stats":
                 self._send(200, "application/json", json.dumps({k: {"clients": v.clients, "frames_in": v.frames_in, "frames_out": v.frames_out,
                                                                     "bytes_out": v.bytes_out, "errors": v.errors, "turned_180": v.turned,
@@ -232,6 +246,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fps", type=float, default=8.0)
     ap.add_argument("--width", type=int, default=480)
     ap.add_argument("--quality", type=int, default=55)
+    ap.add_argument("--big", default="", help="views (comma list, in order) shown large on a top row, the others below; "
+                    "sent --big-width wide (e.g. the YAM wrist cameras)")
+    ap.add_argument("--big-width", type=int, default=640)
     ap.add_argument("--duration", type=float, help="exit after this many seconds")
     args = ap.parse_args(argv)
     if not args.upstream.startswith("http://127.0.0.1:"):
@@ -245,9 +262,15 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         sources[name] = url or None
     keys = list(sources)
-    views = {k: View(k, args.upstream, args.width, args.quality, k in args.upright.split(","), sources[k]) for k in keys}
-    info = f"{args.fps:g} fps max, {args.width}px wide, JPEG quality {args.quality}"
-    srv = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(views, args.fps, info))
+    big = [k for k in args.big.split(",") if k]
+    if any(k not in sources for k in big):
+        print(f"error: --big {args.big!r}: every one must be in --views", file=sys.stderr)
+        return 2
+    views = {k: View(k, args.upstream, args.big_width if k in big else args.width, args.quality, k in args.upright.split(","),
+                     sources[k]) for k in keys}  # fmt: skip
+    info = f"{args.fps:g} fps max, {args.width}px wide" + (f" ({', '.join(big)}: {args.big_width}px)" if big else "")
+    info += f", JPEG quality {args.quality}"
+    srv = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(views, args.fps, info, big))
     srv.daemon_threads = True
     print(f"camera relay (view-only) on 127.0.0.1:{args.port}: views {keys}, {info}", flush=True)
     if args.duration:

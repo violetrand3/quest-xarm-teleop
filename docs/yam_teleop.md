@@ -40,7 +40,8 @@ The headset goes as for the xArm: front pointing the way you face (`OPERATOR_YAW
 ## During a session
 
 Watch the arms on the camera page, **http://127.0.0.1:18091/**: the RealSense, which sees both arms, and the two
-wrist webcams (`left_wrist`, then `right_wrist`). Click a picture to turn it upside down. The 3D view (http://127.0.0.1:18767/) shows what the arms are
+wrist webcams, large on top (`left_wrist`, then `right_wrist`), with the RealSense below. Each picture comes
+8 times a second. Click a picture to turn it upside down. The 3D view (http://127.0.0.1:18767/) shows what the arms are
 *commanded* to do, not what they do.
 
 | Control | Effect |
@@ -123,8 +124,9 @@ midway between the two bases, x away from the operator, y to the left, z up. Onl
   are to be tried on the arms one level at a time (`YAM_SPEED`, below).
 - **Slow links pause the arms.** Over a slow connection to the lab host, short stalls show as `STALLED` (it resumes
   by itself); a stall over 8 s ends the session. A wired connection helps.
-- **The wrist webcams** are not recorded, and their pictures come at about 1.5 per second (from the lab host's
-  `/home/dev/yam/yamcam.py`).
+- **The wrist webcams** are not recorded. They come from the lab host's `/home/dev/yam/yamcam.py` (10 pictures a
+  second; the camera page shows 8). Until 2026-11-19 it passed on only 3-5 a second: it read its ffmpeg output in
+  64 KB blocks, each holding 2-3 pictures, and kept only the last (fixed there; the old file is `yamcam.py.bak_20261119`).
 - **The 3D view** shows the commands, not the real arms.
 
 ## When something goes wrong
@@ -161,7 +163,7 @@ because a real arm trails its command (by 0.04-0.12 s at 7.5 cm/s: up to 5 cm at
 50 cm/s) and the clearance is checked on the commands. A reaching human hand moves at roughly 0.5-1 m/s.
 
 In the
-environment: `YAM_VIEWS` (cameras on the page), `YAM_RECORD_CAMS` (cameras recorded). Where the arms stand, their
+environment: `YAM_VIEWS` (cameras on the page), `YAM_VIEW_ARGS` (which are large, and how sharp), `YAM_RECORD_CAMS` (cameras recorded). Where the arms stand, their
 boxes and every limit: `scripts/yam_setup.py`. The arms' measured gripper limits and rest poses:
 `/home/dev/yam/yam_hardware.json` on the lab host (written in the bring-up; a session refuses to start without it).
 
