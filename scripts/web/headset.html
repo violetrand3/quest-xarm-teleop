@@ -13,7 +13,7 @@ canvas{display:block;width:100%;height:56vh;background:#000}
   <div id="msg"></div>
   <button id="ar" disabled>Start (see the room)</button><button id="vr" class="alt" disabled>Start (dark room)</button>
   <div id="note">The camera pictures float in front of you and the controllers drive the arms as usual. Press a thumbstick
-  down to bring the pictures back in front of you. To leave, press the Meta button. The picture below is a preview.</div>
+  down to bring the pictures back in front of you. With a 3D picture, push the right thumbstick sideways to move it nearer or further. To leave, press the Meta button. The picture below is a preview.</div>
 </div>
 <canvas id="c"></canvas>
 <script src="/records.js"></script>
@@ -51,7 +51,8 @@ const prog = (() => {
     if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
   const p = gl.createProgram();
   gl.attachShader(p, mk(gl.VERTEX_SHADER, `#version 300 es
-    in vec2 a; uniform mat4 m; out vec2 uv; void main(){ uv = vec2(a.x + 0.5, 0.5 - a.y); gl_Position = m * vec4(a, 0.0, 1.0); }`));
+    in vec2 a; uniform mat4 m; uniform vec2 part; out vec2 uv;
+    void main(){ uv = vec2((a.x + 0.5) * part.x + part.y, 0.5 - a.y); gl_Position = m * vec4(a, 0.0, 1.0); }`));
   gl.attachShader(p, mk(gl.FRAGMENT_SHADER, `#version 300 es
     precision mediump float; in vec2 uv; uniform sampler2D t; uniform float dim; out vec4 c;
     void main(){ c = vec4(texture(t, uv).rgb * dim, 1.0); }`));
@@ -59,7 +60,7 @@ const prog = (() => {
   if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
   return p;
 })();
-const uM = gl.getUniformLocation(prog, "m"), uDim = gl.getUniformLocation(prog, "dim");
+const uM = gl.getUniformLocation(prog, "m"), uDim = gl.getUniformLocation(prog, "dim"), uPart = gl.getUniformLocation(prog, "part");
 const quad = gl.createVertexArray();
 gl.bindVertexArray(quad);
 gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
@@ -83,11 +84,18 @@ const panels = [];           // {key, tex, w, aspect, x, y, pending, frames, las
 let statusPanel = null, statusText = "", linkUp = false, statusDirty = true;
 const textCanvas = document.createElement("canvas"); textCanvas.width = 1536; textCanvas.height = 160;
 
+// A stereo view is one picture with the left eye's half on the left and the right eye's on the right (the ZED 2i):
+// each eye is shown its own half, which gives depth. `depth` moves the two halves apart on the panel, in metres: it
+// pushes the whole scene away from you (0 = things far from the camera sit on the panel, nearer things in front of it).
+let depth = 0.03;
+try { const d = Number(localStorage.getItem("stereo_depth")); if (isFinite(d) && d >= 0 && d <= 0.15 && localStorage.getItem("stereo_depth") !== null) depth = d; } catch (e) {}
 function layout(cfg) {
-  const big = cfg.big.filter((k) => cfg.views.includes(k)), rest = cfg.views.filter((k) => !big.includes(k));
+  const stereo = (cfg.stereo || []).filter((k) => cfg.views.includes(k));
+  const big = stereo.length ? stereo : cfg.big.filter((k) => cfg.views.includes(k)), rest = cfg.views.filter((k) => !big.includes(k));
   const row = (keys, w, top, gap) => keys.forEach((k, i) => panels.push({ key: k, tex: newTexture(), w: w, aspect: 9 / 16,
-    x: (i - (keys.length - 1) / 2) * (w + gap), y: 0, top: top, pending: null, frames: 0, lastMs: 0 }));
-  if (big.length) { row(big, 0.80, true, 0.04); row(rest, 0.52, false, 0.04); }
+    x: (i - (keys.length - 1) / 2) * (w + gap), y: 0, top: top, stereo: stereo.includes(k), pending: null, frames: 0, lastMs: 0 }));
+  if (stereo.length) { row(big, 1.0, true, 0.04); row(rest, 0.5, false, 0.04); }
+  else if (big.length) { row(big, 0.80, true, 0.04); row(rest, 0.52, false, 0.04); }
   else row(cfg.views, 0.80, true, 0.04);
   statusPanel = { tex: newTexture(), w: 1.44, aspect: 160 / 1536, x: 0, y: 0 };
 }
@@ -131,18 +139,20 @@ function upload() {
     const b = p.pending; p.pending = null;
     gl.bindTexture(gl.TEXTURE_2D, p.tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, b);
-    p.aspect = b.height / b.width; b.close();
+    p.aspect = b.height / (p.stereo ? b.width / 2 : b.width); b.close();
   }
   if (statusDirty && statusPanel) drawStatus();
 }
 
-function drawPanels(viewProj, anchor) {
+function drawPanels(viewProj, anchor, eye) {   // eye: "left" or "right" (which half of a stereo picture)
   gl.useProgram(prog); gl.bindVertexArray(quad); gl.activeTexture(gl.TEXTURE0);
   const base = mul(viewProj, anchor), now = performance.now();
   arrange();
   for (const p of panels.concat(statusPanel ? [statusPanel] : [])) {
-    const m = place(p.x, p.y, -DIST, -Math.atan2(p.x, DIST), p.w, p.w * p.aspect);   // each panel faces the eyes
+    const right = eye === "right", dx = p.stereo ? (right ? depth / 2 : -depth / 2) : 0;
+    const m = place(p.x + dx, p.y, -DIST, -Math.atan2(p.x, DIST), p.w, p.w * p.aspect);   // each panel faces the eyes
     gl.uniformMatrix4fv(uM, false, mul(base, m));
+    gl.uniform2f(uPart, p.stereo ? 0.5 : 1.0, p.stereo && right ? 0.5 : 0.0);
     gl.uniform1f(uDim, p.key && now - p.lastMs > 1500 ? 0.35 : 1.0);                 // a picture that stopped arriving is dimmed
     gl.bindTexture(gl.TEXTURE_2D, p.tex);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -218,6 +228,11 @@ function onXRFrame(t, frame) {
     if (src.hand || !src.gripSpace || !src.gamepad || (src.handedness !== "left" && src.handedness !== "right")) continue;
     f[src.handedness] = { pose: poseOf(frame.getPose(src.gripSpace, refSpace)), gamepad: src.gamepad };
     stick = stick || !!(src.gamepad.buttons[3] && src.gamepad.buttons[3].pressed);
+    const ax = src.gamepad.axes[2] || 0;   // the right thumbstick sideways: the 3D picture nearer or further
+    if (src.handedness === "right" && Math.abs(ax) > 0.5 && panels.some((p) => p.stereo)) {
+      depth = Math.min(0.15, Math.max(0, depth + ax * 0.0006));
+      try { localStorage.setItem("stereo_depth", depth.toFixed(4)); } catch (e) {}
+    }
   }
   if (linkUp) send(stream.pose(f));
   if (stick && !stickWas) anchor = null;   // a thumbstick pressed down: the pictures come back in front
@@ -233,7 +248,7 @@ function onXRFrame(t, frame) {
   for (const view of pose.views) {
     const vp = layer.getViewport(view);
     gl.viewport(vp.x, vp.y, vp.width, vp.height);
-    drawPanels(mul(view.projectionMatrix, view.transform.inverse.matrix), anchor);
+    drawPanels(mul(view.projectionMatrix, view.transform.inverse.matrix), anchor, view.eye);
   }
 }
 
@@ -263,7 +278,7 @@ function preview() {
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, w, h); gl.clearColor(0.03, 0.03, 0.04, 1); gl.clear(gl.COLOR_BUFFER_BIT);
   upload();
-  drawPanels(perspective(1.1, w / Math.max(1, h), 0.05, 20), IDENT);
+  drawPanels(perspective(1.1, w / Math.max(1, h), 0.05, 20), IDENT, new URLSearchParams(location.search).get("eye") || "left");
 }
 
 (async () => {

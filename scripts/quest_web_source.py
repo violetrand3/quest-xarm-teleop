@@ -88,9 +88,11 @@ class WebAcquisition:
     child_pid = None
 
     def __init__(self, slot: Any, on_event: Callable[[dict[str, Any]], None], port: int, cams_url: str,
-                 views: list[str], big: list[str], status_file: Path | None = None, page: Path = PAGE):  # fmt: skip
+                 views: list[str], big: list[str], status_file: Path | None = None, page: Path = PAGE,
+                 stereo: list[str] | None = None):  # fmt: skip
         self.slot, self.on_event, self.port, self.cams_url = slot, on_event, port, cams_url.rstrip("/")
         self.views, self.big, self.status_file, self.page = views, big, status_file, page
+        self.stereo = stereo or []  # views whose picture holds both eyes side by side (shown in 3D)
         self.gen = 0
         self._lock = threading.Lock()
         self._client: Any = None  # the handler of the connected page
@@ -234,7 +236,7 @@ class WebAcquisition:
                 elif p == "/records.js":
                     self._send(200, "text/javascript; charset=utf-8", (acq.page.parent / "records.js").read_bytes())
                 elif p == "/config.json":
-                    self._send(200, "application/json", json.dumps({"build": WEB_BUILD, "views": acq.views, "big": acq.big}).encode())
+                    self._send(200, "application/json", json.dumps({"build": WEB_BUILD, "views": acq.views, "big": acq.big, "stereo": acq.stereo}).encode())
                 elif p == "/ws" and "websocket" in self.headers.get("Upgrade", "").lower():
                     acq._serve_ws(self)
                 elif p.startswith("/cam/") and re.fullmatch(r"[a-z0-9_]+", p[5:]) and p[5:] in acq.views:

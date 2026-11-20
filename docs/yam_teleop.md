@@ -124,9 +124,10 @@ midway between the two bases, x away from the operator, y to the left, z up. Onl
   are to be tried on the arms one level at a time (`YAM_SPEED`, below).
 - **Slow links pause the arms.** Over a slow connection to the lab host, short stalls show as `STALLED` (it resumes
   by itself); a stall over 8 s ends the session. A wired connection helps.
-- **The wrist webcams** are not recorded. They come from the lab host's `/home/dev/yam/yamcam.py` (10 pictures a
-  second; the camera page shows 8). Until 2026-11-19 it passed on only 3-5 a second: it read its ffmpeg output in
-  64 KB blocks, each holding 2-3 pictures, and kept only the last (fixed there; the old file is `yamcam.py.bak_20261119`).
+- **The wrist webcams** are not recorded. Since 2026-11-20 they come from `scripts/lab_usb_cams.py` (see "Where the
+  YAM cameras come from"); before, from the lab host's `/home/dev/yam/yamcam.py`, which until 2026-11-19 passed on
+  only 3-5 pictures a second (it read its ffmpeg output in 64 KB blocks, each holding 2-3 pictures, and kept only
+  the last).
 - **The 3D view** shows the commands, not the real arms.
 
 ## Cameras in the headset (`YAM_HEADSET=web`)
@@ -134,7 +135,7 @@ midway between the two bases, x away from the operator, y to the left, z up. Onl
 By default you wear the headset on your forehead and watch the cameras on the PC. With `YAM_HEADSET=web` in
 `config/teleop_session.conf` you wear it normally and the camera pictures float in front of you: the two wrist
 views side by side, the RealSense below, and a status strip above them that turns red when the arms are stopped.
-The pictures are flat (no depth yet).
+These pictures are flat; for depth see "3D" below.
 
 How it works: the headset shows one VR program at a time and our app draws nothing, so in this mode the headset's
 own browser opens a VR page served by this PC over the USB cable (`scripts/quest_web_source.py`, page in
@@ -154,6 +155,29 @@ do when the app loses focus; press Start again. First tried on 2026-11-20 withou
 app's decoder and the sender end to end (`tests/test_web_source.py`), and the page was drawn in a desktop browser.
 Not yet confirmed in the headset: that the browser opens by itself, and the feel of the hand mapping (WebXR's
 `local` space and grip pose are OpenXR's, which the app uses, so it should be the same).
+
+### 3D (`YAM_STEREO=zed`)
+
+The lab's ZED 2i has two lenses, like two eyes. With `YAM_STEREO=zed` its picture becomes the overview: in the
+headset each eye is shown its own lens, which gives depth, and the wrist views sit below it. On the PC's camera
+page the two lenses are simply side by side. Pushing the right thumbstick sideways moves the 3D picture nearer or
+further, until it is comfortable (the headset remembers it).
+
+- **The ZED must look at the YAM arms**, ideally from behind and above them, the way you would. On 2026-11-20 it
+  still looked at the xArm.
+- The camera does not follow your head: it is a fixed 3D window, not a view you can look around in.
+- Its lenses are 12 cm apart, about twice a person's eyes, so depth looks a little stronger than in life.
+- The pictures come 8 times a second, like the others. That is enough to judge depth but not smooth.
+- First tried on 2026-11-20 without a headset: the page drew the right half for each eye from a real ZED picture.
+
+### Where the YAM cameras come from
+
+`scripts/lab_usb_cams.py` on the lab host serves the two wrist webcams and the ZED (port 28097, loopback). It opens
+a camera only while its picture is watched and lets it go a few seconds after, so other programs (the lab's
+camera wall, the calibration tool) can use the cameras the rest of the time; while one of those holds a camera,
+our view of it stays empty. `scripts/teleop yam-cameras` and every YAM session start it. The cameras and their
+sizes are `YAM_USB_CAMS` in `scripts/teleop`. The RealSense still comes from the lab's camera wall (port 8090),
+which also records it for the demos: if the wall is not running, that view is empty and demos cannot be recorded.
 
 ## When something goes wrong
 
