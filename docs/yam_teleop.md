@@ -40,7 +40,7 @@ The headset goes as for the xArm: front pointing the way you face (`OPERATOR_YAW
 ## During a session
 
 Watch the arms on the camera page, **http://127.0.0.1:18091/**: the RealSense, which sees both arms, and the two
-wrist webcams. Click a picture to turn it upside down. The 3D view (http://127.0.0.1:18767/) shows what the arms are
+wrist webcams (`left_wrist`, then `right_wrist`). Click a picture to turn it upside down. The 3D view (http://127.0.0.1:18767/) shows what the arms are
 *commanded* to do, not what they do.
 
 | Control | Effect |

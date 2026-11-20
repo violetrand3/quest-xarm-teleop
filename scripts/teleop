@@ -46,8 +46,9 @@ sync_files() {   # what "sync" installs: the programs, tests, docs and configs; 
 LAB_STARTS="scripts/ops/lab_teleop_live_run.sh scripts/live_teleop.py scripts/lab_cam_relay.py scripts/episode_inspect.py"
 YAM_STARTS="scripts/yam_live.py"
 # The YAM sessions' camera page: the RealSense (sees both arms) and the two wrist webcams, which the lab's yamcam.py
-# serves on 127.0.0.1:8096 (not on the camera wall).
-YAM_VIEWS=${YAM_VIEWS:-rs_color,wrist_c920=http://127.0.0.1:8096/stream/c920,wrist_emeet=http://127.0.0.1:8096/stream/emeet}
+# serves on 127.0.0.1:8096 (not on the camera wall). Left to right as the arms stand: the eMeet is on the left arm, the
+# C920 on the right (the operator, 2026-11-19; they were shown the other way round before).
+YAM_VIEWS=${YAM_VIEWS:-rs_color,left_wrist=http://127.0.0.1:8096/stream/emeet,right_wrist=http://127.0.0.1:8096/stream/c920}
 lab_files() {   # the programs that run on the lab host: what this launcher starts there, and what those import or start
   # shellcheck disable=SC2086
   (cd "$P" && python3 - $LAB_STARTS <<'PY'
