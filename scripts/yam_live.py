@@ -278,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
                 stops[0] = min(stops[0], 1)
             r = last["reports"]
             if r is not None and phase[0] == "teleop":
-                hands = " | ".join(f"{h}: {x.clutch} {x.arm} grip={x.gripper}" + (f" [{'; '.join(x.notes)[:110]}]" if x.notes else "") for h, x in r.items())
+                hands = " | ".join(f"{h}: {x.clutch} {x.arm} grip={x.gripper}" + (f" [{'; '.join(x.notes)[:220]}]" if x.notes else "") for h, x in r.items())
                 ep = "" if episodes is None else f" | ep={episodes.status()}"
                 print(f"{t:7.1f}s {banner} | input={'CONNECTED' if last['connected'] else 'DISCONNECTED'} | {hands}{ep}", flush=True)
         if phase[0] == "parking":

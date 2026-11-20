@@ -96,7 +96,7 @@ msg "READY ($KIND). Cameras: http://127.0.0.1:${RELAY_LOCAL_PORT:-18091}/   3D v
 msg "Each hand: hold the side grip (middle finger) to move its arm, release to stop; while the grip is held, the index trigger closes its gripper (as on the xArm)."
 msg "Left controller -> left arm, right controller -> right arm (switch the left controller on too). Ctrl-C ends; Enter acknowledges a latched problem."
 [ "$REC" = 1 ] && msg "Demos: right thumb A starts one and, pressed again, saves it; B discards the one in progress."
-prev=""; seen_ep=0; TTY=0; { : < /dev/tty; } 2> /dev/null && TTY=1   # Enter is read only when there is a terminal
+prev=""; seen_ep=0; stopped=0; TTY=0; { : < /dev/tty; } 2> /dev/null && TTY=1   # Enter is read only when there is a terminal
 IN_LOOP=1
 while true; do
   [ "$STOP" = 1 ] && end_now
@@ -114,4 +114,10 @@ while true; do
     [ "$k" -gt "$seen_ep" ] && { printf '%s\n' "$eps" | tail -n $((k - seen_ep)) | while IFS= read -r e; do msg "DEMO: $e"; done; seen_ep=$k; }
   fi
   [ -n "$now" ] && [ "$now" != "$prev" ] && { msg "  $line"; prev=$now; }
+  # A latched stop: the hands' state says "fault" until Enter. Said once, plainly (the status line is long; on
+  # 2026-11-19 the operator did not see "Enter clears it" at its end and kept pressing the grip).
+  if printf '%s' "$now" | grep -q ' fault'; then
+    [ "$stopped" = 0 ] && { msg "STOPPED: both arms are holding where they are (the reason is in [...] above). The grip does not restart them."
+                            msg "         Look at the arms; when it is safe, press Enter here to continue."; stopped=1; }
+  else stopped=0; fi
 done
