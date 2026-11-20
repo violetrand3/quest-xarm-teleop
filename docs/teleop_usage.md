@@ -28,6 +28,7 @@ scripts/teleop record        # demo recording session; runs until you press Ctrl
 | `scripts/teleop try [minutes]` | The same without recording |
 | `scripts/teleop status` | Read-only: arm state, who is connected to it, camera view, headset, disk |
 | `scripts/teleop cameras` | Starts the camera view if needed and prints its address |
+| `scripts/teleop yam-cameras` | The same for the YAM: both wrist cameras on top, the RealSense below (no arm moves) |
 | `scripts/teleop episodes [session]` | Lists recorded sessions, or checks the demos of one |
 | `scripts/teleop watch` | Follows the lab program's console during a session (second terminal) |
 | `scripts/teleop stop` | Ends the running session from a second terminal (software stop) |
