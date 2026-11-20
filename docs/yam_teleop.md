@@ -129,6 +129,32 @@ midway between the two bases, x away from the operator, y to the left, z up. Onl
   64 KB blocks, each holding 2-3 pictures, and kept only the last (fixed there; the old file is `yamcam.py.bak_20261119`).
 - **The 3D view** shows the commands, not the real arms.
 
+## Cameras in the headset (`YAM_HEADSET=web`)
+
+By default you wear the headset on your forehead and watch the cameras on the PC. With `YAM_HEADSET=web` in
+`config/teleop_session.conf` you wear it normally and the camera pictures float in front of you: the two wrist
+views side by side, the RealSense below, and a status strip above them that turns red when the arms are stopped.
+The pictures are flat (no depth yet).
+
+How it works: the headset shows one VR program at a time and our app draws nothing, so in this mode the headset's
+own browser opens a VR page served by this PC over the USB cable (`scripts/quest_web_source.py`, page in
+`scripts/web/`). The page shows the pictures and reads the controllers; it sends the same records the app writes,
+so everything after it (the checks, the link to the lab host, the arms' program) is the same. The app stays
+installed and unchanged, and `YAM_HEADSET=app` is the old way.
+
+1. Start a session as usual (`scripts/teleop yam-sim` first, to get used to it without the arms).
+2. Put the headset on. Its browser shows "Teleop headset view" (if not: open the Browser and go to
+   `localhost:8791`). Point a controller at **Start (see the room)** and press the trigger. "See the room" keeps
+   the room visible around the pictures, so you can still see the PC; "dark room" hides it.
+3. Drive the arms as usual. Press a thumbstick down to bring the pictures back in front of you.
+4. A stop (red strip) is still acknowledged with Enter on the PC, after looking at the arms.
+
+If the headset leaves the page (the Meta button, taking the headset off, a system window), the arms hold, as they
+do when the app loses focus; press Start again. First tried on 2026-11-20 without a headset: the records pass the
+app's decoder and the sender end to end (`tests/test_web_source.py`), and the page was drawn in a desktop browser.
+Not yet confirmed in the headset: that the browser opens by itself, and the feel of the hand mapping (WebXR's
+`local` space and grip pose are OpenXR's, which the app uses, so it should be the same).
+
 ## When something goes wrong
 
 | What you see | What to do |

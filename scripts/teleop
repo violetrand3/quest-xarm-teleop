@@ -52,6 +52,9 @@ YAM_STARTS="scripts/yam_live.py"
 YAM_VIEWS=${YAM_VIEWS:-rs_color,left_wrist=http://127.0.0.1:8096/stream/emeet,right_wrist=http://127.0.0.1:8096/stream/c920}
 # The wrist views large, side by side on top, and sharper (640 px wide; the others 480); the RealSense below.
 YAM_VIEW_ARGS=${YAM_VIEW_ARGS:---big left_wrist,right_wrist --big-width 640}
+# The same views for the headset's own page (YAM_HEADSET=web): their names, and which are large.
+export YAM_WEB_VIEWS=$(echo "$YAM_VIEWS" | tr ',' '\n' | sed 's/=.*//' | paste -sd,)
+export YAM_WEB_BIG=$(echo "$YAM_VIEW_ARGS" | sed -n 's/.*--big \([a-z0-9_,]*\).*/\1/p')
 lab_files() {   # the programs that run on the lab host: what this launcher starts there, and what those import or start
   # shellcheck disable=SC2086
   (cd "$P" && python3 - $LAB_STARTS <<'PY'

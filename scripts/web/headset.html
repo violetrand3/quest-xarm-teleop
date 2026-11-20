@@ -1,0 +1,282 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teleop headset view</title>
+<style>
+body{margin:0;background:#111;color:#ddd;font:18px system-ui,sans-serif}
+#top{padding:14px 18px}button{font:600 22px system-ui;padding:16px 26px;margin:6px 10px 6px 0;border-radius:10px;border:0;background:#2d6cdf;color:#fff}
+button.alt{background:#444}button:disabled{background:#333;color:#777}
+#msg{color:#fc6;margin:8px 0;min-height:1.3em}#note{color:#999;font-size:15px;max-width:60em}
+canvas{display:block;width:100%;height:56vh;background:#000}
+</style></head><body>
+<div id="top">
+  <div><b>Teleop headset view</b> <span id="link" style="color:#999"></span></div>
+  <div id="msg"></div>
+  <button id="ar" disabled>Start (see the room)</button><button id="vr" class="alt" disabled>Start (dark room)</button>
+  <div id="note">The camera pictures float in front of you and the controllers drive the arms as usual. Press a thumbstick
+  down to bring the pictures back in front of you. To leave, press the Meta button. The picture below is a preview.</div>
+</div>
+<canvas id="c"></canvas>
+<script src="/records.js"></script>
+<script>
+"use strict";
+// The page of scripts/quest_web_source.py: camera pictures on floating panels, and one pose record per displayed
+// frame (records.js) to the sender on the operator's PC. No arm is commanded from here: the sender and the lab program
+// treat these records exactly like the headset app's.
+const $ = (id) => document.getElementById(id);
+const say = (t) => { $("msg").textContent = t; };
+const canvas = $("c");
+const gl = canvas.getContext("webgl2", { xrCompatible: true, alpha: true, antialias: true });
+
+// ---- small matrix helpers (column-major, as WebGL and WebXR use) -------------------------------------------------
+function mul(a, b) {
+  const o = new Float32Array(16);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++)
+    o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+  return o;
+}
+function place(x, y, z, yaw, sx, sy) {   // a panel: scaled, turned about the vertical axis, moved
+  const c = Math.cos(yaw), s = Math.sin(yaw);
+  return new Float32Array([c * sx, 0, -s * sx, 0, 0, sy, 0, 0, s, 0, c, 0, x, y, z, 1]);
+}
+function perspective(fovy, aspect, near, far) {
+  const f = 1 / Math.tan(fovy / 2), o = new Float32Array(16);
+  o[0] = f / aspect; o[5] = f; o[10] = (far + near) / (near - far); o[11] = -1; o[14] = 2 * far * near / (near - far);
+  return o;
+}
+const IDENT = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+
+// ---- drawing ------------------------------------------------------------------------------------------------------
+const prog = (() => {
+  const mk = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+  const p = gl.createProgram();
+  gl.attachShader(p, mk(gl.VERTEX_SHADER, `#version 300 es
+    in vec2 a; uniform mat4 m; out vec2 uv; void main(){ uv = vec2(a.x + 0.5, 0.5 - a.y); gl_Position = m * vec4(a, 0.0, 1.0); }`));
+  gl.attachShader(p, mk(gl.FRAGMENT_SHADER, `#version 300 es
+    precision mediump float; in vec2 uv; uniform sampler2D t; uniform float dim; out vec4 c;
+    void main(){ c = vec4(texture(t, uv).rgb * dim, 1.0); }`));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+})();
+const uM = gl.getUniformLocation(prog, "m"), uDim = gl.getUniformLocation(prog, "dim");
+const quad = gl.createVertexArray();
+gl.bindVertexArray(quad);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, 0.5]), gl.STATIC_DRAW);
+const aLoc = gl.getAttribLocation(prog, "a");
+gl.enableVertexAttribArray(aLoc);
+gl.vertexAttribPointer(aLoc, 2, gl.FLOAT, false, 0, 0);
+
+function newTexture() {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([20, 20, 20, 255]));
+  for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
+                        [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+  return t;
+}
+
+// ---- the panels: camera views and the status strip ------------------------------------------------------------------
+const DIST = 1.3;            // m from the eyes
+const panels = [];           // {key, tex, w, aspect, x, y, pending, frames, lastMs}
+let statusPanel = null, statusText = "", linkUp = false, statusDirty = true;
+const textCanvas = document.createElement("canvas"); textCanvas.width = 1536; textCanvas.height = 160;
+
+function layout(cfg) {
+  const big = cfg.big.filter((k) => cfg.views.includes(k)), rest = cfg.views.filter((k) => !big.includes(k));
+  const row = (keys, w, top, gap) => keys.forEach((k, i) => panels.push({ key: k, tex: newTexture(), w: w, aspect: 9 / 16,
+    x: (i - (keys.length - 1) / 2) * (w + gap), y: 0, top: top, pending: null, frames: 0, lastMs: 0 }));
+  if (big.length) { row(big, 0.80, true, 0.04); row(rest, 0.52, false, 0.04); }
+  else row(cfg.views, 0.80, true, 0.04);
+  statusPanel = { tex: newTexture(), w: 1.44, aspect: 160 / 1536, x: 0, y: 0 };
+}
+
+// The rows by their edges, whatever shape the pictures have: the top row stands on a line a little below eye
+// height, the status strip sits above its tallest picture, the second row hangs below the line.
+const LINE = -0.12, GAP = 0.03;
+function arrange() {
+  let tallest = 0;
+  for (const p of panels) {
+    const h = p.w * p.aspect;
+    p.y = p.top ? LINE + h / 2 : LINE - GAP - h / 2;
+    if (p.top) tallest = Math.max(tallest, h);
+  }
+  statusPanel.y = LINE + tallest + GAP + statusPanel.w * statusPanel.aspect / 2;
+}
+
+function drawStatus() {
+  const g = textCanvas.getContext("2d"), stopped = /STOPPED| fault/.test(statusText);
+  g.fillStyle = !linkUp ? "#5a3a00" : stopped ? "#8a1010" : "#10202c";
+  g.fillRect(0, 0, textCanvas.width, textCanvas.height);
+  g.fillStyle = "#fff"; g.font = "600 34px system-ui, sans-serif"; g.textBaseline = "top";
+  const now = performance.now();
+  const cams = panels.map((p) => p.key + (now - p.lastMs < 1500 ? "" : " (no picture)")).join("   ");
+  g.fillText((linkUp ? "" : "NOT CONNECTED to the PC.   ") + (stopped ? "STOPPED: press Enter on the PC when it is safe" : cams), 20, 14);
+  g.font = "26px system-ui, sans-serif"; g.fillStyle = "#cde";
+  const words = statusText.split(" "); let line = "", y = 62;
+  for (const w of words) {
+    if (g.measureText(line + " " + w).width > textCanvas.width - 40) { g.fillText(line, 20, y); line = w; y += 32; if (y > 130) break; }
+    else line = line ? line + " " + w : w;
+  }
+  if (y <= 130) g.fillText(line, 20, y);
+  gl.bindTexture(gl.TEXTURE_2D, statusPanel.tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, textCanvas);
+  statusDirty = false;
+}
+setInterval(() => { statusDirty = true; }, 1000);
+
+function upload() {
+  for (const p of panels) if (p.pending) {
+    const b = p.pending; p.pending = null;
+    gl.bindTexture(gl.TEXTURE_2D, p.tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, b);
+    p.aspect = b.height / b.width; b.close();
+  }
+  if (statusDirty && statusPanel) drawStatus();
+}
+
+function drawPanels(viewProj, anchor) {
+  gl.useProgram(prog); gl.bindVertexArray(quad); gl.activeTexture(gl.TEXTURE0);
+  const base = mul(viewProj, anchor), now = performance.now();
+  arrange();
+  for (const p of panels.concat(statusPanel ? [statusPanel] : [])) {
+    const m = place(p.x, p.y, -DIST, -Math.atan2(p.x, DIST), p.w, p.w * p.aspect);   // each panel faces the eyes
+    gl.uniformMatrix4fv(uM, false, mul(base, m));
+    gl.uniform1f(uDim, p.key && now - p.lastMs > 1500 ? 0.35 : 1.0);                 // a picture that stopped arriving is dimmed
+    gl.bindTexture(gl.TEXTURE_2D, p.tex);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+}
+
+// ---- the camera pictures: the relay's MJPEG streams, newest picture only ---------------------------------------------
+async function pump(p) {
+  const find = (buf, from) => { for (let i = from; i + 3 < buf.length; i++) if (buf[i] === 13 && buf[i + 1] === 10 && buf[i + 2] === 13 && buf[i + 3] === 10) return i; return -1; };
+  for (;;) {
+    try {
+      const r = await fetch("/cam/" + p.key, { cache: "no-store" });
+      if (!r.ok || !r.body) throw new Error("status " + r.status);
+      const reader = r.body.getReader();
+      let buf = new Uint8Array(0);
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const nb = new Uint8Array(buf.length + value.length); nb.set(buf); nb.set(value, buf.length); buf = nb;
+        for (;;) {
+          const h = find(buf, 0);
+          if (h < 0) { if (buf.length > 4e6) buf = new Uint8Array(0); break; }
+          const m = /content-length:\s*(\d+)/i.exec(new TextDecoder("latin1").decode(buf.subarray(0, h)));
+          if (!m) { buf = buf.subarray(h + 4); continue; }
+          const n = Number(m[1]);
+          if (buf.length < h + 4 + n) break;
+          const jpeg = buf.slice(h + 4, h + 4 + n); buf = buf.subarray(h + 4 + n);
+          try {
+            const bmp = await createImageBitmap(new Blob([jpeg], { type: "image/jpeg" }));
+            if (p.pending) p.pending.close();
+            p.pending = bmp; p.frames++; p.lastMs = performance.now();
+          } catch (e) { /* a damaged picture: wait for the next */ }
+        }
+      }
+    } catch (e) { /* the view is not running, or the tunnel dropped: try again */ }
+    await new Promise((res) => setTimeout(res, 1000));
+  }
+}
+
+// ---- the link to the sender --------------------------------------------------------------------------------------------
+const sid = Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, "0")).join("");
+const stream = QuestRecords.makeStream(sid);
+let ws = null;
+function connect() {
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  ws.onopen = () => { linkUp = true; statusDirty = true; $("link").textContent = "connected to the PC"; };
+  ws.onmessage = (e) => { try { statusText = JSON.parse(e.data).status || ""; statusDirty = true; } catch (x) {} };
+  ws.onclose = () => { linkUp = false; statusDirty = true; $("link").textContent = "NOT connected to the PC"; setTimeout(connect, 1000); };
+  ws.onerror = () => {};
+}
+function send(text) {   // never a backlog: a record that cannot go now is dropped (the sender sees the gap and says so)
+  if (ws && ws.readyState === 1 && ws.bufferedAmount < 65536) { ws.send(text); return true; }
+  return false;
+}
+
+// ---- the VR session ----------------------------------------------------------------------------------------------------
+let session = null, refSpace = null, anchor = null, stickWas = false;
+const poseOf = (x) => x ? { p: [x.transform.position.x, x.transform.position.y, x.transform.position.z],
+  q: [x.transform.orientation.x, x.transform.orientation.y, x.transform.orientation.z, x.transform.orientation.w],
+  emulated: !!x.emulatedPosition } : null;
+
+function anchorAt(t) {   // where the head is now, turned (about the vertical only) the way it looks
+  const m = t.matrix, yaw = Math.atan2(m[8], m[10]), c = Math.cos(yaw), s = Math.sin(yaw);
+  return new Float32Array([c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, m[12], m[13], m[14], 1]);
+}
+
+function onXRFrame(t, frame) {
+  session.requestAnimationFrame(onXRFrame);
+  const pose = frame.getViewerPose(refSpace);
+  const f = { tMs: t, visibility: session.visibilityState, head: poseOf(pose), left: null, right: null };
+  let stick = false;
+  for (const src of session.inputSources) {
+    if (src.hand || !src.gripSpace || !src.gamepad || (src.handedness !== "left" && src.handedness !== "right")) continue;
+    f[src.handedness] = { pose: poseOf(frame.getPose(src.gripSpace, refSpace)), gamepad: src.gamepad };
+    stick = stick || !!(src.gamepad.buttons[3] && src.gamepad.buttons[3].pressed);
+  }
+  if (linkUp) send(stream.pose(f));
+  if (stick && !stickWas) anchor = null;   // a thumbstick pressed down: the pictures come back in front
+  stickWas = stick;
+
+  const layer = session.renderState.baseLayer;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+  gl.clearColor(0.03, 0.03, 0.04, session.environmentBlendMode === "opaque" ? 1 : 0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  if (!pose) return;
+  if (!anchor) anchor = anchorAt(pose.transform);
+  upload();
+  for (const view of pose.views) {
+    const vp = layer.getViewport(view);
+    gl.viewport(vp.x, vp.y, vp.width, vp.height);
+    drawPanels(mul(view.projectionMatrix, view.transform.inverse.matrix), anchor);
+  }
+}
+
+async function start(mode) {
+  try {
+    await gl.makeXRCompatible();
+    session = await navigator.xr.requestSession(mode, { requiredFeatures: ["local"] });
+    session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+    refSpace = await session.requestReferenceSpace("local");
+    anchor = null;
+    send(stream.event("session_begin", 0));
+    send(stream.event("session_state", performance.now(), session.visibilityState));
+    session.addEventListener("visibilitychange", () => send(stream.event("session_state", performance.now(), session.visibilityState)));
+    refSpace.addEventListener("reset", () => { send(stream.spaceChanged(performance.now())); anchor = null; });
+    session.addEventListener("end", () => { send(stream.event("session_end", performance.now())); session = null; say("Ended. Start again when ready."); preview(); });
+    session.requestAnimationFrame(onXRFrame);
+    say("Running.");
+  } catch (e) { say("Could not start: " + e.message); }
+}
+
+// ---- the preview on the flat page (also what a PC browser shows) ---------------------------------------------------------
+function preview() {
+  if (session) return;
+  requestAnimationFrame(preview);
+  const w = canvas.clientWidth * devicePixelRatio | 0, h = canvas.clientHeight * devicePixelRatio | 0;
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, w, h); gl.clearColor(0.03, 0.03, 0.04, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  upload();
+  drawPanels(perspective(1.1, w / Math.max(1, h), 0.05, 20), IDENT);
+}
+
+(async () => {
+  const cfg = await (await fetch("/config.json", { cache: "no-store" })).json();
+  layout(cfg);
+  panels.forEach(pump);
+  connect();
+  preview();
+  if (!navigator.xr) { say("This browser has no VR (WebXR). Open this page in the headset's browser."); return; }
+  const ar = await navigator.xr.isSessionSupported("immersive-ar").catch(() => false);
+  const vr = await navigator.xr.isSessionSupported("immersive-vr").catch(() => false);
+  $("ar").disabled = !ar; $("vr").disabled = !vr;
+  $("ar").onclick = () => start("immersive-ar"); $("vr").onclick = () => start("immersive-vr");
+  say(ar || vr ? "Ready: press Start with a controller's trigger." : "This browser cannot start VR here.");
+})().catch((e) => say("Error: " + e.message));
+</script></body></html>

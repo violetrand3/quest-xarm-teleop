@@ -48,6 +48,7 @@ from quest_stream_sender import (
     connect,
 )
 from quest_transport import DIAGNOSTIC_BANNER, LOOPBACK, ProtocolError, new_id, stats_ms
+from quest_web_source import WEB_BUILD, WebAcquisition
 
 DEFAULT_BUILD = "s4a-ff0da2692500"
 DEFAULT_STALE_MS = 500.0  # diagnostic watchdog, NOT a robot safety timeout
@@ -84,16 +85,20 @@ class PoseSlot:
         ll = parse_logcat_line(line, qp.TAG)
         if ll is None:
             return
+        self.on_message(ll.message, recv_ns, gen, ll.device_log_time)
+
+    def on_message(self, message: str, recv_ns: int, gen: int, device_log_time: Any) -> None:
+        """One source record (the app's log line without its logcat prefix, or a message of the headset web page)."""
         with self.lock:
             tr = self.tracker
             if gen != tr.acq_gen:
                 self.stale_generation_lines += 1  # an aborted generation's output is never accepted
                 return
             self.lines += 1
-            self.max_bytes = max(self.max_bytes, len(ll.message.encode("utf-8")))
+            self.max_bytes = max(self.max_bytes, len(message.encode("utf-8")))
             kind = "parse_error"
             try:
-                rec = qp.decode_record(ll.message)
+                rec = qp.decode_record(message)
             except qp.RecordError as e:
                 tr.on_parse_error(str(e), recv_ns)
                 self._latest, self._latest_sent = None, True  # never leave the last good pose active
@@ -104,8 +109,8 @@ class PoseSlot:
                     if self._latest is not None and not self._latest_sent:
                         self.decimated_since_last += 1  # intentional: replaced before a send opportunity
                         self.decimated_total += 1
-                    self._latest = {"rec": rec, "raw": json.loads(ll.message), "recv_ns": recv_ns,
-                                    "device_log_time": ll.device_log_time, "acq_gen": tr.acq_gen,
+                    self._latest = {"rec": rec, "raw": json.loads(message), "recv_ns": recv_ns,
+                                    "device_log_time": device_log_time, "acq_gen": tr.acq_gen,
                                     "session_gen": tr.session_gen}  # fmt: skip
                     self._latest_sent = False
                 elif kind == "event":
@@ -113,12 +118,12 @@ class PoseSlot:
                         self._events.popleft()
                         self.events_dropped += 1
                         tr._break("event_queue_overflow", recv_ns)
-                    self._events.append({"raw": json.loads(ll.message), "recv_ns": recv_ns, "acq_gen": tr.acq_gen})
+                    self._events.append({"raw": json.loads(message), "recv_ns": recv_ns, "acq_gen": tr.acq_gen})
                 elif kind == "overflow":
                     self._latest, self._latest_sent = None, True
             if self.source_log is not None:
                 self.source_log.write(json.dumps({"host_ns": recv_ns, "gen": gen, "kind": kind, "cont_gen": tr.continuity_gen,
-                                                  "available": tr.available, "raw": ll.message}) + "\n")  # fmt: skip
+                                                  "available": tr.available, "raw": message}) + "\n")  # fmt: skip
 
     def new_generation(self, now_ns: int, note: str) -> int:
         with self.lock:
@@ -362,7 +367,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-rate", type=float, default=DEFAULT_MAX_RATE_HZ,
                     help="max pose packets/s (transport setting, not a robot servo rate)")  # fmt: skip
     ap.add_argument("--stale-ms", type=float, default=DEFAULT_STALE_MS, help="diagnostic watchdog, not a safety timeout")
-    ap.add_argument("--expect-build", default=DEFAULT_BUILD)
+    ap.add_argument("--expect-build", help=f"default: {DEFAULT_BUILD} (the app), {WEB_BUILD} (the web page)")
+    ap.add_argument("--source", choices=("app", "web"), default="app",
+                    help="app: the headset app's log over adb; web: the headset's VR web page (quest_web_source.py)")  # fmt: skip
+    ap.add_argument("--web-port", type=int, default=8791, help="web: the page's port on 127.0.0.1 (adb reverse to the headset)")
+    ap.add_argument("--web-cams", default="http://127.0.0.1:18091", help="web: the camera relay's tunnel on this PC")
+    ap.add_argument("--web-views", default="", help="web: comma list of the relay's views to show in the headset")
+    ap.add_argument("--web-big", default="", help="web: the views shown large, on top")
+    ap.add_argument("--web-status", type=Path, help="web: a text file whose content is shown in the headset (the session's state)")
     ap.add_argument("--duration", type=float)
     ap.add_argument("--log", type=Path, help="JSONL packet/event log (must not exist)")
     ap.add_argument("--source-log", type=Path, help="JSONL of EVERY received source record (must not exist)")
@@ -375,12 +387,17 @@ def main(argv: list[str] | None = None) -> int:
         if p is not None and p.exists():
             print(f"error: {p} already exists; refusing to overwrite", file=sys.stderr)
             return 2
-    try:
-        adb = find_adb()
-        serial = pick_serial(adb, args.serial)
-    except (MonitorError, OSError) as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 2
+    web = args.source == "web"
+    if args.expect_build is None:
+        args.expect_build = WEB_BUILD if web else DEFAULT_BUILD
+    adb, serial = "", "web page"
+    if not web:
+        try:
+            adb = find_adb()
+            serial = pick_serial(adb, args.serial)
+        except (MonitorError, OSError) as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
     try:
         sock = connect(args.port)
     except OSError as e:
@@ -417,7 +434,18 @@ def main(argv: list[str] | None = None) -> int:
             args.acq_file.write_text(json.dumps({"sender_pid": os.getpid(), "sender_run": sender_run, **ev}) + "\n")
         print(f"ACQ {ev.get('event')} gen={ev.get('gen')} child_pid={ev.get('child_pid')}", flush=True)
 
-    acq = OwnedLogcatAcquisition(adb, serial, slot, on_acq_event)
+    if web:
+        if not args.web_cams.startswith("http://127.0.0.1:"):
+            print("error: --web-cams must be on 127.0.0.1", file=sys.stderr)
+            return 2
+        try:
+            acq: Any = WebAcquisition(slot, on_acq_event, args.web_port, args.web_cams, [v for v in args.web_views.split(",") if v],
+                                      [v for v in args.web_big.split(",") if v], args.web_status)  # fmt: skip
+        except OSError as e:
+            print(f"error: cannot serve the headset page on 127.0.0.1:{args.web_port}: {e}", file=sys.stderr)
+            return 3
+    else:
+        acq = OwnedLogcatAcquisition(adb, serial, slot, on_acq_event)
     control = {"abort": False, "start": False}
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())

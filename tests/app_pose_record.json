@@ -1,0 +1,105 @@
+{
+ "v": 1,
+ "type": "pose",
+ "build": "s4a-ff0da2692500",
+ "sid": "0000000000000000",
+ "seq": 10,
+ "space": "LOCAL",
+ "t_query_ns": 1791093584435,
+ "t_query_kind": "predicted_display_time",
+ "session_state": "FOCUSED",
+ "focused": true,
+ "local_epoch": 0,
+ "local_change_time_ns": 0,
+ "head": {
+  "queried": true,
+  "result": 0,
+  "flags": 15,
+  "pos_valid": true,
+  "ori_valid": true,
+  "pos_tracked": true,
+  "ori_tracked": true,
+  "p": [
+   0.016231,
+   -0.002528,
+   -0.003466
+  ],
+  "q": [
+   0.0216286,
+   0.0117799,
+   0.0244948,
+   0.9993966
+  ]
+ },
+ "grip_l": {
+  "queried": true,
+  "result": 0,
+  "active": true,
+  "flags": 15,
+  "pos_valid": true,
+  "ori_valid": true,
+  "pos_tracked": true,
+  "ori_tracked": true,
+  "p": [
+   0.00828,
+   -0.35821,
+   -0.440099
+  ],
+  "q": [
+   0.4643031,
+   -0.3653717,
+   -0.2829275,
+   0.7555649
+  ]
+ },
+ "grip_r": {
+  "queried": true,
+  "result": 0,
+  "active": true,
+  "flags": 15,
+  "pos_valid": true,
+  "ori_valid": true,
+  "pos_tracked": true,
+  "ori_tracked": true,
+  "p": [
+   0.261994,
+   -0.360438,
+   -0.41761
+  ],
+  "q": [
+   0.481315,
+   0.3846694,
+   0.3035626,
+   0.7267841
+  ]
+ },
+ "in_l": {
+  "trigger": 0.0,
+  "squeeze": 0.0,
+  "thumbstick": [
+   0.0,
+   0.0
+  ],
+  "thumbstick_click": false,
+  "thumbstick_touch": false,
+  "trigger_touch": false,
+  "thumbrest_touch": false,
+  "x": false,
+  "y": false,
+  "menu": false
+ },
+ "in_r": {
+  "trigger": 0.0,
+  "squeeze": 0.0,
+  "thumbstick": [
+   0.0,
+   0.0
+  ],
+  "thumbstick_click": false,
+  "thumbstick_touch": false,
+  "trigger_touch": false,
+  "thumbrest_touch": false,
+  "a": false,
+  "b": false
+ }
+}

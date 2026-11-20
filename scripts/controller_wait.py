@@ -45,6 +45,14 @@ TEXT = {
 }
 
 
+WEB_TEXT = {  # the same causes when the headset's VR web page is the source (YAM_HEADSET=web)
+    "starting": "waiting for Start to be pressed in the headset's page (\"Teleop headset view\")",
+    "silent": "the headset's page is not sending anything: press Start in it (or the headset is asleep: put it on)",
+    "asleep": "the headset is not showing the VR page (it left VR, or the headset is asleep). Put it on and press Start in the page again",
+    "closing": "the headset's VR page is closing",
+}
+
+
 def cause(raw: str | None, age_ns: int | None) -> str | None:
     """Key into TEXT for the newest record, or None when nothing is missing."""
     if age_ns is None:
@@ -111,7 +119,10 @@ def main() -> int:
     ap.add_argument("--settle", type=float, default=SETTLE_S)
     ap.add_argument("--adb", default="adb")
     ap.add_argument("--console", help="the arm program's console copy: stop waiting if it has ended")
+    ap.add_argument("--web", action="store_true", help="the source is the headset's VR web page, not the app")
     a = ap.parse_args()
+    if a.web:
+        TEXT.update(WEB_TEXT)
 
     def say(text: str) -> None:
         print(time.strftime("[%H:%M:%S] ") + text, flush=True)

@@ -11,11 +11,15 @@ YAM_RECORD_CAMS=${YAM_RECORD_CAMS:-rs_color}   # camera-wall cameras saved with 
 if [ -n "$CONF" ]; then KIND="real arms"; ARMS="--arms real --moves-real-arms"; else KIND="simulation, no hardware"; ARMS="--arms sim"; fi
 LAB_PY=${YAM_PYTHON:-/home/dev/yam/i2rt/.venv/bin/python}   # I2RT's environment on the lab host
 LINK_PORT=18766; VIEW_PORT=18767                               # this PC; the lab program listens on 28766 / 28767
+# YAM_HEADSET=web: the cameras are shown IN the headset. Its browser opens a VR page served by this PC over the USB
+# cable, and that page reads the controllers in place of the headset app (scripts/quest_web_source.py). app: as before.
+case "${YAM_HEADSET:-app}" in app|web) ;; *) echo "YAM_HEADSET must be app or web (config/teleop_session.conf)"; exit 2;; esac
+WEB=$([ "${YAM_HEADSET:-app}" = web ] && echo 1 || echo 0); WEB_PORT=${YAM_WEB_PORT:-8791}
 mkdir -p "$D" "$R"
 SSHO=(-n -o BatchMode=yes -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10)
 S=$(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"{print $1}'); [ "$(echo "$S" | grep -c .)" = 1 ] || { echo "need exactly one headset on adb"; exit 2; }
 msg() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$1"; }
-for p in $LINK_PORT $VIEW_PORT; do ss -ltn | grep -q "127.0.0.1:$p " && { msg "Port $p on this PC is in use (another session?). Ending."; exit 2; }; done
+for p in $LINK_PORT $VIEW_PORT $([ "$WEB" = 1 ] && echo $WEB_PORT); do ss -ltn | grep -q "127.0.0.1:$p " && { msg "Port $p on this PC is in use (another session?). Ending."; exit 2; }; done
 
 finish() {   # $1 = notstarted: the lab program exited at start-up, so there is nothing to lower
   # Exactly once, and only in this script's main process (the traps below make sure of it): a second stop signal
@@ -28,6 +32,7 @@ finish() {   # $1 = notstarted: the lab program exited at start-up, so there is 
     ssh "${SSHO[@]}" "$H" "ps -o args= -p \$(cat ~/$L/yam_pid_$N 2>/dev/null) 2>/dev/null | grep -q yam_live.py" \
       && msg "WARNING: the YAM program is still running on $H; look at the arms" || msg "The YAM program is not running; nothing was commanded."
     T=$(cat "$R/yam_tail.pid" 2>/dev/null); kill "$T" 2>/dev/null; adb -s "$S" shell am force-stop org.questxarm.reader > /dev/null 2>&1
+    [ "$WEB" = 1 ] && adb -s "$S" reverse --remove tcp:$WEB_PORT > /dev/null 2>&1
     return
   fi
   msg "Lowering both arms to rest and ending ..."
@@ -46,6 +51,7 @@ finish() {   # $1 = notstarted: the lab program exited at start-up, so there is 
   else msg "WARNING: the lab program did not confirm that the arms are at rest. Look at the arms; use the e-stop if they move."; fi
   T=$(cat "$R/yam_tail.pid" 2>/dev/null); kill "$T" 2>/dev/null
   adb -s "$S" shell am force-stop org.questxarm.reader > /dev/null 2>&1
+  [ "$WEB" = 1 ] && adb -s "$S" reverse --remove tcp:$WEB_PORT > /dev/null 2>&1
   if [ "$REC" = 1 ]; then
     msg "$(grep -m1 '^demos:' "$D/yam_end_$N.txt" 2>/dev/null || ssh "${SSHO[@]}" "$H" "grep -m1 '^demos:' ~/$L/yam_$N.console.txt")"
     if [ "${MAKE_VIDEOS:-1}" = 1 ]; then
@@ -83,14 +89,25 @@ trap on_stop INT TERM HUP PIPE
 ssh "${SSHO[@]:1}" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
   -L 127.0.0.1:$LINK_PORT:127.0.0.1:28766 -L 127.0.0.1:$VIEW_PORT:127.0.0.1:28767 "$H" > "$R/yam_tunnel.txt" 2>&1 < /dev/null &
 echo $! > "$R/yam_tunnel.pid"; for i in $(seq 1 40); do ss -ltn | grep -q "127.0.0.1:$LINK_PORT " && break; sleep 0.25; done
-( cd "$P/scripts" && exec python3 -u quest_pose_stream_sender.py --serial "$S" --port $LINK_PORT --max-rate 30 --ack-timeout 8 --source-log "$D/yam_src_$N.jsonl" \
+SRC=(--serial "$S"); STATUS="$R/yam_status_$N.txt"; echo "starting" > "$STATUS"
+[ "$WEB" = 1 ] && SRC=(--source web --web-port "$WEB_PORT" --web-cams "http://127.0.0.1:${RELAY_LOCAL_PORT:-18091}" --web-views "${YAM_WEB_VIEWS:-}" --web-big "${YAM_WEB_BIG:-}" --web-status "$STATUS")
+( cd "$P/scripts" && exec python3 -u quest_pose_stream_sender.py "${SRC[@]}" --port $LINK_PORT --max-rate 30 --ack-timeout 8 --source-log "$D/yam_src_$N.jsonl" \
     --summary "$D/yam_tx_$N.summary.json" > "$D/yam_tx_$N.console.txt" 2>&1 ) &
 echo $! > "$R/yam_tx.pid"; sleep 2
-msg "Starting the headset app ..."
-adb -s "$S" shell am broadcast -a com.oculus.vrpowermanager.prox_close > /dev/null 2>&1   # keeps the headset awake while it is not worn
 adb -s "$S" shell am force-stop org.questxarm.reader; sleep 1
-adb -s "$S" shell am start -W -n org.questxarm.reader/com.rail.oculus.teleop.MainActivity > /dev/null 2>&1
-python3 -u "$P/scripts/controller_wait.py" "$D/yam_src_$N.jsonl" --need 2 --serial "$S" || { msg "No controller. Ending."; finish; exit 3; }
+if [ "$WEB" = 1 ]; then
+  msg "Opening the headset's browser ..."
+  adb -s "$S" reverse tcp:$WEB_PORT tcp:$WEB_PORT > /dev/null || { msg "The headset cannot reach this PC over USB (adb reverse). Ending."; finish; exit 3; }
+  adb -s "$S" shell am start -a android.intent.action.VIEW -d "http://localhost:$WEB_PORT/" com.oculus.browser > /dev/null 2>&1 \
+    || adb -s "$S" shell am start -n com.oculus.vrshell/.MainActivity -d apk://com.oculus.browser -e uri "http://localhost:$WEB_PORT/" > /dev/null 2>&1
+  msg "PUT THE HEADSET ON. Its browser shows \"Teleop headset view\" (if not: open the Browser and go to localhost:$WEB_PORT)."
+  msg "Point a controller at \"Start (see the room)\" and press its trigger. The cameras then float in front of you."
+else
+  msg "Starting the headset app ..."
+  adb -s "$S" shell am broadcast -a com.oculus.vrpowermanager.prox_close > /dev/null 2>&1   # keeps the headset awake while it is not worn
+  adb -s "$S" shell am start -W -n org.questxarm.reader/com.rail.oculus.teleop.MainActivity > /dev/null 2>&1
+fi
+python3 -u "$P/scripts/controller_wait.py" "$D/yam_src_$N.jsonl" --need 2 --serial "$S" $([ "$WEB" = 1 ] && echo --web) || { msg "No controller. Ending."; finish; exit 3; }
 sleep 4; ssh "${SSHO[@]}" "$H" "kill -USR1 \$(cat ~/$L/yam_pid_$N)"   # the app's start-up reference notices, once (as on the xArm)
 msg "READY ($KIND). Cameras: http://127.0.0.1:${RELAY_LOCAL_PORT:-18091}/   3D view of what the arms are commanded to do: http://127.0.0.1:$VIEW_PORT/"
 msg "Each hand: hold the side grip (middle finger) to move its arm, release to stop; while the grip is held, the index trigger closes its gripper (as on the xArm)."
@@ -114,6 +131,7 @@ while true; do
     [ "$k" -gt "$seen_ep" ] && { printf '%s\n' "$eps" | tail -n $((k - seen_ep)) | while IFS= read -r e; do msg "DEMO: $e"; done; seen_ep=$k; }
   fi
   [ -n "$now" ] && [ "$now" != "$prev" ] && { msg "  $line"; prev=$now; }
+  [ "$WEB" = 1 ] && [ -n "$line" ] && printf '%s\n' "$line" > "$STATUS.new" && mv "$STATUS.new" "$STATUS"   # shown in the headset
   # A latched stop: the hands' state says "fault" until Enter. Said once, plainly (the status line is long; on
   # 2026-11-19 the operator did not see "Enter clears it" at its end and kept pressing the grip).
   if printf '%s' "$now" | grep -q ' fault'; then
