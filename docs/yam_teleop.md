@@ -172,12 +172,14 @@ further, until it is comfortable (the headset remembers it).
 
 ### Where the YAM cameras come from
 
-`scripts/lab_usb_cams.py` on the lab host serves the two wrist webcams and the ZED (port 28097, loopback). It opens
+`scripts/lab_usb_cams.py` on the lab host serves the two wrist webcams, the RealSense's colour camera and the ZED
+(port 28097, loopback). It opens
 a camera only while its picture is watched and lets it go a few seconds after, so other programs (the lab's
 camera wall, the calibration tool) can use the cameras the rest of the time; while one of those holds a camera,
 our view of it stays empty. `scripts/teleop yam-cameras` and every YAM session start it. The cameras and their
-sizes are `YAM_USB_CAMS` in `scripts/teleop`. The RealSense still comes from the lab's camera wall (port 8090),
-which also records it for the demos: if the wall is not running, that view is empty and demos cannot be recorded.
+sizes are `YAM_USB_CAMS` in `scripts/teleop`. The demos record the RealSense from the same server
+(since 2026-11-20; before, from the lab's camera wall on port 8090, which no longer has to run). If the wall runs
+and holds the RealSense, the overview is empty and a demo cannot start.
 
 ## When something goes wrong
 

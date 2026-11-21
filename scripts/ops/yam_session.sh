@@ -7,7 +7,7 @@
 set -u
 P=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd); . "$P/config/teleop_session.conf" || exit 2
 H=$LAB_HOST; D=${TELEOP_DATA_DIR:-$P/data/sessions}; R=$P/run; N=$1; CONF=${2:-}; REC=$([ "${3:-}" = rec ] && echo 1 || echo 0); L=$LAB_DIR/logs
-YAM_RECORD_CAMS=${YAM_RECORD_CAMS:-rs_color}   # camera-wall cameras saved with every demo (the RealSense sees both arms)
+YAM_RECORD_CAMS=${YAM_RECORD_CAMS:-rs_color}   # cameras saved with every demo, from the YAM camera server on the lab host (the RealSense sees both arms)
 if [ -n "$CONF" ]; then KIND="real arms"; ARMS="--arms real --moves-real-arms"; else KIND="simulation, no hardware"; ARMS="--arms sim"; fi
 LAB_PY=${YAM_PYTHON:-/home/dev/yam/i2rt/.venv/bin/python}   # I2RT's environment on the lab host
 LINK_PORT=18766; VIEW_PORT=18767                               # this PC; the lab program listens on 28766 / 28767
@@ -67,7 +67,7 @@ if [ -n "$CONF" ]; then scp -q "${SSHO[@]:1}" "$CONF" "$H:$L/confirm_$N.txt" || 
   ARMS="$ARMS --human-confirmation \"\$(tr '\n\"' '  ' < logs/confirm_$N.txt)\""; fi
 if [ "$REC" = 1 ]; then
   ARMS="$ARMS --record-dir episodes/$N --record-max-s $((${DEMO_MAX_MIN:-5} * 60)) --record-min-free-gb ${MIN_FREE_GB:-6}"
-  for c in ${YAM_RECORD_CAMS//,/ }; do ARMS="$ARMS --record-cam $c=${LAB_CAMERA_STATUS%/api/status}/cam/$c"; done
+  for c in ${YAM_RECORD_CAMS//,/ }; do ARMS="$ARMS --record-cam $c=${YAM_CAM_URL:-http://127.0.0.1:28097/stream}/$c"; done
 fi
 ssh "${SSHO[@]}" "$H" "cd ~/$LAB_DIR && mkdir -p logs && (nohup setsid $LAB_PY -u scripts/yam_live.py $ARMS --speed ${YAM_SPEED:-7.5} --scale ${YAM_SCALE:-0.667} $([ "${YAM_VELOCITY_FF:-1}" = 0 ] && echo --no-velocity-ff) --operator-yaw ${OPERATOR_YAW:-0} --log logs/yam_$N.jsonl > logs/yam_$N.console.txt 2>&1 < /dev/null & echo \$! > logs/yam_pid_$N)"
 : > "$D/yam_$N.console.txt"

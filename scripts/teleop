@@ -52,13 +52,15 @@ YAM_STARTS="scripts/yam_live.py"
 # name=<device>,<size>,<pictures a second>,<format>,<width served>. Left to right as the arms stand: the eMeet is on
 # the left arm, the C920 on the right (the operator, 2026-11-19; the lab's YAMCameraCalCtl says the same).
 YAM_USB_PORT=28097
-YAM_USB_CAMS=${YAM_USB_CAMS:-left_wrist=/dev/v4l/by-path/pci-0000:46:00.1-usb-0:2.4.2:1.0-video-index0,1280x720,30,mjpeg,960 right_wrist=/dev/v4l/by-path/pci-0000:46:00.1-usb-0:2.4.1:1.0-video-index0,1024x576,30,mjpeg,960 zed=/dev/v4l/by-id/usb-Technologies__Inc._ZED_2i_OV0001-video-index0,2560x720,15,yuyv422,1280}
+YAM_USB_CAMS=${YAM_USB_CAMS:-left_wrist=/dev/v4l/by-path/pci-0000:46:00.1-usb-0:2.4.2:1.0-video-index0,1280x720,30,mjpeg,960 right_wrist=/dev/v4l/by-path/pci-0000:46:00.1-usb-0:2.4.1:1.0-video-index0,1024x576,30,mjpeg,960 zed=/dev/v4l/by-id/usb-Technologies__Inc._ZED_2i_OV0001-video-index0,2560x720,15,yuyv422,1280 rs_color=/dev/v4l/by-id/usb-Intel_R__RealSense_TM__Depth_Camera_435i_Intel_R__RealSense_TM__Depth_Camera_435i_254343063952-video-index0,1280x720,15,yuyv422,960}
 U=http://127.0.0.1:$YAM_USB_PORT/stream
+export YAM_CAM_URL=$U   # where the lab program takes the cameras it records (yam_session.sh)
 # The camera page. Without YAM_STEREO: the wrist views large, side by side on top, and sharper (640 px wide; the
-# others 480), the RealSense (camera wall) below. YAM_STEREO=zed: the ZED's two eyes large on top, shown in 3D in the
+# others 480), the RealSense below (its colour camera, read directly: the lab's camera wall is not needed).
+# YAM_STEREO=zed: the ZED's two eyes large on top, shown in 3D in the
 # headset (YAM_HEADSET=web; on the PC's page the two eyes are side by side), the wrist views below.
 case "${YAM_STEREO:-}" in
-  "") YAM_VIEWS=${YAM_VIEWS:-rs_color,left_wrist=$U/left_wrist,right_wrist=$U/right_wrist}
+  "") YAM_VIEWS=${YAM_VIEWS:-rs_color=$U/rs_color,left_wrist=$U/left_wrist,right_wrist=$U/right_wrist}
       YAM_VIEW_ARGS=${YAM_VIEW_ARGS:---big left_wrist,right_wrist --big-width 640}; export YAM_WEB_STEREO="";;
   zed) YAM_VIEWS=${YAM_VIEWS:-stereo=$U/zed,left_wrist=$U/left_wrist,right_wrist=$U/right_wrist}
        YAM_VIEW_ARGS=${YAM_VIEW_ARGS:---big stereo --big-width 1280}; export YAM_WEB_STEREO=stereo;;
