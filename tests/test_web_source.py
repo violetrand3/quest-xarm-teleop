@@ -125,10 +125,10 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(tr.source_gap_records, 0)
 
 
-def ws_connect(port: int) -> tuple[socket.socket, str, str]:
+def ws_connect(port: int, path: str = "/ws?v=2") -> tuple[socket.socket, str, str]:
     s = socket.create_connection(("127.0.0.1", port), timeout=5)
     key = base64.b64encode(os.urandom(16)).decode()
-    s.sendall(f"GET /ws HTTP/1.1\r\nHost: localhost:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+    s.sendall(f"GET {path} HTTP/1.1\r\nHost: localhost:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
               f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n".encode())  # fmt: skip
     head = b""
     while b"\r\n\r\n" not in head:
@@ -219,8 +219,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(latest["rec"].poses["grip_r"].p, (0.2, 1.1, -0.3))
         self.status.write_text("STOPPED\n")
         self.assertEqual(json.loads(ws_recv_text(s)), {"status": "STOPPED"})
-        # a second page is refused while one is connected
-        s2, head2, _ = ws_connect(self.port)
+        # a page from before "the newest page takes the link" is refused
+        s2, head2, _ = ws_connect(self.port, "/ws")
         self.assertIn("409", head2)
         s2.close()
         # something that is not a record: the input is lost, never kept
@@ -230,6 +230,24 @@ class ServerTests(unittest.TestCase):
         s.close()
         self.assertTrue(wait(lambda: not self.st()["source_up"]))
         self.assertIn("not connected", self.st()["source_note"])
+
+    def test_the_newest_page_takes_the_link(self) -> None:
+        old, _, _ = ws_connect(self.port)
+        self.assertTrue(wait(lambda: self.st()["source_up"]))
+        ws_recv_text(old)  # the status
+        new, head, _ = ws_connect(self.port)
+        self.assertIn("101", head)
+        self.assertEqual(old.recv(4), bytes([0x88, 2]) + struct.pack(">H", 4001))  # told why, then closed
+        self.assertEqual(old.recv(1), b"")
+        time.sleep(0.3)  # the old page's end must not mark the source down: the new page has it
+        self.assertTrue(self.st()["source_up"])
+        ws_recv_text(new)
+        for t in self.raw[:4]:
+            ws_send(new, t)
+        self.assertTrue(wait(lambda: self.st()["available"]))
+        new.close()
+        self.assertTrue(wait(lambda: not self.st()["source_up"]))
+        old.close()
 
     def test_an_aborted_generation_takes_nothing(self) -> None:
         s, _, _ = ws_connect(self.port)

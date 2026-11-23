@@ -13,7 +13,11 @@ needs). Standard library only.
   GET /             the page (web/headset.html, with web/records.js)
   GET /config.json  the views to show
   GET /cam/<view>   that view's pictures, passed through from the camera relay's tunnel on this PC
-  GET /ws           WebSocket: the page sends one record per text message; this side sends {"status": "..."} lines
+  GET /ws?v=2       WebSocket: the page sends one record per text message; this side sends {"status": "..."} lines.
+                    One page at a time, and the NEWEST one: a page that connects takes the link from the page that had
+                    it (closed with code 4001; that page does not come back by itself). So a tab left open from an
+                    earlier session cannot keep the link from the tab the operator is looking at (2026-11-23: it did,
+                    and the headset showed "NOT CONNECTED"). Pages from before this rule (no v=2) are refused.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ import base64
 import hashlib
 import json
 import re
+import socket
 import struct
 import threading
 import time
@@ -142,12 +147,20 @@ class WebAcquisition:
             return ""
 
     def _serve_ws(self, h: BaseHTTPRequestHandler) -> None:
+        if "v=2" not in h.path.partition("?")[2].split("&"):
+            h.send_error(409, "this page is from an earlier version: reload it")
+            return
         with self._lock:
-            if self._client is not None:
-                h.send_error(409, "another headset page is connected")
-                return
-            self._client = h
-        send_lock = threading.Lock()
+            old, self._client = self._client, h
+        if old is not None:  # the newest page takes the link
+            try:
+                with old.ws_send_lock:
+                    old.wfile.write(bytes([0x88, 2]) + struct.pack(">H", 4001))
+                    old.wfile.flush()
+                old.connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        send_lock = h.ws_send_lock = threading.Lock()
         done = threading.Event()
 
         def send(text: str) -> None:
@@ -191,8 +204,10 @@ class WebAcquisition:
         finally:
             done.set()
             with self._lock:
-                self._client = None
-            if self._running:
+                mine = self._client is h
+                if mine:
+                    self._client = None
+            if mine and self._running:
                 self.slot.set_source(False, "headset page not connected", time.monotonic_ns())
             h.close_connection = True
 

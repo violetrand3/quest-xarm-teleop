@@ -296,12 +296,19 @@ async function pump(p) {
 // ---- the link to the sender --------------------------------------------------------------------------------------------
 const sid = Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, "0")).join("");
 const stream = QuestRecords.makeStream(sid);
-let ws = null;
+let ws = null, replaced = false;   // replaced: another tab of this page took the link (the PC keeps the newest page only)
 function connect() {
-  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  replaced = false;
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws?v=2");
   ws.onopen = () => { linkUp = true; statusDirty = true; $("link").textContent = "connected to the PC"; };
   ws.onmessage = (e) => { try { statusText = JSON.parse(e.data).status || ""; statusDirty = true; } catch (x) {} };
-  ws.onclose = () => { linkUp = false; statusDirty = true; $("link").textContent = "NOT connected to the PC"; setTimeout(connect, 1000); };
+  ws.onclose = (e) => {
+    linkUp = false; statusDirty = true;
+    if (e.code === 4001) {   // do not take it back by itself: the two tabs would pull it from each other for ever
+      replaced = true; $("link").textContent = "NOT connected: another tab of this page took over";
+      say("Another tab of this page is in use. Close this tab, or press Start here to use this one.");
+    } else { $("link").textContent = "NOT connected to the PC"; setTimeout(connect, 1000); }
+  };
   ws.onerror = () => {};
 }
 function send(text) {   // never a backlog: a record that cannot go now is dropped (the sender sees the gap and says so)
@@ -360,6 +367,7 @@ function onXRFrame(t, frame) {
 
 async function start(mode) {
   try {
+    if (replaced) connect();   // Start pressed here: this tab is the one in use now
     await gl.makeXRCompatible();
     session = await navigator.xr.requestSession(mode, { requiredFeatures: ["local"] });
     session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
