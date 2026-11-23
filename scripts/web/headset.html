@@ -85,7 +85,7 @@ function newTexture() {
 // stretched from one to the other: seen from near the camera's place that closes the gap; ?holes=1 leaves it open.
 // NEAR and FAR are lab_rgbd.py's (tests/test_lab_rgbd.py checks they agree).
 const DEPTH_NEAR = 0.35, DEPTH_FAR = 2.9;
-const GRID_W = 320, GRID_H = 180;
+const GRID_W = 480, GRID_H = 270;
 const sceneProg = (() => {
   const mk = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
     if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
