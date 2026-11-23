@@ -125,7 +125,7 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(tr.source_gap_records, 0)
 
 
-def ws_connect(port: int, path: str = "/ws?v=2") -> tuple[socket.socket, str, str]:
+def ws_connect(port: int, path: str = "/ws?v=2&p=0123456789abcdef") -> tuple[socket.socket, str, str]:
     s = socket.create_connection(("127.0.0.1", port), timeout=5)
     key = base64.b64encode(os.urandom(16)).decode()
     s.sendall(f"GET {path} HTTP/1.1\r\nHost: localhost:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
@@ -200,9 +200,18 @@ class ServerTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as e:
                 get(bad)
             self.assertEqual(e.exception.code, 404)
+        with self.assertRaises(urllib.error.HTTPError) as e:  # no page holds the link: no pictures
+            get("/cam/rs_color?p=abcdef0123")
+        self.assertEqual(e.exception.code, 409)
+        s, _, _ = ws_connect(self.port, "/ws?v=2&p=abcdef0123")
+        self.assertTrue(wait(lambda: self.acq._page == "abcdef0123"))
+        with self.assertRaises(urllib.error.HTTPError) as e:  # another tab
+            get("/cam/rs_color?p=other")
+        self.assertEqual(e.exception.code, 409)
         with self.assertRaises(urllib.error.HTTPError) as e:  # the camera view is not running: said, not hung
-            get("/cam/rs_color")
+            get("/cam/rs_color?p=abcdef0123")
         self.assertEqual(e.exception.code, 502)
+        s.close()
 
     def test_records_reach_the_slot_and_the_state_reaches_the_page(self) -> None:
         self.assertFalse(self.st()["source_up"])
@@ -220,9 +229,10 @@ class ServerTests(unittest.TestCase):
         self.status.write_text("STOPPED\n")
         self.assertEqual(json.loads(ws_recv_text(s)), {"status": "STOPPED"})
         # a page from before "the newest page takes the link" is refused
-        s2, head2, _ = ws_connect(self.port, "/ws")
-        self.assertIn("409", head2)
-        s2.close()
+        for early in ("/ws", "/ws?v=2"):
+            s2, head2, _ = ws_connect(self.port, early)
+            self.assertIn("409", head2)
+            s2.close()
         # something that is not a record: the input is lost, never kept
         ws_send(s, "{not json")
         self.assertTrue(wait(lambda: not self.st()["available"]))

@@ -267,7 +267,8 @@ async function pump(p) {
   const find = (buf, from) => { for (let i = from; i + 3 < buf.length; i++) if (buf[i] === 13 && buf[i + 1] === 10 && buf[i + 2] === 13 && buf[i + 3] === 10) return i; return -1; };
   for (;;) {
     try {
-      const r = await fetch("/cam/" + p.key, { cache: "no-store" });
+      if (!linkUp) throw new Error("no link");   // the PC gives pictures only to the page that holds the link
+      const r = await fetch("/cam/" + p.key + "?p=" + sid, { cache: "no-store" });
       if (!r.ok || !r.body) throw new Error("status " + r.status);
       const reader = r.body.getReader();
       let buf = new Uint8Array(0);
@@ -301,7 +302,7 @@ const stream = QuestRecords.makeStream(sid);
 let ws = null, replaced = false;   // replaced: another tab of this page took the link (the PC keeps the newest page only)
 function connect() {
   replaced = false;
-  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws?v=2");
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws?v=2&p=" + sid);
   ws.onopen = () => { linkUp = true; statusDirty = true; $("link").textContent = "connected to the PC"; };
   ws.onmessage = (e) => { try { statusText = JSON.parse(e.data).status || ""; statusDirty = true; } catch (x) {} };
   ws.onclose = (e) => {

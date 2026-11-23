@@ -12,7 +12,10 @@ reaches it over its USB cable (`adb reverse tcp:<port> tcp:<port>`; http://local
 needs). Standard library only.
   GET /             the page (web/headset.html, with web/records.js)
   GET /config.json  the views to show
-  GET /cam/<view>   that view's pictures, passed through from the camera relay's tunnel on this PC
+  GET /cam/<view>?p=<page>  that view's pictures, passed through from the camera relay's tunnel on this PC: only for
+                    the page that holds the link (/ws?v=2&p=<page>), 409 for any other. A browser opens only a few
+                    connections to one address, and the picture streams never end: tabs left open from earlier
+                    sessions used them all up, and the tab in use got the status but no picture (2026-11-23).
   GET /ws?v=2       WebSocket: the page sends one record per text message; this side sends {"status": "..."} lines.
                     One page at a time, and the NEWEST one: a page that connects takes the link from the page that had
                     it (closed with code 4001; that page does not come back by itself). So a tab left open from an
@@ -104,6 +107,7 @@ class WebAcquisition:
         self.gen = 0
         self._lock = threading.Lock()
         self._client: Any = None  # the handler of the connected page
+        self._page: str | None = None  # its name for itself (p=...): the only page that gets camera pictures
         self._running = False
         self.srv = ThreadingHTTPServer(("127.0.0.1", port), self._handler())
         self.srv.daemon_threads = True
@@ -147,11 +151,13 @@ class WebAcquisition:
             return ""
 
     def _serve_ws(self, h: BaseHTTPRequestHandler) -> None:
-        if "v=2" not in h.path.partition("?")[2].split("&"):
+        q = self._query(h.path)
+        if q.get("v") != "2" or not re.fullmatch(r"[0-9a-f]{8,32}", q.get("p", "")):  # also a page of this morning: v=2, no name
             h.send_error(409, "this page is from an earlier version: reload it")
             return
         with self._lock:
             old, self._client = self._client, h
+            self._page = q["p"]
         if old is not None:  # the newest page takes the link
             try:
                 with old.ws_send_lock:
@@ -206,12 +212,21 @@ class WebAcquisition:
             with self._lock:
                 mine = self._client is h
                 if mine:
-                    self._client = None
+                    self._client, self._page = None, None
             if mine and self._running:
                 self.slot.set_source(False, "headset page not connected", time.monotonic_ns())
             h.close_connection = True
 
+    @staticmethod
+    def _query(path: str) -> dict[str, str]:
+        return dict(kv.split("=", 1) for kv in path.partition("?")[2].split("&") if "=" in kv)
+
     def _serve_cam(self, h: BaseHTTPRequestHandler, name: str) -> None:
+        with self._lock:
+            page = self._page
+        if not page or self._query(h.path).get("p") != page:
+            h.send_error(409, "pictures go to the page that holds the link")
+            return
         try:
             r = urllib.request.urlopen(f"{self.cams_url}/cam/{name}", timeout=8)
         except OSError:
@@ -222,7 +237,7 @@ class WebAcquisition:
             h.send_header("Content-Type", r.headers.get("Content-Type", "multipart/x-mixed-replace; boundary=frame"))
             h.send_header("Cache-Control", "no-cache, private")
             h.end_headers()
-            while True:
+            while self._page == page:  # the page lost the link: its pictures end too
                 chunk = r.read1(65536)
                 if not chunk:
                     break
