@@ -170,6 +170,27 @@ further, until it is comfortable (the headset remembers it).
 - The pictures come 8 times a second, like the others. That is enough to judge depth but not smooth.
 - First tried on 2026-11-20 without a headset: the page drew the right half for each eye from a real ZED picture.
 
+### A 3D scene (`YAM_STEREO=depth`)
+
+The RealSense behind the arms has a depth sensor: it measures how far away every point of its picture is. With
+`YAM_STEREO=depth` (and `YAM_HEADSET=web`) the headset page draws the colour picture as a surface with that shape,
+life size, so you look into the scene and it shifts as you move your head. The camera's place becomes where your
+head is when you press Start (or press a thumbstick down): the table is below and in front of you, as the camera
+sees it, and level. The wrist pictures and the status strip float above eye height. Push the right thumbstick
+sideways to make the scene smaller and nearer, or life size again.
+
+- One camera sees one side: behind an arm, and at the edge of every object, nothing was measured, and there the
+  scene has holes. Shiny and black parts (the grippers) come out ragged.
+- Distances are sent in steps of about 1 cm between 0.35 and 2.9 m, and the scene updates about 8 times a second.
+- On the PC's camera page the same view shows the colour picture and, beside it, the distances as grey.
+- The demos record the RealSense's colour picture as before (from the same program, `scripts/lab_rgbd.py` on the
+  lab host, port 28098, which holds the camera only while it is watched).
+- The camera's lens and tilt are in `scripts/web/depth_camera.json`. If the camera is moved, run
+  `python3 scripts/lab_rgbd.py --describe` on the lab host and put what it prints there.
+- A check without the headset: start a session with `YAM_HEADSET=web` and open `http://localhost:8791/` on the PC:
+  the preview shows the scene swinging from side to side. `?side=1`, `?side=2` and `?side=3` show it from the right,
+  from above and from behind (2026-11-23: the table lies level in all three).
+
 ### Where the YAM cameras come from
 
 `scripts/lab_usb_cams.py` on the lab host serves the two wrist webcams, the RealSense's colour camera and the ZED
