@@ -374,6 +374,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--web-cams", default="http://127.0.0.1:18091", help="web: the camera relay's tunnel on this PC")
     ap.add_argument("--web-views", default="", help="web: comma list of the relay's views to show in the headset")
     ap.add_argument("--web-big", default="", help="web: the views shown large, on top")
+    ap.add_argument("--web-depth", default="", help="web: the views that hold colour | distance side by side (shown as a 3D scene)")
     ap.add_argument("--web-stereo", default="", help="web: the views that hold both eyes side by side (shown in 3D)")
     ap.add_argument("--web-status", type=Path, help="web: a text file whose content is shown in the headset (the session's state)")
     ap.add_argument("--duration", type=float)
@@ -442,7 +443,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             acq: Any = WebAcquisition(slot, on_acq_event, args.web_port, args.web_cams, [v for v in args.web_views.split(",") if v],
                                       [v for v in args.web_big.split(",") if v], args.web_status,
-                                      stereo=[v for v in args.web_stereo.split(",") if v])  # fmt: skip
+                                      stereo=[v for v in args.web_stereo.split(",") if v],
+                                      depth=[v for v in args.web_depth.split(",") if v])  # fmt: skip
         except OSError as e:
             print(f"error: cannot serve the headset page on 127.0.0.1:{args.web_port}: {e}", file=sys.stderr)
             return 3

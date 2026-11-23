@@ -13,7 +13,7 @@ canvas{display:block;width:100%;height:56vh;background:#000}
   <div id="msg"></div>
   <button id="ar" disabled>Start (see the room)</button><button id="vr" class="alt" disabled>Start (dark room)</button>
   <div id="note">The camera pictures float in front of you and the controllers drive the arms as usual. Press a thumbstick
-  down to bring the pictures back in front of you. With a 3D picture, push the right thumbstick sideways to move it nearer or further. To leave, press the Meta button. The picture below is a preview.</div>
+  down to bring the pictures back in front of you. With a 3D picture or the 3D scene, push the right thumbstick sideways to move it nearer or further. To leave, press the Meta button. The picture below is a preview.</div>
 </div>
 <canvas id="c"></canvas>
 <script src="/records.js"></script>
@@ -78,6 +78,85 @@ function newTexture() {
   return t;
 }
 
+// ---- the 3D scene: a picture that holds colour | distance (scripts/lab_rgbd.py) drawn as a surface -------------------
+// Every point of a grid over the colour picture is put at its measured distance along its line of sight, so the scene
+// has its real shape and shifts as the head moves. Where no distance was measured, or two neighbours are far apart
+// in distance (the edge of an arm against the table), nothing is drawn: those are holes, not stretched surfaces.
+// NEAR and FAR are lab_rgbd.py's (tests/test_lab_rgbd.py checks they agree).
+const DEPTH_NEAR = 0.25, DEPTH_FAR = 4.0;
+const GRID_W = 320, GRID_H = 180;
+const sceneProg = (() => {
+  const mk = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+  const common = `#version 300 es
+    precision highp float; uniform sampler2D t;
+    const float NEAR = ${DEPTH_NEAR.toFixed(3)}, FAR = ${DEPTH_FAR.toFixed(3)};
+    float grey(vec2 u){ return textureLod(t, vec2(0.5 + clamp(u.x, 0.003, 0.997) * 0.5, u.y), 0.0).r; }
+    float zOf(float d){ return 1.0 / (1.0 / FAR + d * (1.0 / NEAR - 1.0 / FAR)); }`;
+  const p = gl.createProgram();
+  gl.attachShader(p, mk(gl.VERTEX_SHADER, common + `
+    in vec2 g; uniform mat4 m; uniform vec4 k; out vec2 uv;   // k: focal, cx, cy (fractions of the picture), height / width
+    void main(){ float z = zOf(grey(g)); uv = g;
+      gl_Position = m * vec4((g.x - k.y) / k.x * z, -(g.y - k.z) * k.w / k.x * z, -z, 1.0); }`));
+  gl.attachShader(p, mk(gl.FRAGMENT_SHADER, common + `
+    in vec2 uv; uniform vec2 px; uniform float dim; out vec4 c;
+    void main(){ float lo = 1e9, hi = 0.0, least = 1.0;
+      for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) {
+        float d = grey(uv + vec2(float(i), float(j)) * px); least = min(least, d);
+        float z = zOf(d); lo = min(lo, z); hi = max(hi, z); }
+      if (least < 0.024 || hi - lo > 0.025 + 0.05 * lo) discard;
+      c = vec4(texture(t, vec2(clamp(uv.x, 0.003, 0.997) * 0.5, uv.y)).rgb * dim, 1.0); }`));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+})();
+const sM = gl.getUniformLocation(sceneProg, "m"), sK = gl.getUniformLocation(sceneProg, "k"), sPx = gl.getUniformLocation(sceneProg, "px"),
+  sDim = gl.getUniformLocation(sceneProg, "dim");
+const grid = gl.createVertexArray();
+const gridCount = (() => {
+  const v = new Float32Array((GRID_W + 1) * (GRID_H + 1) * 2), ix = new Uint32Array(GRID_W * GRID_H * 6);
+  for (let y = 0, n = 0; y <= GRID_H; y++) for (let x = 0; x <= GRID_W; x++) { v[n++] = x / GRID_W; v[n++] = y / GRID_H; }
+  for (let y = 0, n = 0; y < GRID_H; y++) for (let x = 0; x < GRID_W; x++) {
+    const a = y * (GRID_W + 1) + x, b = a + 1, c = a + GRID_W + 1, d = c + 1;
+    ix[n++] = a; ix[n++] = c; ix[n++] = b; ix[n++] = b; ix[n++] = c; ix[n++] = d;
+  }
+  gl.bindVertexArray(grid);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, v, gl.STATIC_DRAW);
+  const g = gl.getAttribLocation(sceneProg, "g"); gl.enableVertexAttribArray(g); gl.vertexAttribPointer(g, 2, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, ix, gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  return ix.length;
+})();
+// The camera looks down at the table (web/depth_camera.json: its tilt, from its own accelerometer). This turns the
+// scene so that its table is level in the room: the camera's place becomes where your head was when the pictures
+// were last brought in front, and you look down at the arms as the camera does.
+let depthCam = null, sceneTurn = IDENT, sceneScale = 1.0;
+try { const d = Number(localStorage.getItem("scene_scale")); if (isFinite(d) && d >= 0.2 && d <= 1.5) sceneScale = d; } catch (e) {}
+function turnFor(cam) {
+  const p = cam.pitch_deg * Math.PI / 180, r = cam.roll_deg * Math.PI / 180;
+  const up = [-Math.cos(p) * Math.sin(r), Math.cos(p) * Math.cos(r), Math.sin(p)];     // the room's up, in the camera's axes (x right, y up, z back)
+  let h = [up[2] * up[0], up[2] * up[1], -1 + up[2] * up[2]];                             // level forward: (0, 0, -1) without its part along up
+  const n = Math.hypot(h[0], h[1], h[2]) || 1; h = h.map((v) => v / n);
+  const x = [h[1] * up[2] - h[2] * up[1], h[2] * up[0] - h[0] * up[2], h[0] * up[1] - h[1] * up[0]];
+  return new Float32Array([x[0], up[0], -h[0], 0, x[1], up[1], -h[1], 0, x[2], up[2], -h[2], 0, 0, 0, 0, 1]);   // rows: right, up, back
+}
+function scaled(m, k) { const o = new Float32Array(m); for (let i = 0; i < 12; i++) o[i] *= k; return o; }
+function drawScene(viewProj, anchor) {
+  const now = performance.now();
+  gl.useProgram(sceneProg); gl.bindVertexArray(grid); gl.activeTexture(gl.TEXTURE0);
+  gl.enable(gl.DEPTH_TEST);
+  for (const p of panels) if (p.depth && p.frames) {
+    gl.uniformMatrix4fv(sM, false, mul(mul(viewProj, anchor), scaled(sceneTurn, sceneScale)));
+    gl.uniform4f(sK, depthCam.focal, depthCam.cx, depthCam.cy, p.aspect);
+    gl.uniform2f(sPx, 1.5 / Math.max(1, p.texW / 2), 1.5 / Math.max(1, p.texH));
+    gl.uniform1f(sDim, now - p.lastMs > 1500 ? 0.35 : 1.0);
+    gl.bindTexture(gl.TEXTURE_2D, p.tex);
+    gl.drawElements(gl.TRIANGLES, gridCount, gl.UNSIGNED_INT, 0);
+  }
+  gl.disable(gl.DEPTH_TEST);
+  gl.bindVertexArray(null);
+}
+
 // ---- the panels: camera views and the status strip ------------------------------------------------------------------
 const DIST = 1.3;            // m from the eyes
 const panels = [];           // {key, tex, w, aspect, x, y, pending, frames, lastMs}
@@ -90,6 +169,15 @@ const textCanvas = document.createElement("canvas"); textCanvas.width = 1536; te
 let depth = 0.03;
 try { const d = Number(localStorage.getItem("stereo_depth")); if (isFinite(d) && d >= 0 && d <= 0.15 && localStorage.getItem("stereo_depth") !== null) depth = d; } catch (e) {}
 function layout(cfg) {
+  const scene = cfg.depth ? cfg.depth.views.filter((k) => cfg.views.includes(k)) : [];
+  if (scene.length) {   // the 3D scene around you; the other pictures in a row above eye height, out of its way
+    depthCam = cfg.depth; sceneTurn = turnFor(depthCam); line = 0.28;
+    for (const k of scene) panels.push({ key: k, tex: newTexture(), depth: true, w: 0, aspect: 9 / 16, x: 0, y: 0, top: false, pending: null, frames: 0, lastMs: 0, texW: 2, texH: 1 });
+    cfg.views.filter((k) => !scene.includes(k)).forEach((k, i, all) => panels.push({ key: k, tex: newTexture(), w: 0.5, aspect: 9 / 16,
+      x: (i - (all.length - 1) / 2) * 0.54, y: 0, top: true, stereo: false, pending: null, frames: 0, lastMs: 0 }));
+    statusPanel = { tex: newTexture(), w: 1.44, aspect: 160 / 1536, x: 0, y: 0 };
+    return;
+  }
   const stereo = (cfg.stereo || []).filter((k) => cfg.views.includes(k));
   const big = stereo.length ? stereo : cfg.big.filter((k) => cfg.views.includes(k)), rest = cfg.views.filter((k) => !big.includes(k));
   const row = (keys, w, top, gap) => keys.forEach((k, i) => panels.push({ key: k, tex: newTexture(), w: w, aspect: 9 / 16,
@@ -102,15 +190,15 @@ function layout(cfg) {
 
 // The rows by their edges, whatever shape the pictures have: the top row stands on a line a little below eye
 // height, the status strip sits above its tallest picture, the second row hangs below the line.
-const LINE = -0.12, GAP = 0.03;
+let line = -0.12; const GAP = 0.03;
 function arrange() {
   let tallest = 0;
   for (const p of panels) {
     const h = p.w * p.aspect;
-    p.y = p.top ? LINE + h / 2 : LINE - GAP - h / 2;
+    p.y = p.top ? line + h / 2 : line - GAP - h / 2;
     if (p.top) tallest = Math.max(tallest, h);
   }
-  statusPanel.y = LINE + tallest + GAP + statusPanel.w * statusPanel.aspect / 2;
+  statusPanel.y = line + tallest + GAP + statusPanel.w * statusPanel.aspect / 2;
 }
 
 function drawStatus() {
@@ -139,7 +227,7 @@ function upload() {
     const b = p.pending; p.pending = null;
     gl.bindTexture(gl.TEXTURE_2D, p.tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, b);
-    p.aspect = b.height / (p.stereo ? b.width / 2 : b.width); b.close();
+    p.aspect = b.height / (p.stereo || p.depth ? b.width / 2 : b.width); p.texW = b.width; p.texH = b.height; b.close();
   }
   if (statusDirty && statusPanel) drawStatus();
 }
@@ -149,6 +237,7 @@ function drawPanels(viewProj, anchor, eye) {   // eye: "left" or "right" (which 
   const base = mul(viewProj, anchor), now = performance.now();
   arrange();
   for (const p of panels.concat(statusPanel ? [statusPanel] : [])) {
+    if (p.depth) continue;   // drawn by drawScene
     const right = eye === "right", dx = p.stereo ? (right ? depth / 2 : -depth / 2) : 0;
     const m = place(p.x + dx, p.y, -DIST, -Math.atan2(p.x, DIST), p.w, p.w * p.aspect);   // each panel faces the eyes
     gl.uniformMatrix4fv(uM, false, mul(base, m));
@@ -229,7 +318,10 @@ function onXRFrame(t, frame) {
     f[src.handedness] = { pose: poseOf(frame.getPose(src.gripSpace, refSpace)), gamepad: src.gamepad };
     stick = stick || !!(src.gamepad.buttons[3] && src.gamepad.buttons[3].pressed);
     const ax = src.gamepad.axes[2] || 0;   // the right thumbstick sideways: the 3D picture nearer or further
-    if (src.handedness === "right" && Math.abs(ax) > 0.5 && panels.some((p) => p.stereo)) {
+    if (src.handedness === "right" && Math.abs(ax) > 0.5 && depthCam) {   // the 3D scene smaller and nearer, or life size
+      sceneScale = Math.min(1.5, Math.max(0.2, sceneScale * (1 + ax * 0.008)));
+      try { localStorage.setItem("scene_scale", sceneScale.toFixed(3)); } catch (e) {}
+    } else if (src.handedness === "right" && Math.abs(ax) > 0.5 && panels.some((p) => p.stereo)) {
       depth = Math.min(0.15, Math.max(0, depth + ax * 0.0006));
       try { localStorage.setItem("stereo_depth", depth.toFixed(4)); } catch (e) {}
     }
@@ -248,7 +340,9 @@ function onXRFrame(t, frame) {
   for (const view of pose.views) {
     const vp = layer.getViewport(view);
     gl.viewport(vp.x, vp.y, vp.width, vp.height);
-    drawPanels(mul(view.projectionMatrix, view.transform.inverse.matrix), anchor, view.eye);
+    const viewProj = mul(view.projectionMatrix, view.transform.inverse.matrix);
+    if (depthCam) drawScene(viewProj, anchor);
+    drawPanels(viewProj, anchor, view.eye);
   }
 }
 
@@ -276,9 +370,17 @@ function preview() {
   const w = canvas.clientWidth * devicePixelRatio | 0, h = canvas.clientHeight * devicePixelRatio | 0;
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  gl.viewport(0, 0, w, h); gl.clearColor(0.03, 0.03, 0.04, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.viewport(0, 0, w, h); gl.clearColor(0.03, 0.03, 0.04, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   upload();
-  drawPanels(perspective(1.1, w / Math.max(1, h), 0.05, 20), IDENT, new URLSearchParams(location.search).get("eye") || "left");
+  const proj = perspective(1.1, w / Math.max(1, h), 0.05, 20);
+  if (depthCam) {   // the scene seen from the camera's place, swinging a little from side to side to show its depth
+    const a = 0.3 * Math.sin(performance.now() / 1500), c = Math.cos(a), s = Math.sin(a), R = 0.9;   // about a point 0.9 m ahead
+    const swing = new Float32Array([c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, -s * R, 0, c * R - R, 1]);
+    const back = new Float32Array(16);   // the turn undone (its transpose): the camera's own view
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) back[i * 4 + j] = sceneTurn[j * 4 + i];
+    drawScene(mul(proj, mul(swing, scaled(back, 1 / sceneScale))), IDENT);
+  }
+  drawPanels(proj, IDENT, new URLSearchParams(location.search).get("eye") || "left");
 }
 
 (async () => {

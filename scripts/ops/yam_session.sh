@@ -90,7 +90,7 @@ ssh "${SSHO[@]:1}" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o Se
   -L 127.0.0.1:$LINK_PORT:127.0.0.1:28766 -L 127.0.0.1:$VIEW_PORT:127.0.0.1:28767 "$H" > "$R/yam_tunnel.txt" 2>&1 < /dev/null &
 echo $! > "$R/yam_tunnel.pid"; for i in $(seq 1 40); do ss -ltn | grep -q "127.0.0.1:$LINK_PORT " && break; sleep 0.25; done
 SRC=(--serial "$S"); STATUS="$R/yam_status_$N.txt"; echo "starting" > "$STATUS"
-[ "$WEB" = 1 ] && SRC=(--source web --web-port "$WEB_PORT" --web-cams "http://127.0.0.1:${RELAY_LOCAL_PORT:-18091}" --web-views "${YAM_WEB_VIEWS:-}" --web-big "${YAM_WEB_BIG:-}" --web-stereo "${YAM_WEB_STEREO:-}" --web-status "$STATUS")
+[ "$WEB" = 1 ] && SRC=(--source web --web-port "$WEB_PORT" --web-cams "http://127.0.0.1:${RELAY_LOCAL_PORT:-18091}" --web-views "${YAM_WEB_VIEWS:-}" --web-big "${YAM_WEB_BIG:-}" --web-stereo "${YAM_WEB_STEREO:-}" --web-depth "${YAM_WEB_DEPTH:-}" --web-status "$STATUS")
 ( cd "$P/scripts" && exec python3 -u quest_pose_stream_sender.py "${SRC[@]}" --port $LINK_PORT --max-rate 30 --ack-timeout 8 --source-log "$D/yam_src_$N.jsonl" \
     --summary "$D/yam_tx_$N.summary.json" > "$D/yam_tx_$N.console.txt" 2>&1 ) &
 echo $! > "$R/yam_tx.pid"; sleep 2

@@ -64,7 +64,12 @@ case "${YAM_STEREO:-}" in
       YAM_VIEW_ARGS=${YAM_VIEW_ARGS:---big left_wrist,right_wrist --big-width 640}; export YAM_WEB_STEREO="";;
   zed) YAM_VIEWS=${YAM_VIEWS:-stereo=$U/zed,left_wrist=$U/left_wrist,right_wrist=$U/right_wrist}
        YAM_VIEW_ARGS=${YAM_VIEW_ARGS:---big stereo --big-width 1280}; export YAM_WEB_STEREO=stereo;;
-  *) die "YAM_STEREO must be empty or zed (config/teleop_session.conf)";;
+  depth)   # the RealSense's colour AND depth (scripts/lab_rgbd.py): a 3D scene in the headset; on the PC's page colour | distance
+       YAM_RGBD_PORT=28098; G=http://127.0.0.1:$YAM_RGBD_PORT/stream
+       YAM_VIEWS=${YAM_VIEWS:-rgbd=$G/rgbd,left_wrist=$U/left_wrist,right_wrist=$U/right_wrist}
+       YAM_VIEW_ARGS=${YAM_VIEW_ARGS:---big rgbd --big-width 1280 --quality 75}; export YAM_WEB_STEREO="" YAM_WEB_DEPTH=rgbd
+       export YAM_CAM_URL=$G;;   # the demos' RealSense picture comes from the same program (it holds the camera)
+  *) die "YAM_STEREO must be empty, zed or depth (config/teleop_session.conf)";;
 esac
 # The same views for the headset's own page (YAM_HEADSET=web): their names, and which are large.
 export YAM_WEB_VIEWS=$(echo "$YAM_VIEWS" | tr ',' '\n' | sed 's/=.*//' | paste -sd,)
@@ -290,6 +295,13 @@ ensure_usb_cams() {   # the YAM cameras' on-demand server on the lab host, with 
   lab "cd ~/$LAB_DIR && mkdir -p logs && (nohup setsid python3 -u scripts/lab_usb_cams.py $want > logs/usb_cams_\$(date +%H%M%S).log 2>&1 < /dev/null &); sleep 1.5; ss -ltn | grep -q '127.0.0.1:$YAM_USB_PORT '" \
     || die "the YAM cameras did not start on the lab host"
 }
+ensure_rgbd() {   # YAM_STEREO=depth: the RealSense colour-and-depth server on the lab host (it too opens the camera only while watched)
+  [ "${YAM_STEREO:-}" = depth ] || return 0
+  lab "pgrep -af '[l]ab_rgbd.py' | grep -qF -- '--port $YAM_RGBD_PORT'" && return 0
+  echo "starting the RealSense colour and depth on the lab host (opened only while it is watched)"
+  lab "cd ~/$LAB_DIR && mkdir -p logs && (nohup setsid python3 -u scripts/lab_rgbd.py --port $YAM_RGBD_PORT > logs/rgbd_\$(date +%H%M%S).log 2>&1 < /dev/null &); sleep 2; ss -ltn | grep -q '127.0.0.1:$YAM_RGBD_PORT '" \
+    || die "the RealSense colour and depth did not start on the lab host"
+}
 ensure_cameras() {   # $1 = seconds the view must stay up, $2 = the views (default: CAMERAS, the xArm's), $3 = more relay options
   local need=$1 views=${2:-$CAMERAS} more=${3:+ $3} pid left args
   # The phone app turns the gripper picture 180 degrees when the wrist tilts (2026-10-14). --upright turned it back by finding
@@ -432,7 +444,7 @@ case "${1:-}" in
     echo "UFactory Studio, the arm's own control page: http://127.0.0.1:$STUDIO_LOCAL_PORT/"
     echo "Clear an error there with someone at the rig watching the arm. Close the page when done: it can move the arm too.";;
   cameras) rig_status; RELOAD=0; ensure_cameras 3600; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')";;
-  yam-cameras) rig_status; RELOAD=0; ensure_usb_cams; ensure_cameras 3600 "$YAM_VIEWS" "$YAM_VIEW_ARGS"; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')";;
+  yam-cameras) rig_status; RELOAD=0; ensure_usb_cams; ensure_rgbd; ensure_cameras 3600 "$YAM_VIEWS" "$YAM_VIEW_ARGS"; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')";;
   episodes)
     if [ -n "${2:-}" ]; then lab "cd ~/$LAB_DIR && python3 scripts/episode_inspect.py episodes/$2"
     else lab "cd ~/$LAB_DIR/episodes 2>/dev/null && for s in */; do [ -f \"\$s/session.json\" ] && echo \"\${s%/}: \$(ls -d \$s/episode_[0-9][0-9][0-9][0-9] 2>/dev/null | wc -l) demos, \$(du -sh \$s | cut -f1)\"; done; df -h . | awk 'NR==2{print \"free disk: \"\$4}'"; fi;;
@@ -445,7 +457,7 @@ case "${1:-}" in
     LAB_STARTS=$YAM_STARTS; lab_check; yam_free
     ps -eo args | grep -q '[b]ash .*teleop_live_session' && die "an xArm session is running on this PC; end it first"
     [ "$(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] || die "need exactly one headset on USB (adb devices)"
-    rig_status; RELOAD=0; ensure_usb_cams; ensure_cameras 21600 "$YAM_VIEWS" "$YAM_VIEW_ARGS"; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')"
+    rig_status; RELOAD=0; ensure_usb_cams; ensure_rgbd; ensure_cameras 21600 "$YAM_VIEWS" "$YAM_VIEW_ARGS"; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')"
     n=sim_$(date +%Y%m%d-%H%M%S); echo "$n" > "$R/current_yam_session"
     exec bash "$P/scripts/ops/yam_session.sh" "$n";;
   yam-try|yam-record)   # THE REAL YAM ARMS MOVE
@@ -466,7 +478,7 @@ case "${1:-}" in
     echo "  - you stand behind the arms, both facing away from you; both controllers are on"
     CONFIRM_TEXT="Operator $(id -un)@$(hostname -s) at the terminal prompt of scripts/teleop $1 on $(date '+%Y-%m-%d %H:%M:%S %Z'): both real YAM arms, speed level ${YAM_SPEED:-7.5} cm/s, hand scale ${YAM_SCALE:-0.667}, until Ctrl-C. Shown as conditions that must all be true: someone is at the arms right now, agrees, and has the YAM e-stop in reach; nobody is near the arms and nothing is under them that a dropping arm could hit; nothing else will command the YAM arms; both arms rest folded on their bases; the operator stands behind the arms, both facing away, both controllers on."
     ask_yes "Is all of this true? Start?"
-    rig_status; RELOAD=0; ensure_usb_cams; ensure_cameras 21600 "$YAM_VIEWS" "$YAM_VIEW_ARGS"; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')"
+    rig_status; RELOAD=0; ensure_usb_cams; ensure_rgbd; ensure_cameras 21600 "$YAM_VIEWS" "$YAM_VIEW_ARGS"; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')"
     n=$([ "$1" = yam-record ] && echo yamrec || echo yam)_$(date +%Y%m%d-%H%M%S); echo "$n" > "$R/current_yam_session"; echo "$CONFIRM_TEXT" > "$D/confirm_$n.txt"
     [ -n "${TELEOP_DRY_RUN:-}" ] && { echo "DRY RUN, nothing started: yam_session.sh $n $D/confirm_$n.txt $([ "$1" = yam-record ] && echo rec)"; exit 0; }
     exec bash "$P/scripts/ops/yam_session.sh" "$n" "$D/confirm_$n.txt" $([ "$1" = yam-record ] && echo rec);;

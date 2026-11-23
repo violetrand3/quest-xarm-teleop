@@ -89,10 +89,13 @@ class WebAcquisition:
 
     def __init__(self, slot: Any, on_event: Callable[[dict[str, Any]], None], port: int, cams_url: str,
                  views: list[str], big: list[str], status_file: Path | None = None, page: Path = PAGE,
-                 stereo: list[str] | None = None):  # fmt: skip
+                 stereo: list[str] | None = None, depth: list[str] | None = None):  # fmt: skip
         self.slot, self.on_event, self.port, self.cams_url = slot, on_event, port, cams_url.rstrip("/")
         self.views, self.big, self.status_file, self.page = views, big, status_file, page
         self.stereo = stereo or []  # views whose picture holds both eyes side by side (shown in 3D)
+        # views whose picture holds colour | distance side by side (scripts/lab_rgbd.py), shown as a 3D scene, with
+        # the camera's lens and tilt (web/depth_camera.json: `lab_rgbd.py --describe` on the lab host prints them)
+        self.depth = dict(json.loads((page.parent / "depth_camera.json").read_text()), views=depth) if depth else None
         self.gen = 0
         self._lock = threading.Lock()
         self._client: Any = None  # the handler of the connected page
@@ -236,7 +239,7 @@ class WebAcquisition:
                 elif p == "/records.js":
                     self._send(200, "text/javascript; charset=utf-8", (acq.page.parent / "records.js").read_bytes())
                 elif p == "/config.json":
-                    self._send(200, "application/json", json.dumps({"build": WEB_BUILD, "views": acq.views, "big": acq.big, "stereo": acq.stereo}).encode())
+                    self._send(200, "application/json", json.dumps({"build": WEB_BUILD, "views": acq.views, "big": acq.big, "stereo": acq.stereo, "depth": acq.depth}).encode())
                 elif p == "/ws" and "websocket" in self.headers.get("Upgrade", "").lower():
                     acq._serve_ws(self)
                 elif p.startswith("/cam/") and re.fullmatch(r"[a-z0-9_]+", p[5:]) and p[5:] in acq.views:
