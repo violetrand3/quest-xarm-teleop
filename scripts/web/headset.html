@@ -92,7 +92,7 @@ const sceneProg = (() => {
     precision highp float; uniform sampler2D t;
     const float NEAR = ${DEPTH_NEAR.toFixed(3)}, FAR = ${DEPTH_FAR.toFixed(3)};
     float grey(vec2 u){ return textureLod(t, vec2(0.5 + clamp(u.x, 0.003, 0.997) * 0.5, u.y), 0.0).r; }
-    float zOf(float d){ return NEAR + max(0.0, d * 255.0 - 8.0) / 247.0 * (FAR - NEAR); }`;
+    float zOf(float d){ return NEAR + max(0.0, d * 255.0 - 24.0) / 231.0 * (FAR - NEAR); }`;
   const p = gl.createProgram();
   gl.attachShader(p, mk(gl.VERTEX_SHADER, common + `
     in vec2 g; uniform mat4 m; uniform vec4 k; out vec2 uv;   // k: focal, cx, cy (fractions of the picture), height / width
@@ -104,7 +104,7 @@ const sceneProg = (() => {
       for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) {
         float d = grey(uv + vec2(float(i), float(j)) * px); least = min(least, d);
         float z = zOf(d); lo = min(lo, z); hi = max(hi, z); }
-      if (least < 0.024 || hi - lo > 0.025 + 0.05 * lo) discard;
+      if (least < 0.047 || hi - lo > 0.025 + 0.05 * lo) discard;
       c = vec4(texture(t, vec2(clamp(uv.x, 0.003, 0.997) * 0.5, uv.y)).rgb * dim, 1.0); }`));
   gl.linkProgram(p);
   if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
@@ -373,6 +373,15 @@ function preview() {
   gl.viewport(0, 0, w, h); gl.clearColor(0.03, 0.03, 0.04, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   upload();
   const proj = perspective(1.1, w / Math.max(1, h), 0.05, 20);
+  const side = new URLSearchParams(location.search).get("side");
+  if (depthCam && side) {   // ?side=1: the scene from its right, level with the table (a check that the table lies level); ?side=2: from above; ?side=3: from behind, level with the table
+    const eye = side === "2" ? [0, 1.2, -0.75] : side === "3" ? [0, -0.95, 1.6] : [2.4, -0.95, -0.75], to = [0, -1.0, -0.75], up = side === "2" ? [0, 0, -1] : [0, 1, 0];
+    let f = [to[0] - eye[0], to[1] - eye[1], to[2] - eye[2]]; const fn = Math.hypot(f[0], f[1], f[2]); f = f.map((v) => v / fn);
+    let r = [f[1] * up[2] - f[2] * up[1], f[2] * up[0] - f[0] * up[2], f[0] * up[1] - f[1] * up[0]]; const rn = Math.hypot(r[0], r[1], r[2]); r = r.map((v) => v / rn);
+    const u = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]], dot = (a) => -(a[0] * eye[0] + a[1] * eye[1] + a[2] * eye[2]);
+    drawScene(mul(proj, new Float32Array([r[0], u[0], -f[0], 0, r[1], u[1], -f[1], 0, r[2], u[2], -f[2], 0, dot(r), dot(u), -dot(f), 1])), IDENT);
+    return;
+  }
   if (depthCam) {   // the scene seen from the camera's place, swinging a little from side to side to show its depth
     const a = 0.3 * Math.sin(performance.now() / 1500), c = Math.cos(a), s = Math.sin(a), R = 0.9;   // about a point 0.9 m ahead
     const swing = new Float32Array([c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, -s * R, 0, c * R - R, 1]);

@@ -21,7 +21,7 @@ class DepthCodeTests(unittest.TestCase):
         z = np.array([0.0, 0.1, 0.5, 1.0, 2.0, 2.5, 9.0], dtype=np.float32)
         g = lab_rgbd.encode_depth(z, np)
         self.assertEqual(g[0], 0)  # none measured
-        self.assertEqual(g[1], 8)  # nearer than NEAR: the first valid grey, never 0
+        self.assertEqual(g[1], 24)  # nearer than NEAR: the first valid grey, never 0
         self.assertEqual(g[-1], 255)  # beyond FAR
         for zi, gi in zip(z[2:6], g[2:6]):
             self.assertLess(abs(lab_rgbd.decode_depth(float(gi)) - zi), 0.006)
