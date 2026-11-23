@@ -96,8 +96,16 @@ const sceneProg = (() => {
     float zOf(float d){ return NEAR + max(0.0, d * 255.0 - 24.0) / 231.0 * (FAR - NEAR); }`;
   const p = gl.createProgram();
   gl.attachShader(p, mk(gl.VERTEX_SHADER, common + `
-    in vec2 g; uniform mat4 m; uniform vec4 k; out vec2 uv;   // k: focal, cx, cy (fractions of the picture), height / width
-    void main(){ float z = zOf(grey(g)); uv = g;
+    in vec2 g; uniform mat4 m; uniform vec4 k; uniform vec2 cell; out vec2 uv;   // k: focal, cx, cy (fractions of the picture), height / width
+    // At the edge of an arm the sensor's distances spill a little past the arm onto what lies behind it (and the
+    // colour and the distance pictures do not meet exactly), so things next to the arm (a tube under the gripper)
+    // were lifted towards it and looked torn. A point whose neighbours differ much takes the furthest of them:
+    // what is beside an arm stays down on the table, and the arm is drawn a touch thinner.
+    void main(){ float z = zOf(grey(g)), far = z, near = z; uv = g;
+      for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) {
+        float d = grey(g + vec2(float(i), float(j)) * cell);
+        if (d > 0.047) { float n = zOf(d); far = max(far, n); near = min(near, n); } }
+      if (far - near > 0.025 + 0.05 * near) z = far;
       gl_Position = m * vec4((g.x - k.y) / k.x * z, -(g.y - k.z) * k.w / k.x * z, -z, 1.0); }`));
   gl.attachShader(p, mk(gl.FRAGMENT_SHADER, common + `
     in vec2 uv; uniform vec2 px; uniform float dim; uniform float gap; out vec4 c;
@@ -111,7 +119,7 @@ const sceneProg = (() => {
   if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
   return p;
 })();
-const sM = gl.getUniformLocation(sceneProg, "m"), sK = gl.getUniformLocation(sceneProg, "k"), sPx = gl.getUniformLocation(sceneProg, "px"),
+const sCell = gl.getUniformLocation(sceneProg, "cell"), sM = gl.getUniformLocation(sceneProg, "m"), sK = gl.getUniformLocation(sceneProg, "k"), sPx = gl.getUniformLocation(sceneProg, "px"),
   sDim = gl.getUniformLocation(sceneProg, "dim"), sGap = gl.getUniformLocation(sceneProg, "gap");
 const openGaps = new URLSearchParams(location.search).get("holes") === "1";
 const grid = gl.createVertexArray();
@@ -153,6 +161,7 @@ function drawScene(viewProj, anchor) {
     gl.uniform2f(sPx, 1.5 / Math.max(1, p.texW / 2), 1.5 / Math.max(1, p.texH));
     gl.uniform1f(sDim, now - p.lastMs > 1500 ? 0.35 : 1.0);
     gl.uniform1f(sGap, openGaps ? 1.0 : 0.0);
+    gl.uniform2f(sCell, 1 / GRID_W, 1 / GRID_H);
     gl.bindTexture(gl.TEXTURE_2D, p.tex);
     gl.drawElements(gl.TRIANGLES, gridCount, gl.UNSIGNED_INT, 0);
   }

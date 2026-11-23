@@ -131,6 +131,7 @@ class Source(threading.Thread):
                 # and black parts) the page would show a hole. Keep the last measurement of a point that flickers,
                 # then give what is still empty the distance of the furthest neighbour: the background goes on behind.
                 steady, fill = rs.temporal_filter(), rs.hole_filling_filter(1)
+                steady.set_option(rs.option.holes_fill, 2)  # a point with no reading keeps its last one only if 2 of the last 3 pictures had one: a moving arm leaves no trail
                 half = (self.out_width // 2, self.out_width // 2 * h // w)
                 while self.wanted():
                     f = align.process(pipe.wait_for_frames(2000))
