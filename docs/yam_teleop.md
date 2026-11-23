@@ -181,8 +181,9 @@ sideways to make the scene smaller and nearer, or life size again.
 
 - One camera sees one side. Places where the sensor measured nothing are filled with the distance of the
   background behind them. What is behind an arm the camera never saw: from the camera's place that does not show,
-  from the side it is a gap beside the arm (the room, or black in the dark room). Keep your head near where it
-  was when you pressed Start, or press a thumbstick down to bring the scene back. Drawing the surface across the
+  from the side it would be a gap beside the arm. The page fills it with a guess: a second surface just behind
+  the first, which takes the distance and the colour of the background around the arm (a little darker). What
+  really lies hidden behind the arm is not in it. Outside the camera's picture there is nothing to show. Drawing the surface across the
   gap was tried on 2026-11-23 and dropped: it hung from a raised arm like a dark curtain over the things under the
   gripper. Shiny and black parts (the grippers) come out ragged.
 - Distances are sent in steps of about 1 cm between 0.35 and 2.9 m, and the scene updates about 8 times a second.

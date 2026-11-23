@@ -119,26 +119,49 @@ const sceneProg = (() => {
       c = vec4(texture(t, vec2(clamp(uv.x, 0.003, 0.997) * 0.5, uv.y)).rgb * dim, 1.0); }`));
   gl.linkProgram(p);
   if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  // The backing: a second, coarser surface drawn just behind the first. Each of its points takes the distance AND
+  // the colour of the furthest point around it (the table around an arm), so behind an arm, where the camera saw
+  // nothing, there is a guess of the background (a little darker) and not a black gap. It is a guess: whatever
+  // really lies hidden behind the arm is not in it.
+  const b = gl.createProgram();
+  gl.attachShader(b, mk(gl.VERTEX_SHADER, common + `
+    in vec2 g; uniform mat4 m; uniform vec4 k; uniform vec2 cell; out vec2 uv;
+    void main(){ float d0 = grey(g), best = d0 > 0.047 ? zOf(d0) : 0.0; vec2 at = g;
+      for (int r = 1; r <= 3; r++) for (int a = 0; a < 8; a++) {
+        float ang = float(a) * 0.7853982; vec2 o = g + vec2(cos(ang), sin(ang)) * cell * (float(r) * 7.0);
+        if (o.x < 0.0 || o.x > 1.0 || o.y < 0.0 || o.y > 1.0) continue;
+        float d = grey(o); if (d > 0.047) { float n = zOf(d); if (n > best) { best = n; at = o; } } }
+      float z = best > 0.0 ? best * 1.015 : FAR; uv = at;
+      gl_Position = m * vec4((g.x - k.y) / k.x * z, -(g.y - k.z) * k.w / k.x * z, -z, 1.0); }`));
+  gl.attachShader(b, mk(gl.FRAGMENT_SHADER, common + `
+    in vec2 uv; uniform float dim; out vec4 c;
+    void main(){ c = vec4(texture(t, vec2(clamp(uv.x, 0.003, 0.997) * 0.5, uv.y)).rgb * dim * 0.8, 1.0); }`));
+  gl.linkProgram(b);
+  if (!gl.getProgramParameter(b, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(b));
+  p.backing = b;
   return p;
 })();
+const backProg = sceneProg.backing, bM = gl.getUniformLocation(backProg, "m"), bK = gl.getUniformLocation(backProg, "k"),
+  bCell = gl.getUniformLocation(backProg, "cell"), bDim = gl.getUniformLocation(backProg, "dim");
+const noBacking = new URLSearchParams(location.search).get("backing") === "0";
 const sCell = gl.getUniformLocation(sceneProg, "cell"), sM = gl.getUniformLocation(sceneProg, "m"), sK = gl.getUniformLocation(sceneProg, "k"), sPx = gl.getUniformLocation(sceneProg, "px"),
   sDim = gl.getUniformLocation(sceneProg, "dim"), sGap = gl.getUniformLocation(sceneProg, "gap");
 const openGaps = new URLSearchParams(location.search).get("holes") !== "0";
-const grid = gl.createVertexArray();
-const gridCount = (() => {
-  const v = new Float32Array((GRID_W + 1) * (GRID_H + 1) * 2), ix = new Uint32Array(GRID_W * GRID_H * 6);
-  for (let y = 0, n = 0; y <= GRID_H; y++) for (let x = 0; x <= GRID_W; x++) { v[n++] = x / GRID_W; v[n++] = y / GRID_H; }
-  for (let y = 0, n = 0; y < GRID_H; y++) for (let x = 0; x < GRID_W; x++) {
-    const a = y * (GRID_W + 1) + x, b = a + 1, c = a + GRID_W + 1, d = c + 1;
+function makeGrid(W, H, program) {
+  const vao = gl.createVertexArray(), v = new Float32Array((W + 1) * (H + 1) * 2), ix = new Uint32Array(W * H * 6);
+  for (let y = 0, n = 0; y <= H; y++) for (let x = 0; x <= W; x++) { v[n++] = x / W; v[n++] = y / H; }
+  for (let y = 0, n = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const a = y * (W + 1) + x, b = a + 1, c = a + W + 1, d = c + 1;
     ix[n++] = a; ix[n++] = c; ix[n++] = b; ix[n++] = b; ix[n++] = c; ix[n++] = d;
   }
-  gl.bindVertexArray(grid);
+  gl.bindVertexArray(vao);
   gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, v, gl.STATIC_DRAW);
-  const g = gl.getAttribLocation(sceneProg, "g"); gl.enableVertexAttribArray(g); gl.vertexAttribPointer(g, 2, gl.FLOAT, false, 0, 0);
+  const g = gl.getAttribLocation(program, "g"); gl.enableVertexAttribArray(g); gl.vertexAttribPointer(g, 2, gl.FLOAT, false, 0, 0);
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, ix, gl.STATIC_DRAW);
   gl.bindVertexArray(null);
-  return ix.length;
-})();
+  return { vao: vao, count: ix.length };
+}
+const grid = makeGrid(GRID_W, GRID_H, sceneProg), backGrid = makeGrid(GRID_W / 2, GRID_H / 2, backProg);
 // The camera looks down at the table (web/depth_camera.json: its tilt, from its own accelerometer). This turns the
 // scene so that its table is level in the room: the camera's place becomes where your head was when the pictures
 // were last brought in front, and you look down at the arms as the camera does.
@@ -155,17 +178,27 @@ function turnFor(cam) {
 function scaled(m, k) { const o = new Float32Array(m); for (let i = 0; i < 12; i++) o[i] *= k; return o; }
 function drawScene(viewProj, anchor) {
   const now = performance.now();
-  gl.useProgram(sceneProg); gl.bindVertexArray(grid); gl.activeTexture(gl.TEXTURE0);
+  gl.activeTexture(gl.TEXTURE0);
   gl.enable(gl.DEPTH_TEST);
   for (const p of panels) if (p.depth && p.frames) {
-    gl.uniformMatrix4fv(sM, false, mul(mul(viewProj, anchor), scaled(sceneTurn, sceneScale)));
+    const m = mul(mul(viewProj, anchor), scaled(sceneTurn, sceneScale));
+    gl.bindTexture(gl.TEXTURE_2D, p.tex);
+    if (!noBacking) {
+      gl.useProgram(backProg); gl.bindVertexArray(backGrid.vao);
+      gl.uniformMatrix4fv(bM, false, m);
+      gl.uniform4f(bK, depthCam.focal, depthCam.cx, depthCam.cy, p.aspect);
+      gl.uniform2f(bCell, 1 / GRID_W, 1 / GRID_H);
+      gl.uniform1f(bDim, now - p.lastMs > 1500 ? 0.35 : 1.0);
+      gl.drawElements(gl.TRIANGLES, backGrid.count, gl.UNSIGNED_INT, 0);
+    }
+    gl.useProgram(sceneProg); gl.bindVertexArray(grid.vao);
+    gl.uniformMatrix4fv(sM, false, m);
     gl.uniform4f(sK, depthCam.focal, depthCam.cx, depthCam.cy, p.aspect);
     gl.uniform2f(sPx, 1.5 / Math.max(1, p.texW / 2), 1.5 / Math.max(1, p.texH));
     gl.uniform1f(sDim, now - p.lastMs > 1500 ? 0.35 : 1.0);
     gl.uniform1f(sGap, openGaps ? 1.0 : 0.0);
     gl.uniform2f(sCell, 1 / GRID_W, 1 / GRID_H);
-    gl.bindTexture(gl.TEXTURE_2D, p.tex);
-    gl.drawElements(gl.TRIANGLES, gridCount, gl.UNSIGNED_INT, 0);
+    gl.drawElements(gl.TRIANGLES, grid.count, gl.UNSIGNED_INT, 0);
   }
   gl.disable(gl.DEPTH_TEST);
   gl.bindVertexArray(null);
