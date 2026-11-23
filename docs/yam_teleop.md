@@ -179,8 +179,10 @@ head is when you press Start (or press a thumbstick down): the table is below an
 sees it, and level. The wrist pictures and the status strip float above eye height. Push the right thumbstick
 sideways to make the scene smaller and nearer, or life size again.
 
-- One camera sees one side: behind an arm, and at the edge of every object, nothing was measured, and there the
-  scene has holes. Shiny and black parts (the grippers) come out ragged.
+- One camera sees one side: behind an arm, and beside every object, nothing was measured. Those places are filled
+  with the distance of the background behind them, and the surface is drawn stretched across the edge of an object,
+  so from where you stand there are no black holes (2026-11-23; before, they were left open). Lean far to the side
+  and the stretched parts show as smears. Shiny and black parts (the grippers) come out ragged.
 - Distances are sent in steps of about 1 cm between 0.35 and 2.9 m, and the scene updates about 8 times a second.
 - On the PC's camera page the same view shows the colour picture and, beside it, the distances as grey.
 - The demos record the RealSense's colour picture as before (from the same program, `scripts/lab_rgbd.py` on the

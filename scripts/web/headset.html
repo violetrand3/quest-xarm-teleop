@@ -80,8 +80,9 @@ function newTexture() {
 
 // ---- the 3D scene: a picture that holds colour | distance (scripts/lab_rgbd.py) drawn as a surface -------------------
 // Every point of a grid over the colour picture is put at its measured distance along its line of sight, so the scene
-// has its real shape and shifts as the head moves. Where no distance was measured, or two neighbours are far apart
-// in distance (the edge of an arm against the table), nothing is drawn: those are holes, not stretched surfaces.
+// has its real shape and shifts as the head moves. Where no distance came, nothing is drawn (lab_rgbd.py fills most
+// such places with the background's distance). At the edge of an arm against the table the surface is drawn
+// stretched from one to the other: seen from near the camera's place that closes the gap; ?holes=1 leaves it open.
 // NEAR and FAR are lab_rgbd.py's (tests/test_lab_rgbd.py checks they agree).
 const DEPTH_NEAR = 0.35, DEPTH_FAR = 2.9;
 const GRID_W = 320, GRID_H = 180;
@@ -99,19 +100,20 @@ const sceneProg = (() => {
     void main(){ float z = zOf(grey(g)); uv = g;
       gl_Position = m * vec4((g.x - k.y) / k.x * z, -(g.y - k.z) * k.w / k.x * z, -z, 1.0); }`));
   gl.attachShader(p, mk(gl.FRAGMENT_SHADER, common + `
-    in vec2 uv; uniform vec2 px; uniform float dim; out vec4 c;
+    in vec2 uv; uniform vec2 px; uniform float dim; uniform float gap; out vec4 c;
     void main(){ float lo = 1e9, hi = 0.0, least = 1.0;
       for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) {
         float d = grey(uv + vec2(float(i), float(j)) * px); least = min(least, d);
         float z = zOf(d); lo = min(lo, z); hi = max(hi, z); }
-      if (least < 0.047 || hi - lo > 0.025 + 0.05 * lo) discard;
+      if (least < 0.047 || (gap > 0.5 && hi - lo > 0.025 + 0.05 * lo)) discard;
       c = vec4(texture(t, vec2(clamp(uv.x, 0.003, 0.997) * 0.5, uv.y)).rgb * dim, 1.0); }`));
   gl.linkProgram(p);
   if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
   return p;
 })();
 const sM = gl.getUniformLocation(sceneProg, "m"), sK = gl.getUniformLocation(sceneProg, "k"), sPx = gl.getUniformLocation(sceneProg, "px"),
-  sDim = gl.getUniformLocation(sceneProg, "dim");
+  sDim = gl.getUniformLocation(sceneProg, "dim"), sGap = gl.getUniformLocation(sceneProg, "gap");
+const openGaps = new URLSearchParams(location.search).get("holes") === "1";
 const grid = gl.createVertexArray();
 const gridCount = (() => {
   const v = new Float32Array((GRID_W + 1) * (GRID_H + 1) * 2), ix = new Uint32Array(GRID_W * GRID_H * 6);
@@ -150,6 +152,7 @@ function drawScene(viewProj, anchor) {
     gl.uniform4f(sK, depthCam.focal, depthCam.cx, depthCam.cy, p.aspect);
     gl.uniform2f(sPx, 1.5 / Math.max(1, p.texW / 2), 1.5 / Math.max(1, p.texH));
     gl.uniform1f(sDim, now - p.lastMs > 1500 ? 0.35 : 1.0);
+    gl.uniform1f(sGap, openGaps ? 1.0 : 0.0);
     gl.bindTexture(gl.TEXTURE_2D, p.tex);
     gl.drawElements(gl.TRIANGLES, gridCount, gl.UNSIGNED_INT, 0);
   }

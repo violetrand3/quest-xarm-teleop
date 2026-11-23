@@ -93,8 +93,10 @@ class View:
 class Source(threading.Thread):
     """The camera: open while any view is watched."""
 
-    def __init__(self, size: tuple[int, int], depth_size: tuple[int, int], fps: int, out_width: int, color_width: int, quality: int):
+    def __init__(self, size: tuple[int, int], depth_size: tuple[int, int], fps: int, out_width: int, color_width: int, quality: int,
+                 fill: bool = True):  # fmt: skip
         super().__init__(daemon=True)
+        self.fill = fill
         self.size, self.depth_size, self.fps = size, depth_size, fps
         self.out_width, self.color_width, self.quality = out_width, color_width, quality
         self.cv = threading.Condition()
@@ -125,12 +127,18 @@ class Source(threading.Thread):
                 cfg.enable_stream(rs.stream.depth, self.depth_size[0], self.depth_size[1], rs.format.z16, self.fps)
                 scale = pipe.start(cfg).get_device().first_depth_sensor().get_depth_scale()
                 align = rs.align(rs.stream.color)  # the distance of every COLOUR pixel
+                # Where the sensor measured nothing (beside every object: one of its two eyes cannot see there; shiny
+                # and black parts) the page would show a hole. Keep the last measurement of a point that flickers,
+                # then give what is still empty the distance of the furthest neighbour: the background goes on behind.
+                steady, fill = rs.temporal_filter(), rs.hole_filling_filter(1)
                 half = (self.out_width // 2, self.out_width // 2 * h // w)
                 while self.wanted():
                     f = align.process(pipe.wait_for_frames(2000))
                     c, d = f.get_color_frame(), f.get_depth_frame()
                     if not c or not d:
                         continue
+                    if self.fill:
+                        d = fill.process(steady.process(d))
                     color = np.asanyarray(c.get_data())
                     got += 1
                     self.note = "running"
@@ -195,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out-width", type=int, default=1280, help="width of the colour | distance picture (both halves together)")
     ap.add_argument("--color-width", type=int, default=960, help="width of the colour picture alone")
     ap.add_argument("--quality", type=int, default=90, help="JPEG quality of the colour | distance picture")
+    ap.add_argument("--no-fill", action="store_true", help="leave the places with no measured distance empty (holes in the scene)")
     ap.add_argument("--describe", action="store_true", help="print the lens data and the tilt as JSON and exit")
     ap.add_argument("--duration", type=float, help="exit after this many seconds")
     args = ap.parse_args(argv)
@@ -203,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.describe:
         print(json.dumps(describe(size, args.fps)))  # type: ignore[arg-type]
         return 0
-    src = Source(size, dsize, args.fps, args.out_width, args.color_width, args.quality)  # type: ignore[arg-type]
+    src = Source(size, dsize, args.fps, args.out_width, args.color_width, args.quality, not args.no_fill)  # type: ignore[arg-type]
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(src.views))  # type: ignore[arg-type]
     srv.daemon_threads = True
     print(f"RealSense colour and depth (on demand) on 127.0.0.1:{args.port}: {list(src.views)}", flush=True)
