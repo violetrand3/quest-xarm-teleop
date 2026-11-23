@@ -17,8 +17,7 @@ opens the tunnels it needs.
 
 ## What you need
 
-- **A Linux PC, or Windows with WSL2** (see below). The launcher uses `ss`, `setsid` and GNU tools, so
-  macOS does not work as is.
+- **A Linux PC, Windows with WSL2, or a Mac** (see the sections below for the last two).
 - **Tools on the PATH:** `python3` (3.10 or newer, standard library only), `ssh`, `rsync` and `adb` (Android
   platform-tools). `scripts/teleop` names any of them that is missing.
 - **SSH to the lab host as `dev` without a password prompt** (key login). Check it with `ssh linux2 true`.
@@ -39,6 +38,22 @@ committed. Its SHA-256 starts with `57f2936ccf175626`.
 
 Nothing else is needed on the headset. `scripts/teleop` starts the app itself at the beginning of each
 session.
+
+## On macOS
+
+`scripts/teleop` is written for bash 4 or newer and the GNU tools; macOS ships bash 3.2 and the BSD tools. With
+Homebrew's versions in front on the PATH it runs the same programs as on Linux. This setup has not been tried
+yet (2026-11-23). If a step does not work as described here, please report it.
+
+```
+brew install bash coreutils grep gnu-sed python android-platform-tools
+B=$(brew --prefix)
+export PATH="$B/bin:$B/opt/coreutils/libexec/gnubin:$B/opt/grep/libexec/gnubin:$B/opt/gnu-sed/libexec/gnubin:$PATH"
+```
+
+The `export` line is for the terminal you run `scripts/teleop` in (put it in `~/.zshrc` to keep it). Check with
+`bash --version` (5 or newer), `sha256sum --version`, `sed --version` (GNU) and `python3 --version` (3.10 or
+newer). macOS has no `ss`; the launcher uses `lsof`, which macOS has, to see which ports are in use.
 
 ## On Windows: WSL2
 

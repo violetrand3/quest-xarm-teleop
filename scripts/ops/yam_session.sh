@@ -19,7 +19,9 @@ mkdir -p "$D" "$R"
 SSHO=(-n -o BatchMode=yes -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10)
 S=$(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"{print $1}'); [ "$(echo "$S" | grep -c .)" = 1 ] || { echo "need exactly one headset on adb"; exit 2; }
 msg() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$1"; }
-for p in $LINK_PORT $VIEW_PORT $([ "$WEB" = 1 ] && echo $WEB_PORT); do ss -ltn | grep -q "127.0.0.1:$p " && { msg "Port $p on this PC is in use (another session?). Ending."; exit 2; }; done
+listening() {   # is something on this PC listening on 127.0.0.1:$1?  (ss on Linux; lsof where there is no ss: macOS)
+  if command -v ss > /dev/null; then ss -ltn | grep -q "127.0.0.1:$1 "; else lsof -nP -iTCP:"$1" -sTCP:LISTEN 2> /dev/null | grep -q "127.0.0.1:$1 "; fi; }
+for p in $LINK_PORT $VIEW_PORT $([ "$WEB" = 1 ] && echo $WEB_PORT); do listening $p && { msg "Port $p on this PC is in use (another session?). Ending."; exit 2; }; done
 
 finish() {   # $1 = notstarted: the lab program exited at start-up, so there is nothing to lower
   # Exactly once, and only in this script's main process (the traps below make sure of it): a second stop signal
@@ -88,7 +90,7 @@ on_stop() { [ "$BASHPID" = "$$" ] || exit 130; if [ "$IN_LOOP" = 1 ]; then STOP=
 trap on_stop INT TERM HUP PIPE
 ssh "${SSHO[@]:1}" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
   -L 127.0.0.1:$LINK_PORT:127.0.0.1:28766 -L 127.0.0.1:$VIEW_PORT:127.0.0.1:28767 "$H" > "$R/yam_tunnel.txt" 2>&1 < /dev/null &
-echo $! > "$R/yam_tunnel.pid"; for i in $(seq 1 40); do ss -ltn | grep -q "127.0.0.1:$LINK_PORT " && break; sleep 0.25; done
+echo $! > "$R/yam_tunnel.pid"; for i in $(seq 1 40); do listening $LINK_PORT && break; sleep 0.25; done
 SRC=(--serial "$S"); STATUS="$R/yam_status_$N.txt"; echo "starting" > "$STATUS"
 [ "$WEB" = 1 ] && SRC=(--source web --web-port "$WEB_PORT" --web-cams "http://127.0.0.1:${RELAY_LOCAL_PORT:-18091}" --web-views "${YAM_WEB_VIEWS:-}" --web-big "${YAM_WEB_BIG:-}" --web-stereo "${YAM_WEB_STEREO:-}" --web-depth "${YAM_WEB_DEPTH:-}" --web-status "$STATUS")
 ( cd "$P/scripts" && exec python3 -u quest_pose_stream_sender.py "${SRC[@]}" --port $LINK_PORT --max-rate 30 --ack-timeout 8 --source-log "$D/yam_src_$N.jsonl" \

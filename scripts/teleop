@@ -34,7 +34,11 @@ case "$CAMERAS" in ""|*[!a-z0-9_,]*|,*|*,|*,,*) echo "STOP: CAMERAS in the setti
 lab() { ssh -n "${SSHO[@]}" "$LAB_HOST" "$@"; }   # -n: never let ssh swallow what the operator types
 die() { echo "STOP: $*" >&2; exit 2; }
 note() { echo "  - $*"; }
-for t in adb ssh rsync ss python3; do command -v "$t" > /dev/null || die "'$t' is not installed on this PC (see docs/getting_started.md)"; done
+for t in adb ssh rsync python3; do command -v "$t" > /dev/null || die "'$t' is not installed on this PC (see docs/getting_started.md)"; done
+command -v ss > /dev/null || command -v lsof > /dev/null || die "neither 'ss' nor 'lsof' is on this PC (see docs/getting_started.md)"
+[ "${BASH_VERSINFO[0]}" -ge 4 ] || die "this needs bash 4 or newer, and this is bash $BASH_VERSION (on macOS: brew install bash; see docs/getting_started.md)"
+listening() {   # is something on this PC listening on 127.0.0.1:$1?  (ss on Linux; lsof where there is no ss: macOS)
+  if command -v ss > /dev/null; then ss -ltn | grep -q "127.0.0.1:$1 "; else lsof -nP -iTCP:"$1" -sTCP:LISTEN 2> /dev/null | grep -q "127.0.0.1:$1 "; fi; }
 
 # -- the lab host runs its own copy of scripts/ (in ~/$LAB_DIR); it must be the same as this checkout's ------------
 # The lab copy is shared by everyone using the lab account. "sync" installs only what is committed and on GitHub, so
@@ -318,7 +322,7 @@ ensure_cameras() {   # $1 = seconds the view must stay up, $2 = the views (defau
       || die "the camera view did not start on the lab host"
     RELOAD=1
   fi
-  if ! ss -ltn | grep -q "127.0.0.1:$RELAY_LOCAL_PORT "; then
+  if ! listening $RELAY_LOCAL_PORT; then
     # A terminal session (-tt) instead of -N: then the lab host's ssh server sends small packets at once. Over -N it held
     # the end of each picture for about one round trip (RealSense pictures 175 ms old on arrival instead of 73; 2026-10-14).
     ssh "${SSHO[@]}" -f -tt -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -L "127.0.0.1:$RELAY_LOCAL_PORT:127.0.0.1:$RELAY_PORT" "$LAB_HOST" "sleep infinity" \
@@ -435,7 +439,7 @@ case "${1:-}" in
           echo "Camera view: $URL";;
   sync) lab_sync "${2:-}";;
   studio)   # the arm's own web page, through the lab host; the arm's address is read there and never printed or saved
-    if ! ss -ltn | grep -q "127.0.0.1:$STUDIO_LOCAL_PORT "; then
+    if ! listening $STUDIO_LOCAL_PORT; then
       ip=$(lab "grep -oE 'XArmAPI\\(\"[0-9.]+\"' /home/dev/robotdash/stepper.py | grep -oE '[0-9]+(\\.[0-9]+){3}' | head -1")
       [ -n "$ip" ] || die "could not read the arm's address on $LAB_HOST"
       ssh "${SSHO[@]}" -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -L "127.0.0.1:$STUDIO_LOCAL_PORT:$ip:18333" "$LAB_HOST" \
@@ -459,7 +463,7 @@ case "${1:-}" in
     [ "$(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] || die "need exactly one headset on USB (adb devices)"
     rig_status; RELOAD=0; ensure_usb_cams; ensure_rgbd; ensure_cameras 21600 "$YAM_VIEWS" "$YAM_VIEW_ARGS"; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')"
     n=sim_$(date +%Y%m%d-%H%M%S); echo "$n" > "$R/current_yam_session"
-    exec bash "$P/scripts/ops/yam_session.sh" "$n";;
+    exec "$BASH" "$P/scripts/ops/yam_session.sh" "$n";;
   yam-try|yam-record)   # THE REAL YAM ARMS MOVE
     LAB_STARTS=$YAM_STARTS; lab_check; yam_free
     ps -eo args | grep -q '[b]ash .*teleop_live_session\|[b]ash .*yam_session' && die "another session is running on this PC; end it first"
@@ -481,6 +485,6 @@ case "${1:-}" in
     rig_status; RELOAD=0; ensure_usb_cams; ensure_rgbd; ensure_cameras 21600 "$YAM_VIEWS" "$YAM_VIEW_ARGS"; echo "Camera view: $URL$([ "$RELOAD" = 1 ] && echo '   (restarted: reload the page)')"
     n=$([ "$1" = yam-record ] && echo yamrec || echo yam)_$(date +%Y%m%d-%H%M%S); echo "$n" > "$R/current_yam_session"; echo "$CONFIRM_TEXT" > "$D/confirm_$n.txt"
     [ -n "${TELEOP_DRY_RUN:-}" ] && { echo "DRY RUN, nothing started: yam_session.sh $n $D/confirm_$n.txt $([ "$1" = yam-record ] && echo rec)"; exit 0; }
-    exec bash "$P/scripts/ops/yam_session.sh" "$n" "$D/confirm_$n.txt" $([ "$1" = yam-record ] && echo rec);;
+    exec "$BASH" "$P/scripts/ops/yam_session.sh" "$n" "$D/confirm_$n.txt" $([ "$1" = yam-record ] && echo rec);;
   *) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 1;;
 esac
