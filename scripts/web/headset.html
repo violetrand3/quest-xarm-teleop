@@ -83,7 +83,7 @@ function newTexture() {
 // has its real shape and shifts as the head moves. Where no distance was measured, or two neighbours are far apart
 // in distance (the edge of an arm against the table), nothing is drawn: those are holes, not stretched surfaces.
 // NEAR and FAR are lab_rgbd.py's (tests/test_lab_rgbd.py checks they agree).
-const DEPTH_NEAR = 0.25, DEPTH_FAR = 4.0;
+const DEPTH_NEAR = 0.35, DEPTH_FAR = 2.9;
 const GRID_W = 320, GRID_H = 180;
 const sceneProg = (() => {
   const mk = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
@@ -92,7 +92,7 @@ const sceneProg = (() => {
     precision highp float; uniform sampler2D t;
     const float NEAR = ${DEPTH_NEAR.toFixed(3)}, FAR = ${DEPTH_FAR.toFixed(3)};
     float grey(vec2 u){ return textureLod(t, vec2(0.5 + clamp(u.x, 0.003, 0.997) * 0.5, u.y), 0.0).r; }
-    float zOf(float d){ return 1.0 / (1.0 / FAR + d * (1.0 / NEAR - 1.0 / FAR)); }`;
+    float zOf(float d){ return NEAR + max(0.0, d * 255.0 - 8.0) / 247.0 * (FAR - NEAR); }`;
   const p = gl.createProgram();
   gl.attachShader(p, mk(gl.VERTEX_SHADER, common + `
     in vec2 g; uniform mat4 m; uniform vec4 k; out vec2 uv;   // k: focal, cx, cy (fractions of the picture), height / width

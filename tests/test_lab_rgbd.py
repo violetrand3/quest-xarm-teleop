@@ -18,13 +18,13 @@ except ImportError:  # pragma: no cover
 class DepthCodeTests(unittest.TestCase):
     @unittest.skipIf(np is None, "numpy not installed")
     def test_round_trip(self):
-        z = np.array([0.0, 0.25, 0.5, 1.0, 2.0, 3.0, 9.0], dtype=np.float32)
+        z = np.array([0.0, 0.1, 0.5, 1.0, 2.0, 2.5, 9.0], dtype=np.float32)
         g = lab_rgbd.encode_depth(z, np)
         self.assertEqual(g[0], 0)  # none measured
-        self.assertEqual(g[1], 255)  # NEAR
-        self.assertEqual(g[-1], 8)  # beyond FAR: the last valid grey, never 0
+        self.assertEqual(g[1], 8)  # nearer than NEAR: the first valid grey, never 0
+        self.assertEqual(g[-1], 255)  # beyond FAR
         for zi, gi in zip(z[2:6], g[2:6]):
-            self.assertLess(abs(lab_rgbd.decode_depth(float(gi)) - zi) / zi, 0.03)
+            self.assertLess(abs(lab_rgbd.decode_depth(float(gi)) - zi), 0.006)
 
     def test_page_uses_the_same_range(self):
         page = (ROOT / "scripts/web/headset.html").read_text()

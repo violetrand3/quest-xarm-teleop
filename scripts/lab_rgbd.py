@@ -5,7 +5,8 @@ Why: for the 3D scene in the headset (YAM_STEREO=depth; docs/yam_teleop.md). The
 the colour picture into a point at its measured distance, so the operator looks INTO the scene and it shifts as the
 head moves. One picture carries both: the colour picture on the left half, the distance on the right half as grey.
   grey 0        no distance measured there
-  grey 8..255   distance z in metres:  1/z = 1/FAR + (grey / 255) * (1/NEAR - 1/FAR)   (near is bright; fine steps near)
+  grey 8..255   distance z in metres:  z = NEAR + (grey - 8) / 247 * (FAR - NEAR)   (about 1 cm a step; far is bright;
+                nearer than NEAR reads NEAR, further than FAR reads FAR)
 NEAR and FAR are repeated in web/headset.html (tests/test_lab_rgbd.py checks they agree).
 
 The colour and the depth sensor are opened together through librealsense, so in this mode the plain colour stream
@@ -31,18 +32,17 @@ from typing import Any
 
 from lab_usb_cams import GRACE_S, RETRY_S, make_handler
 
-NEAR, FAR = 0.25, 4.0  # metres
+NEAR, FAR = 0.35, 2.9  # metres
 
 
 def encode_depth(z: Any, np: Any) -> Any:
     """Distances in metres (0 = none) -> the grey values described above (uint8)."""
-    with np.errstate(divide="ignore"):
-        g = 255.0 * (1.0 / z - 1.0 / FAR) / (1.0 / NEAR - 1.0 / FAR)
+    g = 8.0 + 247.0 * (z - NEAR) / (FAR - NEAR)
     return np.where(z > 0, np.clip(np.rint(g), 8, 255), 0).astype(np.uint8)
 
 
 def decode_depth(grey: float) -> float:
-    return 1.0 / (1.0 / FAR + (grey / 255.0) * (1.0 / NEAR - 1.0 / FAR))
+    return NEAR + (grey - 8.0) / 247.0 * (FAR - NEAR)
 
 
 class View:
