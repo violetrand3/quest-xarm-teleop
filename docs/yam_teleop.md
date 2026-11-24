@@ -184,14 +184,15 @@ sideways to make the scene smaller and nearer, or life size again.
 
 - One camera sees one side. Places where the sensor measured nothing are filled with the distance of the
   background behind them. What is behind an arm the camera cannot see now: from the camera's place that does not
-  show, from the side it would be a gap beside the arm. The page fills it from **memory** (since 2026-11-24): the
+  show, from the side it would be a gap beside the arm. The page fills it with a guess (the distance and colour of
+  the background around the arm, a little darker), or, with `?memory=1` on its address, from **memory** (an
+  experiment, 2026-11-24; its first version tore the scene into dark streaks and it is not yet checked on the table): the
   camera does not move, so for every point of its picture the page keeps the furthest thing it has seen there, with
   its colour, which is the table and what stands on it as they were before the arm came in front. Something that
   stays in front, unmoved, for about 10 s is taken into the memory too (a thing put on the table). What moves
   while it is hidden (a tube pushed by the gripper) shows where it was until the camera sees the place again.
   Where there is no memory yet (under the arms as they rest at the start, until they first move away), the page
-  guesses: the distance and colour of the background around the arm, a little darker. `?memory=0` on the page's
-  address shows the guess only. Outside the camera's picture there is nothing to show. Drawing the surface across
+  guesses, as without it. Outside the camera's picture there is nothing to show. Drawing the surface across
   the gap was tried on 2026-11-23 and dropped: it hung from a raised arm like a dark curtain over the things under
   the gripper. Shiny and black parts (the grippers) come out ragged.
 - Distances are sent in steps of about 1 cm between 0.35 and 2.9 m, and the scene updates 15 times a second
