@@ -63,15 +63,17 @@ export YAM_CAM_URL=$U   # where the lab program takes the cameras it records (ya
 # others 480), the RealSense below (its colour camera, read directly: the lab's camera wall is not needed).
 # YAM_STEREO=zed: the ZED's two eyes large on top, shown in 3D in the
 # headset (YAM_HEADSET=web; on the PC's page the two eyes are side by side), the wrist views below.
+# YAM_FPS: pictures a second sent to the operator (the cameras give 15 to 30; each step up costs network traffic).
+case "${YAM_FPS:=15}" in 5|8|10|12|15|20|30) ;; *) die "YAM_FPS must be one of 5, 8, 10, 12, 15, 20, 30 (config/teleop_session.conf)";; esac
 case "${YAM_STEREO:-}" in
   "") YAM_VIEWS=${YAM_VIEWS:-rs_color=$U/rs_color,left_wrist=$U/left_wrist,right_wrist=$U/right_wrist}
-      YAM_VIEW_ARGS=${YAM_VIEW_ARGS:---big left_wrist,right_wrist --big-width 640}; export YAM_WEB_STEREO="";;
+      YAM_VIEW_ARGS=${YAM_VIEW_ARGS:---big left_wrist,right_wrist --big-width 640 --fps $YAM_FPS}; export YAM_WEB_STEREO="";;
   zed) YAM_VIEWS=${YAM_VIEWS:-stereo=$U/zed,left_wrist=$U/left_wrist,right_wrist=$U/right_wrist}
-       YAM_VIEW_ARGS=${YAM_VIEW_ARGS:---big stereo --big-width 1280}; export YAM_WEB_STEREO=stereo;;
+       YAM_VIEW_ARGS=${YAM_VIEW_ARGS:---big stereo --big-width 1280 --fps $YAM_FPS}; export YAM_WEB_STEREO=stereo;;
   depth)   # the RealSense's colour AND depth (scripts/lab_rgbd.py): a 3D scene in the headset; on the PC's page colour | distance
        YAM_RGBD_PORT=28098; G=http://127.0.0.1:$YAM_RGBD_PORT/stream
        YAM_VIEWS=${YAM_VIEWS:-rgbd=$G/rgbd,left_wrist=$U/left_wrist,right_wrist=$U/right_wrist}
-       YAM_VIEW_ARGS=${YAM_VIEW_ARGS:---big rgbd --big-width 1280 --quality 75}; export YAM_WEB_STEREO="" YAM_WEB_DEPTH=rgbd
+       YAM_VIEW_ARGS=${YAM_VIEW_ARGS:---big rgbd --big-width 1280 --quality 75 --width 640 --fps $YAM_FPS}; export YAM_WEB_STEREO="" YAM_WEB_DEPTH=rgbd
        export YAM_CAM_URL=$G;;   # the demos' RealSense picture comes from the same program (it holds the camera)
   *) die "YAM_STEREO must be empty, zed or depth (config/teleop_session.conf)";;
 esac

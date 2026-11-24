@@ -119,14 +119,17 @@ const sceneProg = (() => {
       c = vec4(texture(t, vec2(clamp(uv.x, 0.003, 0.997) * 0.5, uv.y)).rgb * dim, 1.0); }`));
   gl.linkProgram(p);
   if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
-  // The backing: a second, coarser surface drawn just behind the first. Each of its points takes the distance AND
-  // the colour of the furthest point around it (the table around an arm), so behind an arm, where the camera saw
-  // nothing, there is a guess of the background (a little darker) and not a black gap. It is a guess: whatever
-  // really lies hidden behind the arm is not in it.
+  // The backing: a second, coarser surface drawn just behind the first, so behind an arm, where the camera sees
+  // nothing now, there is a background and not a black gap. Where the page remembers what the camera saw there
+  // before the arm came in front (the memory, below), it shows that. Elsewhere each point takes the distance AND
+  // the colour of the furthest point around it (the table around an arm): a guess, a little darker.
   const b = gl.createProgram();
   gl.attachShader(b, mk(gl.VERTEX_SHADER, common + `
-    in vec2 g; uniform mat4 m; uniform vec4 k; uniform vec2 cell; out vec2 uv;
-    void main(){ float d0 = grey(g), best = d0 > 0.047 ? zOf(d0) : 0.0; vec2 at = g;
+    in vec2 g; uniform mat4 m; uniform vec4 k; uniform vec2 cell; uniform sampler2D mem; uniform float useMem; out vec2 uv; out float src;
+    void main(){ float d0 = grey(g), best = d0 > 0.047 ? zOf(d0) : 0.0; vec2 at = g; src = 0.0;
+      float md = useMem > 0.5 ? textureLod(mem, g, 0.0).a : 0.0;
+      if (md > 0.047) { float z = zOf(md) * 1.01; uv = g; src = 1.0;   // what the camera saw here before something came in front
+        gl_Position = m * vec4((g.x - k.y) / k.x * z, -(g.y - k.z) * k.w / k.x * z, -z, 1.0); return; }
       for (int r = 1; r <= 3; r++) for (int a = 0; a < 8; a++) {
         float ang = float(a) * 0.7853982; vec2 o = g + vec2(cos(ang), sin(ang)) * cell * (float(r) * 7.0);
         if (o.x < 0.0 || o.x > 1.0 || o.y < 0.0 || o.y > 1.0) continue;
@@ -134,8 +137,9 @@ const sceneProg = (() => {
       float z = best > 0.0 ? best * 1.015 : FAR; uv = at;
       gl_Position = m * vec4((g.x - k.y) / k.x * z, -(g.y - k.z) * k.w / k.x * z, -z, 1.0); }`));
   gl.attachShader(b, mk(gl.FRAGMENT_SHADER, common + `
-    in vec2 uv; uniform float dim; out vec4 c;
-    void main(){ c = vec4(texture(t, vec2(clamp(uv.x, 0.003, 0.997) * 0.5, uv.y)).rgb * dim * 0.8, 1.0); }`));
+    in vec2 uv; in float src; uniform float dim; uniform sampler2D mem; out vec4 c;
+    void main(){ c = src > 0.5 ? vec4(texture(mem, uv).rgb * dim, 1.0)
+                               : vec4(texture(t, vec2(clamp(uv.x, 0.003, 0.997) * 0.5, uv.y)).rgb * dim * 0.8, 1.0); }`));
   gl.linkProgram(b);
   if (!gl.getProgramParameter(b, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(b));
   p.backing = b;
@@ -143,7 +147,78 @@ const sceneProg = (() => {
 })();
 const backProg = sceneProg.backing, bM = gl.getUniformLocation(backProg, "m"), bK = gl.getUniformLocation(backProg, "k"),
   bCell = gl.getUniformLocation(backProg, "cell"), bDim = gl.getUniformLocation(backProg, "dim");
+const bMem = gl.getUniformLocation(backProg, "mem"), bUseMem = gl.getUniformLocation(backProg, "useMem"), bT = gl.getUniformLocation(backProg, "t");
 const noBacking = new URLSearchParams(location.search).get("backing") === "0";
+const noMemory = new URLSearchParams(location.search).get("memory") === "0";
+
+// ---- the memory: what the camera saw behind the arms ----------------------------------------------------------------
+// The camera does not move, so each point of its picture always looks along the same line. For each point the page
+// keeps the FURTHEST thing seen there, with its colour: the table and what stands on it, as they were before an arm
+// came in front. The backing shows that behind the arm. Rules, for each new picture and each point:
+//   - further than remembered (or nothing remembered yet): remember it;
+//   - about the same distance: the colour follows (the light changes, a flat thing is laid down);
+//   - nearer: something is in front; the memory stays. If it stays in front, unmoved, for MEM_HOLD pictures (about
+//     10 s), it is taken as part of the background (a thing put on the table);
+//   - next to the edge of something nearer: not remembered (there the colour of the arm spills onto the table).
+// What moves while it is hidden (a tube pushed by the gripper) shows where it was until the camera sees the place again.
+const MEM_HOLD = 140;
+const memProg = (() => {
+  const mk = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+  const p = gl.createProgram();
+  gl.attachShader(p, mk(gl.VERTEX_SHADER, `#version 300 es
+    out vec2 uv; void main(){ uv = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0); }`));
+  gl.attachShader(p, mk(gl.FRAGMENT_SHADER, `#version 300 es
+    precision highp float; in vec2 uv; uniform sampler2D t, mem, aux; uniform vec2 px; uniform float hold;
+    layout(location = 0) out vec4 o; layout(location = 1) out vec4 q;
+    const float EPS = 4.0 / 255.0;
+    float grey(vec2 u){ return textureLod(t, vec2(0.5 + clamp(u.x, 0.003, 0.997) * 0.5, u.y), 0.0).r; }
+    void main(){ vec4 m = texture(mem, uv), x = texture(aux, uv); o = m; q = x;
+      float d = grey(uv); if (d <= 0.047) return;
+      for (int a = 0; a < 8; a++) { float ang = float(a) * 0.7853982, n = grey(uv + vec2(cos(ang), sin(ang)) * px * 4.0);
+        if (n > 0.047 && d - n > EPS) return; }                      // beside the edge of something nearer
+      vec3 col = texture(t, vec2(clamp(uv.x, 0.003, 0.997) * 0.5, uv.y)).rgb;
+      if (m.a <= 0.047 || d >= m.a) { o = vec4(col, d); q = vec4(0.0); }
+      else if (m.a - d <= EPS) { o = vec4(mix(m.rgb, col, 0.3), m.a); q = vec4(0.0); }
+      else { q = abs(d - x.r) <= 2.5 / 255.0 ? vec4(x.r, min(1.0, x.g + 1.0 / 255.0), 0.0, 1.0) : vec4(d, 0.0, 0.0, 1.0);
+        if (q.g * 255.0 >= hold) { o = vec4(col, d); q = vec4(0.0); } } }`));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+})();
+const mT = gl.getUniformLocation(memProg, "t"), mMem = gl.getUniformLocation(memProg, "mem"), mAux = gl.getUniformLocation(memProg, "aux"),
+  mPx = gl.getUniformLocation(memProg, "px"), mHold = gl.getUniformLocation(memProg, "hold"), memVao = gl.createVertexArray();
+function memTexture(w, h, filter) {
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(w * h * 4));
+  for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, filter], [gl.TEXTURE_MAG_FILTER, filter],
+                        [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+  return t;
+}
+function remember(p) {   // p: a depth panel whose new picture was just put in p.tex
+  if (noMemory || noBacking) return;
+  const w = p.texW >> 1, h = p.texH;
+  if (!p.mem || p.mem.w !== w || p.mem.h !== h) {
+    p.mem = { w: w, h: h, at: 0, side: [0, 1].map(() => {
+      const fb = gl.createFramebuffer(), a = memTexture(w, h, gl.LINEAR), b = memTexture(w, h, gl.NEAREST);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, a, 0);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, b, 0);
+      gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+      return { fb: fb, a: a, b: b }; }) };
+  }
+  const from = p.mem.side[p.mem.at], to = p.mem.side[1 - p.mem.at];
+  gl.bindFramebuffer(gl.FRAMEBUFFER, to.fb); gl.viewport(0, 0, w, h);
+  gl.useProgram(memProg); gl.bindVertexArray(memVao);
+  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, from.b);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, from.a);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, p.tex);
+  gl.uniform1i(mT, 0); gl.uniform1i(mMem, 1); gl.uniform1i(mAux, 2);
+  gl.uniform2f(mPx, 1 / w, 1 / h); gl.uniform1f(mHold, MEM_HOLD);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.bindVertexArray(null);
+  p.mem.at = 1 - p.mem.at;
+}
 const sCell = gl.getUniformLocation(sceneProg, "cell"), sM = gl.getUniformLocation(sceneProg, "m"), sK = gl.getUniformLocation(sceneProg, "k"), sPx = gl.getUniformLocation(sceneProg, "px"),
   sDim = gl.getUniformLocation(sceneProg, "dim"), sGap = gl.getUniformLocation(sceneProg, "gap");
 const openGaps = new URLSearchParams(location.search).get("holes") !== "0";
@@ -189,6 +264,8 @@ function drawScene(viewProj, anchor) {
       gl.uniform4f(bK, depthCam.focal, depthCam.cx, depthCam.cy, p.aspect);
       gl.uniform2f(bCell, 1 / GRID_W, 1 / GRID_H);
       gl.uniform1f(bDim, now - p.lastMs > 1500 ? 0.35 : 1.0);
+      gl.uniform1i(bT, 0); gl.uniform1i(bMem, 1); gl.uniform1f(bUseMem, p.mem ? 1.0 : 0.0);
+      if (p.mem) { gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, p.mem.side[p.mem.at].a); gl.activeTexture(gl.TEXTURE0); }
       gl.drawElements(gl.TRIANGLES, backGrid.count, gl.UNSIGNED_INT, 0);
     }
     gl.useProgram(sceneProg); gl.bindVertexArray(grid.vao);
@@ -269,12 +346,14 @@ function drawStatus() {
 }
 setInterval(() => { statusDirty = true; }, 1000);
 
-function upload() {
+function upload() {   // the newest pictures into their textures; called with the frame's target bound and its viewport set
+  const target = gl.getParameter(gl.FRAMEBUFFER_BINDING), vp = gl.getParameter(gl.VIEWPORT);
   for (const p of panels) if (p.pending) {
     const b = p.pending; p.pending = null;
     gl.bindTexture(gl.TEXTURE_2D, p.tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, b);
     p.aspect = b.height / (p.stereo || p.depth ? b.width / 2 : b.width); p.texW = b.width; p.texH = b.height; b.close();
+    if (p.depth) { remember(p); gl.bindFramebuffer(gl.FRAMEBUFFER, target); gl.viewport(vp[0], vp[1], vp[2], vp[3]); }
   }
   if (statusDirty && statusPanel) drawStatus();
 }
@@ -329,6 +408,26 @@ async function pump(p) {
   }
 }
 
+// ---- felt in the hands: the controllers buzz when an arm stops ----------------------------------------------------------
+// From the status line ("... | left: ACTIVE held grip=... [why] | right: ..."): a hand's controller buzzes once when its
+// arm is held by a limit (the box edge, too close, a joint's end stop) and ticks about once a second while it stays
+// held; both buzz long when the arms are stopped by a fault (the red strip). ?buzz=0 turns it off.
+const noBuzz = new URLSearchParams(location.search).get("buzz") === "0";
+const buzz = { left: null, right: null }, felt = { left: "", right: "", tick: 0 };
+function feel(text) {
+  if (noBuzz) return;
+  const now = performance.now(), tick = now - felt.tick > 1000;
+  for (const h of ["left", "right"]) {
+    const m = new RegExp("\\b" + h + ": ([A-Z_]+) ([a-z ]+?)(?: grip=|$)").exec(text);
+    const state = !m ? "" : (m[1] === "FAULT_LATCHED" || m[2] === "fault") ? "fault" : m[2] === "held" ? "held" : "";
+    if (state === "fault" && felt[h] !== "fault") buzz[h] = [1.0, 400];
+    else if (state === "held" && felt[h] !== "held") buzz[h] = [0.7, 120];
+    else if (state === "held" && tick) buzz[h] = [0.3, 40];
+    felt[h] = state;
+  }
+  if (tick) felt.tick = now;
+}
+
 // ---- the link to the sender --------------------------------------------------------------------------------------------
 const sid = Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, "0")).join("");
 const stream = QuestRecords.makeStream(sid);
@@ -337,7 +436,7 @@ function connect() {
   replaced = false;
   ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws?v=2&p=" + sid);
   ws.onopen = () => { linkUp = true; statusDirty = true; $("link").textContent = "connected to the PC"; };
-  ws.onmessage = (e) => { try { statusText = JSON.parse(e.data).status || ""; statusDirty = true; } catch (x) {} };
+  ws.onmessage = (e) => { try { statusText = JSON.parse(e.data).status || ""; statusDirty = true; feel(statusText); } catch (x) {} };
   ws.onclose = (e) => {
     linkUp = false; statusDirty = true;
     if (e.code === 4001) {   // do not take it back by itself: the two tabs would pull it from each other for ever
@@ -372,6 +471,10 @@ function onXRFrame(t, frame) {
     if (src.hand || !src.gripSpace || !src.gamepad || (src.handedness !== "left" && src.handedness !== "right")) continue;
     f[src.handedness] = { pose: poseOf(frame.getPose(src.gripSpace, refSpace)), gamepad: src.gamepad };
     stick = stick || !!(src.gamepad.buttons[3] && src.gamepad.buttons[3].pressed);
+    if (buzz[src.handedness]) {
+      const b = buzz[src.handedness], act = src.gamepad.hapticActuators && src.gamepad.hapticActuators[0]; buzz[src.handedness] = null;
+      try { if (act && act.pulse) act.pulse(b[0], b[1]); } catch (e) {}
+    }
     const ax = src.gamepad.axes[2] || 0;   // the right thumbstick sideways: the 3D picture nearer or further
     if (src.handedness === "right" && Math.abs(ax) > 0.5 && depthCam) {   // the 3D scene smaller and nearer, or life size
       sceneScale = Math.min(1.5, Math.max(0.2, sceneScale * (1 + ax * 0.008)));

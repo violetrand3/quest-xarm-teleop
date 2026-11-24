@@ -41,7 +41,7 @@ The headset goes as for the xArm: front pointing the way you face (`OPERATOR_YAW
 
 Watch the arms on the camera page, **http://127.0.0.1:18091/**: the RealSense, which sees both arms, and the two
 wrist webcams, large on top (`left_wrist`, then `right_wrist`), with the RealSense below. Each picture comes
-8 times a second. Click a picture to turn it upside down. The 3D view (http://127.0.0.1:18767/) shows what the arms are
+15 times a second (`YAM_FPS` in the settings; 8 until 2026-11-24). Click a picture to turn it upside down. The 3D view (http://127.0.0.1:18767/) shows what the arms are
 *commanded* to do, not what they do.
 
 | Control | Effect |
@@ -149,6 +149,9 @@ installed and unchanged, and `YAM_HEADSET=app` is the old way.
    the room visible around the pictures, so you can still see the PC; "dark room" hides it.
 3. Drive the arms as usual. Press a thumbstick down to bring the pictures back in front of you.
 4. A stop (red strip) is still acknowledged with Enter on the PC, after looking at the arms.
+5. The controllers buzz (since 2026-11-24): a hand's controller once when its arm is held by a limit (the box
+   edge, too close, a joint's end stop), then a light tick about once a second while it stays held; both buzz long
+   when the arms are stopped by a fault. `?buzz=0` on the page's address turns it off.
 
 If the headset leaves the page (the Meta button, taking the headset off, a system window), the arms hold, as they
 do when the app loses focus; press Start again. First tried on 2026-11-20 without a headset: the records pass the
@@ -167,7 +170,7 @@ further, until it is comfortable (the headset remembers it).
   still looked at the xArm.
 - The camera does not follow your head: it is a fixed 3D window, not a view you can look around in.
 - Its lenses are 12 cm apart, about twice a person's eyes, so depth looks a little stronger than in life.
-- The pictures come 8 times a second, like the others. That is enough to judge depth but not smooth.
+- The pictures come as often as the others (`YAM_FPS`). That is enough to judge depth but not smooth.
 - First tried on 2026-11-20 without a headset: the page drew the right half for each eye from a real ZED picture.
 
 ### A 3D scene (`YAM_STEREO=depth`)
@@ -180,13 +183,19 @@ sees it, and level. The wrist pictures and the status strip float above eye heig
 sideways to make the scene smaller and nearer, or life size again.
 
 - One camera sees one side. Places where the sensor measured nothing are filled with the distance of the
-  background behind them. What is behind an arm the camera never saw: from the camera's place that does not show,
-  from the side it would be a gap beside the arm. The page fills it with a guess: a second surface just behind
-  the first, which takes the distance and the colour of the background around the arm (a little darker). What
-  really lies hidden behind the arm is not in it. Outside the camera's picture there is nothing to show. Drawing the surface across the
-  gap was tried on 2026-11-23 and dropped: it hung from a raised arm like a dark curtain over the things under the
-  gripper. Shiny and black parts (the grippers) come out ragged.
-- Distances are sent in steps of about 1 cm between 0.35 and 2.9 m, and the scene updates about 8 times a second.
+  background behind them. What is behind an arm the camera cannot see now: from the camera's place that does not
+  show, from the side it would be a gap beside the arm. The page fills it from **memory** (since 2026-11-24): the
+  camera does not move, so for every point of its picture the page keeps the furthest thing it has seen there, with
+  its colour, which is the table and what stands on it as they were before the arm came in front. Something that
+  stays in front, unmoved, for about 10 s is taken into the memory too (a thing put on the table). What moves
+  while it is hidden (a tube pushed by the gripper) shows where it was until the camera sees the place again.
+  Where there is no memory yet (under the arms as they rest at the start, until they first move away), the page
+  guesses: the distance and colour of the background around the arm, a little darker. `?memory=0` on the page's
+  address shows the guess only. Outside the camera's picture there is nothing to show. Drawing the surface across
+  the gap was tried on 2026-11-23 and dropped: it hung from a raised arm like a dark curtain over the things under
+  the gripper. Shiny and black parts (the grippers) come out ragged.
+- Distances are sent in steps of about 1 cm between 0.35 and 2.9 m, and the scene updates 15 times a second
+  (`YAM_FPS`; 8 until 2026-11-24).
 - On the PC's camera page the same view shows the colour picture and, beside it, the distances as grey.
 - The demos record the RealSense's colour picture as before (from the same program, `scripts/lab_rgbd.py` on the
   lab host, port 28098, which holds the camera only while it is watched).
