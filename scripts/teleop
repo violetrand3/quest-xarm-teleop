@@ -55,8 +55,10 @@ YAM_STARTS="scripts/yam_live.py"
 # released for this on 2026-11-20; before, the lab's /home/dev/yam/yamcam.py held the wrist webcams all the time).
 # name=<device>,<size>,<pictures a second>,<format>,<width served>. Left to right as the arms stand: the eMeet is on
 # the left arm, the C920 on the right (the operator, 2026-11-19; the lab's YAMCameraCalCtl says the same).
+# The wrist webcams are named by what they are (by-id), not by the USB socket they are in: on 2026-11-25 they were
+# plugged into other sockets while the ZED was moved, and their pictures stopped.
 YAM_USB_PORT=28097
-YAM_USB_CAMS=${YAM_USB_CAMS:-left_wrist=/dev/v4l/by-path/pci-0000:46:00.1-usb-0:2.4.2:1.0-video-index0,1280x720,30,mjpeg,960 right_wrist=/dev/v4l/by-path/pci-0000:46:00.1-usb-0:2.4.1:1.0-video-index0,1024x576,30,mjpeg,960 zed=/dev/v4l/by-id/usb-Technologies__Inc._ZED_2i_OV0001-video-index0,2560x720,15,yuyv422,1280 rs_color=/dev/v4l/by-id/usb-Intel_R__RealSense_TM__Depth_Camera_435i_Intel_R__RealSense_TM__Depth_Camera_435i_254343063952-video-index0,1280x720,15,yuyv422,960}
+YAM_USB_CAMS=${YAM_USB_CAMS:-left_wrist=/dev/v4l/by-id/usb-EMEET_HD_Webcam_eMeet_C950_A240127000104785-video-index0,1280x720,30,mjpeg,960 right_wrist=/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920-video-index0,1024x576,30,mjpeg,960 zed=/dev/v4l/by-id/usb-Technologies__Inc._ZED_2i_OV0001-video-index0,2560x720,15,yuyv422,1280 rs_color=/dev/v4l/by-id/usb-Intel_R__RealSense_TM__Depth_Camera_435i_Intel_R__RealSense_TM__Depth_Camera_435i_254343063952-video-index0,1280x720,15,yuyv422,960}
 U=http://127.0.0.1:$YAM_USB_PORT/stream
 export YAM_CAM_URL=$U   # where the lab program takes the cameras it records (yam_session.sh)
 # The camera page. Without YAM_STEREO: the wrist views large, side by side on top, and sharper (640 px wide; the
