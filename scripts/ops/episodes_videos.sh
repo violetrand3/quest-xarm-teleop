@@ -17,8 +17,15 @@ set -u
 cd ~/"$1/episodes/$2" || exit 2
 one() {   # <episode dir>/cam_<camera>.mjpeg -> <episode dir>/view_<camera>.mp4 (written aside, then renamed)
   f=$1; e=$(dirname "$f"); c=$(basename "$f" .mjpeg); c=${c#cam_}; out=$e/view_$c.mp4; tmp=$e/.view_$c.mp4.part
-  [ -s "$out" ] && [ "$out" -nt "$f" ] && { echo "$out: already made"; return 0; }
-  nice -n 19 ffmpeg -nostdin -loglevel error -y -f mjpeg -framerate 30 -i "$f" -c:v libx264 -crf 20 -pix_fmt yuv420p -threads 4 -f mp4 "$tmp" \
+  # The camera's own rate, from the episode's meta.json (frames received per second, rounded to a usual rate). Until
+  # 2026-11-25 this was 30 for every camera: the RealSense through lab_rgbd.py (YAM_STEREO=depth) gives 15, so those
+  # videos ran at double speed (a 5 min demo played in 2.5 min). A view made at another rate is made again.
+  r=$(python3 -c 'import json,sys
+try: f = json.load(open(sys.argv[1]))["cameras"][sys.argv[2]]["fps"]
+except Exception: f = 30
+print(min((5, 10, 15, 20, 25, 30, 60), key=lambda v: abs(v - f)))' "$e/meta.json" "$c" 2> /dev/null); r=${r:-30}
+  [ -s "$out" ] && [ "$out" -nt "$f" ] && [ "$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 "$out")" = "$r/1" ] && { echo "$out: already made"; return 0; }
+  nice -n 19 ffmpeg -nostdin -loglevel error -y -f mjpeg -framerate "$r" -i "$f" -c:v libx264 -crf 20 -pix_fmt yuv420p -threads 4 -f mp4 "$tmp" \
     && mv -f "$tmp" "$out" \
     && echo "$out: $(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames,width,height -of csv=p=0 "$out") (width,height,frames), $(du -h "$out" | cut -f1)" \
     || { rm -f "$tmp"; echo "$out: FAILED"; return 1; }
