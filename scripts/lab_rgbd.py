@@ -132,6 +132,9 @@ class ZedSource(threading.Thread):
                     raise RuntimeError(f"the ZED did not open: {err}")
                 img, dep = sl.Mat(), sl.Mat()
                 rt = sl.RuntimeParameters()
+                # Only distances the SDK is sure of (its default keeps nearly all): the unsure ones showed in the
+                # scene as scattered bits floating around the arms (the operator, 2026-11-25).
+                rt.confidence_threshold, rt.texture_confidence_threshold = 50, 100
                 while self.wanted():
                     if zed.grab(rt) != sl.ERROR_CODE.SUCCESS:
                         time.sleep(0.01)
@@ -142,6 +145,9 @@ class ZedSource(threading.Thread):
                     h, w = z.shape
                     half = (self.out_width // 2, self.out_width // 2 * h // w)
                     z = np.where(np.isfinite(z) & (z > 0) & (z < self.far), z, 0).astype(np.float32)  # nan, inf, too far: no distance there
+                    mm = np.rint(z * 1000).astype(np.int16)  # small islands of distance apart from their surroundings: taken out
+                    cv2.filterSpeckles(mm, 0, 400, 25)
+                    z = np.where(mm > 0, z, 0).astype(np.float32)
                     z = cv2.resize(z, half, interpolation=cv2.INTER_NEAREST)
                     grey = cv2.cvtColor(encode_depth(z, np), cv2.COLOR_GRAY2BGR)
                     both = np.hstack([cv2.resize(color, half, interpolation=cv2.INTER_AREA), grey])
