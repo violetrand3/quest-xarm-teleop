@@ -211,7 +211,8 @@ sideways to make the scene smaller and nearer, or life size again.
 ### Two cameras in the scene (`YAM_STEREO=depth2`)
 
 A trial since 2026-11-25. One camera cannot see what an arm hides from it. With `YAM_STEREO=depth2` the ZED 2i,
-which looks along the table from its left end, is a second colour-and-depth camera (`lab_rgbd.py --zed`, port
+which since the evening of 2026-11-25 hangs on the wall side of the table, 0.6 m above it, looking back at the arms
+and 44 degrees down (before: along the table from its left end, too flat to see under the arms), is a second colour-and-depth camera (`lab_rgbd.py --zed`, port
 28099, view `rgbd2`; the ZED SDK works the distances out from its two eyes, mode ULTRA). The page draws its surface
 into the same scene, but only where the RealSense could not see: behind what the RealSense measured along the same
 line of sight (hidden by an arm), no further than the background around that place, inside the RealSense's picture
@@ -223,7 +224,9 @@ the ZED's part in pink.
   table's height `table_y`). It was fitted on 2026-11-25 from the scene itself: both clouds levelled with the
   cameras' accelerometers, the table top found in each, then turned and shifted until what stands on the table
   (trays, rack, arms) agreed, to about 1.3 cm. **If either camera is moved, this has to be fitted again** (the
-  script and its check pictures are kept in `data/calib_two_cameras/` on the PC that did it).
+  script and its check pictures are kept in `data/calib_two_cameras/` on the PC that did it; `calib_from_streams.py`
+  works while the cameras are being watched and takes the ZED's tilt from the table plane). Fitted again for the
+  wall position on 2026-11-25, to 1.2 cm.
 - The ZED is further away and lower, so its part is coarser, and its colours differ from the RealSense's.
 - It adds a third large stream: about 3 Mbit/s more at 15 pictures a second.
 - While this mode is watched, the ZED is held by `lab_rgbd.py`: its plain view (`zed` on port 28097) and the ZED's
