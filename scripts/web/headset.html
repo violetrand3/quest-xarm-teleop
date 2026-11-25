@@ -121,13 +121,13 @@ const sceneProg = (() => {
     void main(){ if (second > 0.5) { float d = -pm.z; vec2 q = vec2(pm.x / d * k2.x + k2.y, -pm.y / d * k2.x / k2.w + k2.z);
         if (d < 0.1 || q.x < 0.0 || q.x > 1.0 || q.y < 0.0 || q.y > 1.0 || dot(lowest.xyz, pm) < lowest.w) discard;
         float gm = textureLod(t2, vec2(0.5 + clamp(q.x, 0.003, 0.997) * 0.5, q.y), 0.0).r;
-        if (gm > 0.047) { float zm = zOf(gm), back = zm; if (d < zm + 0.07) discard;
+        if (gm > 0.047) { float zm = zOf(gm), back = zm; if (d < zm + 0.05) discard;
           // ... and not further than the background around that place in the first picture (the table around an
           // arm): what the second camera puts beyond it (a second copy of the wall, a little off) is its error.
           for (int r = 1; r <= 3; r++) for (int a = 0; a < 8; a++) { float ang = float(a) * 0.7853982;
-            float n = textureLod(t2, vec2(0.5 + clamp(q.x + cos(ang) * float(r) * 0.03, 0.003, 0.997) * 0.5, q.y + sin(ang) * float(r) * 0.05), 0.0).r;
+            float n = textureLod(t2, vec2(0.5 + clamp(q.x + cos(ang) * float(r) * 0.06, 0.003, 0.997) * 0.5, q.y + sin(ang) * float(r) * 0.10), 0.0).r;
             if (n > 0.047) back = max(back, zOf(n)); }
-          if (d > back + 0.07) discard; } }
+          if (d > back + 0.10) discard; } }
       float lo = 1e9, hi = 0.0, least = 1.0;
       for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) {
         float d = grey(uv + vec2(float(i), float(j)) * px); least = min(least, d);
@@ -168,9 +168,10 @@ const backProg = sceneProg.backing, bM = gl.getUniformLocation(backProg, "m"), b
   bCell = gl.getUniformLocation(backProg, "cell"), bDim = gl.getUniformLocation(backProg, "dim");
 const bMem = gl.getUniformLocation(backProg, "mem"), bUseMem = gl.getUniformLocation(backProg, "useMem"), bT = gl.getUniformLocation(backProg, "t");
 const noBacking = new URLSearchParams(location.search).get("backing") === "0";
-// Off unless the address says ?memory=1: its first version (2026-11-24) tore the real scene into dark streaks, and the
-// corrected rules have only been checked on a made-up scene so far, not on the YAM table.
-const noMemory = new URLSearchParams(location.search).get("memory") !== "1";
+// Off unless asked for (YAM_SCENE_MEMORY=1 in the settings, or ?memory=1 on the address): its first version
+// (2026-11-24) tore the real scene into dark streaks. The corrected rules held on the real table with the arms at
+// rest (2026-11-25); with moving arms they are still to be judged in the headset.
+let noMemory = new URLSearchParams(location.search).get("memory") !== "1";
 
 // ---- the memory: what the camera saw behind the arms ----------------------------------------------------------------
 // The camera does not move, so each point of its picture always looks along the same line. For each point the page
@@ -329,6 +330,7 @@ const textCanvas = document.createElement("canvas"); textCanvas.width = 1536; te
 let depth = 0.03;
 try { const d = Number(localStorage.getItem("stereo_depth")); if (isFinite(d) && d >= 0 && d <= 0.15 && localStorage.getItem("stereo_depth") !== null) depth = d; } catch (e) {}
 function layout(cfg) {
+  if ((cfg.options || {}).memory && new URLSearchParams(location.search).get("memory") !== "0") noMemory = false;
   const scene = cfg.depth ? cfg.depth.views.filter((k) => cfg.views.includes(k)) : [];
   if (scene.length) {   // the 3D scene around you; the other pictures in a row above eye height, out of its way
     depthCam = cfg.depth; sceneTurn = turnFor(depthCam); line = 0.28;

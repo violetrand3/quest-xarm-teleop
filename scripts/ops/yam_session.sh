@@ -15,6 +15,7 @@ LINK_PORT=18766; VIEW_PORT=18767                               # this PC; the la
 # cable, and that page reads the controllers in place of the headset app (scripts/quest_web_source.py). app: as before.
 case "${YAM_HEADSET:-app}" in app|web) ;; *) echo "YAM_HEADSET must be app or web (config/teleop_session.conf)"; exit 2;; esac
 WEB=$([ "${YAM_HEADSET:-app}" = web ] && echo 1 || echo 0); WEB_PORT=${YAM_WEB_PORT:-8791}
+export YAM_SCENE_MEMORY=${YAM_SCENE_MEMORY:-0}   # read by the headset page's server (quest_web_source.py)
 mkdir -p "$D" "$R"
 SSHO=(-n -o BatchMode=yes -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10)
 S=$(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"{print $1}'); [ "$(echo "$S" | grep -c .)" = 1 ] || { echo "need exactly one headset on adb"; exit 2; }

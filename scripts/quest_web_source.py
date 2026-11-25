@@ -28,6 +28,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
 import socket
 import struct
@@ -108,6 +109,7 @@ class WebAcquisition:
         # the first (web/depth_camera2.json: to_main turns a point in its axes into the first camera's, column by column)
         if self.depth and "rgbd2" in self.depth["views"]:
             self.depth["cams"] = {"rgbd2": json.loads((page.parent / "depth_camera2.json").read_text())}
+        self.options = {"memory": os.environ.get("YAM_SCENE_MEMORY", "0") == "1"}  # the page's own switches (settings file)
         self.gen = 0
         self._lock = threading.Lock()
         self._client: Any = None  # the handler of the connected page
@@ -273,7 +275,7 @@ class WebAcquisition:
                 elif p == "/records.js":
                     self._send(200, "text/javascript; charset=utf-8", (acq.page.parent / "records.js").read_bytes())
                 elif p == "/config.json":
-                    self._send(200, "application/json", json.dumps({"build": WEB_BUILD, "views": acq.views, "big": acq.big, "stereo": acq.stereo, "depth": acq.depth}).encode())
+                    self._send(200, "application/json", json.dumps({"build": WEB_BUILD, "views": acq.views, "big": acq.big, "stereo": acq.stereo, "options": acq.options, "depth": acq.depth}).encode())
                 elif p == "/ws" and "websocket" in self.headers.get("Upgrade", "").lower():
                     acq._serve_ws(self)
                 elif p.startswith("/cam/") and re.fullmatch(r"[a-z0-9_]+", p[5:]) and p[5:] in acq.views:

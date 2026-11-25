@@ -195,7 +195,7 @@ class ServerTests(unittest.TestCase):
         get = lambda p: urllib.request.urlopen(f"http://127.0.0.1:{self.port}{p}", timeout=5).read().decode()  # noqa: E731
         self.assertIn("/records.js", get("/"))
         self.assertIn("makeStream", get("/records.js"))
-        self.assertEqual(json.loads(get("/config.json")), {"build": WEB_BUILD, "views": ["left_wrist", "rs_color"], "big": ["left_wrist"], "stereo": [], "depth": None})
+        self.assertEqual(json.loads(get("/config.json")), {"build": WEB_BUILD, "views": ["left_wrist", "rs_color"], "big": ["left_wrist"], "stereo": [], "options": {"memory": False}, "depth": None})
         for bad in ("/cam/other", "/cam/../x", "/nothing"):
             with self.assertRaises(urllib.error.HTTPError) as e:
                 get(bad)
