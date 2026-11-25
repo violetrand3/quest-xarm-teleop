@@ -15,6 +15,7 @@ comes from here too (lab_usb_cams.py's ffmpeg cannot hold the colour camera at t
   GET /stream/rgbd       colour | distance, side by side
   GET /stream/rs_color   the colour picture alone (the overview on the PC's page; recorded with the demos)
   GET /stats             JSON counters
+  --zed                  the ZED 2i instead, as a second such camera: GET /stream/rgbd2 (run on another port)
   --describe             print the lens data and the camera's tilt (for web/depth_camera.json) and exit
 On demand like lab_usb_cams.py: the camera is opened only while a stream is watched and let go GRACE_S after.
 Bound to 127.0.0.1 only; no robot or gripper code.
@@ -88,6 +89,76 @@ class View:
                 self.seq += 1
                 self.frames += 1
             self.cv.notify_all()
+
+
+class ZedSource(threading.Thread):
+    """The ZED 2i as a second colour-and-distance camera (--zed): its left eye's picture, and the distance of every
+    point of it worked out from its two eyes by the ZED SDK (pyzed, on the lab host's graphics card). One view,
+    `rgbd2`, in the same form as the RealSense's. Open only while it is watched. The SDK's NEURAL depth needs
+    TensorRT, which the lab host does not have (2026-11-25), so the depth mode is ULTRA."""
+
+    def __init__(self, fps: int, out_width: int, quality: int, far: float = FAR - 0.05):  # further than FAR cannot be sent: left out
+        super().__init__(daemon=True)
+        self.fps, self.out_width, self.quality, self.far = fps, out_width, quality, far
+        self.cv = threading.Condition()
+        self.starts = self.failures = 0
+        self.note = "not opened yet"
+        self.views = {"rgbd2": View(self)}
+        self.start()
+
+    def wanted(self) -> bool:
+        with self.cv:
+            return any(v.wanted() for v in self.views.values())
+
+    def run(self) -> None:
+        import cv2
+        import numpy as np
+        import pyzed.sl as sl
+
+        view = self.views["rgbd2"]
+        while True:
+            with self.cv:
+                while not view.clients:
+                    self.cv.wait(timeout=1.0)
+            self.starts += 1
+            zed, got = sl.Camera(), 0
+            try:
+                ip = sl.InitParameters()
+                ip.camera_resolution, ip.camera_fps = sl.RESOLUTION.HD720, self.fps
+                ip.depth_mode, ip.coordinate_units, ip.depth_maximum_distance = sl.DEPTH_MODE.ULTRA, sl.UNIT.METER, self.far
+                ip.sdk_verbose = 0
+                err = zed.open(ip)
+                if err != sl.ERROR_CODE.SUCCESS:
+                    raise RuntimeError(f"the ZED did not open: {err}")
+                img, dep = sl.Mat(), sl.Mat()
+                rt = sl.RuntimeParameters()
+                while self.wanted():
+                    if zed.grab(rt) != sl.ERROR_CODE.SUCCESS:
+                        time.sleep(0.01)
+                        continue
+                    zed.retrieve_image(img, sl.VIEW.LEFT)
+                    zed.retrieve_measure(dep, sl.MEASURE.DEPTH)
+                    color, z = img.get_data()[:, :, :3], dep.get_data()
+                    h, w = z.shape
+                    half = (self.out_width // 2, self.out_width // 2 * h // w)
+                    z = np.where(np.isfinite(z) & (z > 0) & (z < self.far), z, 0).astype(np.float32)  # nan, inf, too far: no distance there
+                    z = cv2.resize(z, half, interpolation=cv2.INTER_NEAREST)
+                    grey = cv2.cvtColor(encode_depth(z, np), cv2.COLOR_GRAY2BGR)
+                    both = np.hstack([cv2.resize(color, half, interpolation=cv2.INTER_AREA), grey])
+                    view.put(cv2.imencode(".jpg", both, [cv2.IMWRITE_JPEG_QUALITY, self.quality])[1].tobytes())
+                    got += 1
+                    self.note = "running"
+                self.note = "idle (nobody watching): the camera is free"
+            except Exception as e:  # in use elsewhere (the ZED's own tools, lab_usb_cams' zed view), unplugged
+                self.failures += 1
+                self.note = ("no picture: " if not got else "the camera stopped: ") + str(e)[:160]
+                view.put(None)
+                time.sleep(RETRY_S)
+            finally:
+                try:
+                    zed.close()
+                except Exception:
+                    pass
 
 
 class Source(threading.Thread):
@@ -205,6 +276,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--color-width", type=int, default=960, help="width of the colour picture alone")
     ap.add_argument("--quality", type=int, default=90, help="JPEG quality of the colour | distance picture")
     ap.add_argument("--no-fill", action="store_true", help="leave the places with no measured distance empty (holes in the scene)")
+    ap.add_argument("--zed", action="store_true", help="serve the ZED 2i instead: /stream/rgbd2 (its left eye | distance)")
     ap.add_argument("--describe", action="store_true", help="print the lens data and the tilt as JSON and exit")
     ap.add_argument("--duration", type=float, help="exit after this many seconds")
     args = ap.parse_args(argv)
@@ -213,10 +285,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.describe:
         print(json.dumps(describe(size, args.fps)))  # type: ignore[arg-type]
         return 0
-    src = Source(size, dsize, args.fps, args.out_width, args.color_width, args.quality, not args.no_fill)  # type: ignore[arg-type]
+    if args.zed:
+        src: Any = ZedSource(args.fps, args.out_width, args.quality)
+    else:
+        src = Source(size, dsize, args.fps, args.out_width, args.color_width, args.quality, not args.no_fill)  # type: ignore[arg-type]
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(src.views))  # type: ignore[arg-type]
     srv.daemon_threads = True
-    print(f"RealSense colour and depth (on demand) on 127.0.0.1:{args.port}: {list(src.views)}", flush=True)
+    print(f"{'ZED' if args.zed else 'RealSense'} colour and depth (on demand) on 127.0.0.1:{args.port}: {list(src.views)}", flush=True)
     if args.duration:
         threading.Timer(args.duration, srv.shutdown).start()
     try:

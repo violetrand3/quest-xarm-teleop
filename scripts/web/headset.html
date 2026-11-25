@@ -98,7 +98,7 @@ const sceneProg = (() => {
     float zOf(float d){ return NEAR + max(0.0, d * 255.0 - 24.0) / 231.0 * (FAR - NEAR); }`;
   const p = gl.createProgram();
   gl.attachShader(p, mk(gl.VERTEX_SHADER, common + `
-    in vec2 g; uniform mat4 m; uniform vec4 k; uniform vec2 cell; out vec2 uv;   // k: focal, cx, cy (fractions of the picture), height / width
+    in vec2 g; uniform mat4 m; uniform mat4 tm; uniform vec4 k; uniform vec2 cell; out vec2 uv; out vec3 pm;   // k: focal, cx, cy (fractions of the picture), height / width; pm: the point in the FIRST camera's axes
     // At the edge of an arm the sensor's distances spill a little past the arm onto what lies behind it (and the
     // colour and the distance pictures do not meet exactly), so things next to the arm (a tube under the gripper)
     // were lifted towards it and looked torn. A point whose neighbours differ much takes the furthest of them:
@@ -108,10 +108,18 @@ const sceneProg = (() => {
         float d = grey(g + vec2(float(i), float(j)) * cell);
         if (d > 0.047) { float n = zOf(d); far = max(far, n); near = min(near, n); } }
       if (far - near > 0.025 + 0.05 * near) z = far;
-      gl_Position = m * vec4((g.x - k.y) / k.x * z, -(g.y - k.z) * k.w / k.x * z, -z, 1.0); }`));
+      vec4 P = vec4((g.x - k.y) / k.x * z, -(g.y - k.z) * k.w / k.x * z, -z, 1.0); pm = (tm * P).xyz;
+      gl_Position = m * P; }`));
   gl.attachShader(p, mk(gl.FRAGMENT_SHADER, common + `
-    in vec2 uv; uniform vec2 px; uniform float dim; uniform float gap; out vec4 c;
-    void main(){ float lo = 1e9, hi = 0.0, least = 1.0;
+    in vec2 uv; in vec3 pm; uniform vec2 px; uniform float dim; uniform float gap; uniform float second; uniform sampler2D t2; uniform vec4 k2; out vec4 c;
+    // A second camera's surface (second = 1) is drawn only where the first camera could NOT see: behind what the
+    // first measured along the same line of sight (hidden by an arm), or outside its picture. Where the first sees
+    // the same place, its own, finer surface is the one shown, so the two never lie doubled over each other.
+    void main(){ if (second > 0.5) { float d = -pm.z; vec2 q = vec2(pm.x / d * k2.x + k2.y, -pm.y / d * k2.x / k2.w + k2.z);
+        if (d > 0.1 && q.x > 0.0 && q.x < 1.0 && q.y > 0.0 && q.y < 1.0) {
+          float gm = textureLod(t2, vec2(0.5 + clamp(q.x, 0.003, 0.997) * 0.5, q.y), 0.0).r;
+          if (gm > 0.047 && d < zOf(gm) + 0.07) discard; } }
+      float lo = 1e9, hi = 0.0, least = 1.0;
       for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) {
         float d = grey(uv + vec2(float(i), float(j)) * px); least = min(least, d);
         float z = zOf(d); lo = min(lo, z); hi = max(hi, z); }
@@ -125,7 +133,7 @@ const sceneProg = (() => {
   // the colour of the furthest point around it (the table around an arm): a guess, a little darker.
   const b = gl.createProgram();
   gl.attachShader(b, mk(gl.VERTEX_SHADER, common + `
-    in vec2 g; uniform mat4 m; uniform vec4 k; uniform vec2 cell; uniform sampler2D mem; uniform float useMem; out vec2 uv; out vec2 gg; out float src;
+    in vec2 g; uniform mat4 m; uniform vec4 k; uniform vec2 cell; uniform sampler2D mem; uniform float useMem; uniform float push; out vec2 uv; out vec2 gg; out float src;
     void main(){ float d0 = grey(g), best = d0 > 0.047 ? zOf(d0) : 0.0; vec2 at = g; src = 0.0;
       gg = g;
       float md = useMem > 0.5 ? texelFetch(mem, ivec2(g * vec2(textureSize(mem, 0) - 1)), 0).a : 0.0;
@@ -135,7 +143,7 @@ const sceneProg = (() => {
         float ang = float(a) * 0.7853982; vec2 o = g + vec2(cos(ang), sin(ang)) * cell * (float(r) * 7.0);
         if (o.x < 0.0 || o.x > 1.0 || o.y < 0.0 || o.y > 1.0) continue;
         float d = grey(o); if (d > 0.047) { float n = zOf(d); if (n > best) { best = n; at = o; } } }
-      float z = best > 0.0 ? best * 1.015 : FAR; uv = at;
+      float z = best > 0.0 ? best * push : FAR; uv = at;
       gl_Position = m * vec4((g.x - k.y) / k.x * z, -(g.y - k.z) * k.w / k.x * z, -z, 1.0); }`));
   gl.attachShader(b, mk(gl.FRAGMENT_SHADER, common + `
     in vec2 uv; in vec2 gg; in float src; uniform float dim; uniform sampler2D mem; out vec4 c;
@@ -227,7 +235,9 @@ function remember(p) {   // p: a depth panel whose new picture was just put in p
   p.mem.at = 1 - p.mem.at;
 }
 const sCell = gl.getUniformLocation(sceneProg, "cell"), sM = gl.getUniformLocation(sceneProg, "m"), sK = gl.getUniformLocation(sceneProg, "k"), sPx = gl.getUniformLocation(sceneProg, "px"),
-  sDim = gl.getUniformLocation(sceneProg, "dim"), sGap = gl.getUniformLocation(sceneProg, "gap");
+  sDim = gl.getUniformLocation(sceneProg, "dim"), sGap = gl.getUniformLocation(sceneProg, "gap"), sTm = gl.getUniformLocation(sceneProg, "tm"),
+  sSecond = gl.getUniformLocation(sceneProg, "second"), sT = gl.getUniformLocation(sceneProg, "t"), sT2 = gl.getUniformLocation(sceneProg, "t2"), sK2 = gl.getUniformLocation(sceneProg, "k2"),
+  bPush = gl.getUniformLocation(backProg, "push");
 const openGaps = new URLSearchParams(location.search).get("holes") !== "0";
 function makeGrid(W, H, program) {
   const vao = gl.createVertexArray(), v = new Float32Array((W + 1) * (H + 1) * 2), ix = new Uint32Array(W * H * 6);
@@ -259,27 +269,34 @@ function turnFor(cam) {
 }
 function scaled(m, k) { const o = new Float32Array(m); for (let i = 0; i < 12; i++) o[i] *= k; return o; }
 function drawScene(viewProj, anchor) {
-  const now = performance.now();
+  const now = performance.now(), base = mul(mul(viewProj, anchor), scaled(sceneTurn, sceneScale));
+  const scenes = panels.filter((p) => p.depth && p.frames), main = scenes.find((p) => !p.second);
+  const live = (p) => now - p.lastMs <= 1500, both = scenes.some((p) => p.second && live(p));
   gl.activeTexture(gl.TEXTURE0);
   gl.enable(gl.DEPTH_TEST);
-  for (const p of panels) if (p.depth && p.frames) {
-    const m = mul(mul(viewProj, anchor), scaled(sceneTurn, sceneScale));
+  for (const p of scenes.sort((a, b) => (a.second ? 1 : 0) - (b.second ? 1 : 0))) {   // the first camera, then the second
+    const m = mul(base, p.toMain);
     gl.bindTexture(gl.TEXTURE_2D, p.tex);
-    if (!noBacking) {
+    if (!noBacking && !p.second) {
       gl.useProgram(backProg); gl.bindVertexArray(backGrid.vao);
       gl.uniformMatrix4fv(bM, false, m);
-      gl.uniform4f(bK, depthCam.focal, depthCam.cx, depthCam.cy, p.aspect);
+      gl.uniform4f(bK, p.cam.focal, p.cam.cx, p.cam.cy, p.aspect);
       gl.uniform2f(bCell, 1 / GRID_W, 1 / GRID_H);
-      gl.uniform1f(bDim, now - p.lastMs > 1500 ? 0.35 : 1.0);
+      gl.uniform1f(bDim, live(p) ? 1.0 : 0.35);
+      gl.uniform1f(bPush, both ? 1.07 : 1.015);   // with a second camera the guess stands further back: what that camera really saw there is in front of it
       gl.uniform1i(bT, 0); gl.uniform1i(bMem, 1); gl.uniform1f(bUseMem, p.mem ? 1.0 : 0.0);
       if (p.mem) { gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, p.mem.side[p.mem.at].a); gl.activeTexture(gl.TEXTURE0); }
       gl.drawElements(gl.TRIANGLES, backGrid.count, gl.UNSIGNED_INT, 0);
     }
+    const hide = p.second && main && live(main);   // the second camera only where the first did not see
+    if (hide) { gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, main.tex); gl.activeTexture(gl.TEXTURE0); }
     gl.useProgram(sceneProg); gl.bindVertexArray(grid.vao);
-    gl.uniformMatrix4fv(sM, false, m);
-    gl.uniform4f(sK, depthCam.focal, depthCam.cx, depthCam.cy, p.aspect);
+    gl.uniformMatrix4fv(sM, false, m); gl.uniformMatrix4fv(sTm, false, p.toMain);
+    gl.uniform1i(sT, 0); gl.uniform1i(sT2, 1); gl.uniform1f(sSecond, hide ? 1.0 : 0.0);
+    if (hide) gl.uniform4f(sK2, main.cam.focal, main.cam.cx, main.cam.cy, main.aspect);
+    gl.uniform4f(sK, p.cam.focal, p.cam.cx, p.cam.cy, p.aspect);
     gl.uniform2f(sPx, 1.5 / Math.max(1, p.texW / 2), 1.5 / Math.max(1, p.texH));
-    gl.uniform1f(sDim, now - p.lastMs > 1500 ? 0.35 : 1.0);
+    gl.uniform1f(sDim, live(p) ? 1.0 : 0.35);
     gl.uniform1f(sGap, openGaps ? 1.0 : 0.0);
     gl.uniform2f(sCell, 1 / GRID_W, 1 / GRID_H);
     gl.drawElements(gl.TRIANGLES, grid.count, gl.UNSIGNED_INT, 0);
@@ -303,7 +320,8 @@ function layout(cfg) {
   const scene = cfg.depth ? cfg.depth.views.filter((k) => cfg.views.includes(k)) : [];
   if (scene.length) {   // the 3D scene around you; the other pictures in a row above eye height, out of its way
     depthCam = cfg.depth; sceneTurn = turnFor(depthCam); line = 0.28;
-    for (const k of scene) panels.push({ key: k, tex: newTexture(), depth: true, w: 0, aspect: 9 / 16, x: 0, y: 0, top: false, pending: null, frames: 0, lastMs: 0, texW: 2, texH: 1 });
+    for (const k of scene) panels.push({ key: k, tex: newTexture(), depth: true, cam: (cfg.depth.cams || {})[k] || cfg.depth,
+      second: !!(cfg.depth.cams || {})[k], toMain: (cfg.depth.cams || {})[k] ? new Float32Array(cfg.depth.cams[k].to_main) : IDENT, w: 0, aspect: 9 / 16, x: 0, y: 0, top: false, pending: null, frames: 0, lastMs: 0, texW: 2, texH: 1 });
     cfg.views.filter((k) => !scene.includes(k)).forEach((k, i, all) => panels.push({ key: k, tex: newTexture(), w: 0.5, aspect: 9 / 16,
       x: (i - (all.length - 1) / 2) * 0.54, y: 0, top: true, stereo: false, pending: null, frames: 0, lastMs: 0 }));
     statusPanel = { tex: newTexture(), w: 1.44, aspect: 160 / 1536, x: 0, y: 0 };
@@ -360,7 +378,7 @@ function upload() {   // the newest pictures into their textures; called with th
     gl.bindTexture(gl.TEXTURE_2D, p.tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, b);
     p.aspect = b.height / (p.stereo || p.depth ? b.width / 2 : b.width); p.texW = b.width; p.texH = b.height; b.close();
-    if (p.depth) { remember(p); gl.bindFramebuffer(gl.FRAMEBUFFER, target); gl.viewport(vp[0], vp[1], vp[2], vp[3]); }
+    if (p.depth && !p.second) { remember(p); gl.bindFramebuffer(gl.FRAMEBUFFER, target); gl.viewport(vp[0], vp[1], vp[2], vp[3]); }
   }
   if (statusDirty && statusPanel) drawStatus();
 }

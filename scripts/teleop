@@ -75,7 +75,13 @@ case "${YAM_STEREO:-}" in
        YAM_VIEWS=${YAM_VIEWS:-rgbd=$G/rgbd,left_wrist=$U/left_wrist,right_wrist=$U/right_wrist}
        YAM_VIEW_ARGS=${YAM_VIEW_ARGS:---big rgbd --big-width 1280 --quality 75 --width 640 --fps $YAM_FPS}; export YAM_WEB_STEREO="" YAM_WEB_DEPTH=rgbd
        export YAM_CAM_URL=$G;;   # the demos' RealSense picture comes from the same program (it holds the camera)
-  *) die "YAM_STEREO must be empty, zed or depth (config/teleop_session.conf)";;
+  depth2)  # depth, and the ZED 2i as a second colour-and-depth camera from the side (lab_rgbd.py --zed): the page puts
+       # its surface into the same scene where the RealSense could not see (behind and under the arms)
+       YAM_RGBD_PORT=28098; G=http://127.0.0.1:$YAM_RGBD_PORT/stream; YAM_ZED_PORT=28099
+       YAM_VIEWS=${YAM_VIEWS:-rgbd=$G/rgbd,rgbd2=http://127.0.0.1:$YAM_ZED_PORT/stream/rgbd2,left_wrist=$U/left_wrist,right_wrist=$U/right_wrist}
+       YAM_VIEW_ARGS=${YAM_VIEW_ARGS:---big rgbd,rgbd2 --big-width 1280 --quality 75 --width 640 --fps $YAM_FPS}; export YAM_WEB_STEREO="" YAM_WEB_DEPTH=rgbd,rgbd2
+       export YAM_CAM_URL=$G;;
+  *) die "YAM_STEREO must be empty, zed, depth or depth2 (config/teleop_session.conf)";;
 esac
 # The same views for the headset's own page (YAM_HEADSET=web): their names, and which are large.
 export YAM_WEB_VIEWS=$(echo "$YAM_VIEWS" | tr ',' '\n' | sed 's/=.*//' | paste -sd,)
@@ -302,7 +308,12 @@ ensure_usb_cams() {   # the YAM cameras' on-demand server on the lab host, with 
     || die "the YAM cameras did not start on the lab host"
 }
 ensure_rgbd() {   # YAM_STEREO=depth: the RealSense colour-and-depth server on the lab host (it too opens the camera only while watched)
-  [ "${YAM_STEREO:-}" = depth ] || return 0
+  case "${YAM_STEREO:-}" in depth|depth2) ;; *) return 0;; esac
+  if [ "$YAM_STEREO" = depth2 ] && ! lab "pgrep -af '[l]ab_rgbd.py' | grep -qF -- '--zed --port $YAM_ZED_PORT'"; then
+    echo "starting the ZED's colour and depth on the lab host (opened only while it is watched)"
+    lab "cd ~/$LAB_DIR && mkdir -p logs && (nohup setsid python3 -u scripts/lab_rgbd.py --zed --port $YAM_ZED_PORT > logs/zed_rgbd_\$(date +%H%M%S).log 2>&1 < /dev/null &); sleep 2; ss -ltn | grep -q '127.0.0.1:$YAM_ZED_PORT '" \
+      || die "the ZED's colour and depth did not start on the lab host"
+  fi
   lab "pgrep -af '[l]ab_rgbd.py' | grep -qF -- '--port $YAM_RGBD_PORT'" && return 0
   echo "starting the RealSense colour and depth on the lab host (opened only while it is watched)"
   lab "cd ~/$LAB_DIR && mkdir -p logs && (nohup setsid python3 -u scripts/lab_rgbd.py --port $YAM_RGBD_PORT > logs/rgbd_\$(date +%H%M%S).log 2>&1 < /dev/null &); sleep 2; ss -ltn | grep -q '127.0.0.1:$YAM_RGBD_PORT '" \

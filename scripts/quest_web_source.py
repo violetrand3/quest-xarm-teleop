@@ -104,6 +104,10 @@ class WebAcquisition:
         # views whose picture holds colour | distance side by side (scripts/lab_rgbd.py), shown as a 3D scene, with
         # the camera's lens and tilt (web/depth_camera.json: `lab_rgbd.py --describe` on the lab host prints them)
         self.depth = dict(json.loads((page.parent / "depth_camera.json").read_text()), views=depth) if depth else None
+        # a second such camera (the ZED 2i, view rgbd2; YAM_STEREO=depth2): its lens, and where it stands as seen from
+        # the first (web/depth_camera2.json: to_main turns a point in its axes into the first camera's, column by column)
+        if self.depth and "rgbd2" in self.depth["views"]:
+            self.depth["cams"] = {"rgbd2": json.loads((page.parent / "depth_camera2.json").read_text())}
         self.gen = 0
         self._lock = threading.Lock()
         self._client: Any = None  # the handler of the connected page
