@@ -29,6 +29,10 @@ from teleop_rotation import q_angle, q_step_toward
 from yam_limits import JointStep, TargetLimiter, dist, joint_step
 from yam_setup import ArmSetup, Limits
 
+FLOOR_GAP = 0.001  # m: sliding along the table, the target is kept this far above where the fingertips touch
+FLOOR_MAX_STEP = 0.03  # m: a step that would press in further than this is not raised (it is refused)
+FLOOR_SINK = 0.01  # m/s: how fast the remembered touching height sinks when the fingertips no longer touch
+FLOOR_FORGET = 0.02  # m: the hand this far above the remembered height: forgotten
 GRIP_KEEP = None  # a request's grip of None keeps the gripper's current command
 
 
@@ -55,6 +59,7 @@ class BimanualControl:
         self.limiter = {n: TargetLimiter(a.box, lim) for n, a in self.arms.items()}
         self.q = {n: list(pair.joints(n)) for n in self.arms}  # last command per arm: 6 joints + gripper
         self.engaged = {n: False for n in self.arms}
+        self.floor: dict[str, float | None] = {n: None for n in self.arms}  # the target height at which this arm's fingertips touch the table (while it slides along it)
         self.fault = ""
         self._recent = {n: collections.deque([list(self.q[n][:6])], maxlen=max(2, round(0.5 / lim.dt))) for n in self.arms}
 
@@ -63,6 +68,7 @@ class BimanualControl:
         if self.fault:
             return [f"not engaged: {self.fault}"]
         self.engaged[name] = True
+        self.floor[name] = None
         return self.limiter[name].reset(self.pair.fk(name, self.q[name][:6]))
 
     def release(self, name: str) -> None:
@@ -93,13 +99,34 @@ class BimanualControl:
                 reports[n] = ArmReport("let go", proposal[n], notes=["no hand input: the arm is let go and stays where it is"])
                 continue
             q6 = self.q[n][:6]
-            ts = self.limiter[n].step(req.pose, self.pair.fk(n, q6))
+            want, floor = req.pose, self.floor[n]
+            if floor is not None and want[0][2] > floor + FLOOR_FORGET:
+                floor = self.floor[n] = None  # the hand is well above the table again
+            if floor is not None and want[0][2] < floor:  # the hand is below the table: the arm slides along it
+                want = ((want[0][0], want[0][1], floor), want[1])
+            ts = self.limiter[n].step(want, self.pair.fk(n, q6))
             if ts.glitch:
                 self.engaged[n] = False
                 reports[n] = ArmReport("let go", proposal[n], notes=[ts.glitch + ": the arm is let go; release and grip again"])
                 continue
             notes = list(ts.notes)
             js, e_pos, gave = self._solve(n, ts.target, q6)
+            # A step that would press this arm's fingertips into the table used to be refused whole (_keep_clear), so
+            # the arm stood still, sideways too, until the hand came back up: 136 of 178 held moments in one session
+            # of picking from a tray (2026-11-25). Now the same step is tried with the target raised by what it would
+            # press in: the arm slides along the table and follows the hand sideways. _keep_clear still checks what
+            # is commanded; if the raised step presses in too, it is refused as before.
+            up = self._into_the_table(n, js.q) if js.q is not None else 0.0
+            if 0.0 < up <= FLOOR_MAX_STEP:
+                raised = ((ts.target[0][0], ts.target[0][1], ts.target[0][2] + up + FLOOR_GAP), ts.target[1])
+                js2, e2, gave2 = self._solve(n, raised, q6)
+                if js2.q is not None and not self._into_the_table(n, js2.q):
+                    js, e_pos, gave, self.floor[n] = js2, e2, gave2, raised[0][2]
+                    self.limiter[n].target, self.limiter[n].vel = raised, (self.limiter[n].vel[0], self.limiter[n].vel[1], 0.0)
+                    ts.target = raised
+                    notes.append("sliding along the table")
+            elif self.floor[n] is not None:  # no longer touching: the floor sinks slowly, to find the table again
+                self.floor[n] -= FLOOR_SINK * self.lim.dt
             if js.q is not None and gave:
                 notes.append(f"wrist at its limit: following the position, the gripper angle {math.degrees(gave):.0f} deg short")
             if js.q is not None and e_pos > self.lim.reach_tol:
@@ -203,6 +230,16 @@ class BimanualControl:
         return all(s == "at rest" for s in said.values()), said
 
     # --- checks ---------------------------------------------------------------------------------------------
+    def _into_the_table(self, n: str, q6: Sequence[float]) -> float:
+        """How far (m) this arm's fingertips would press into the table with the joints q6, if that is further than
+        they do now; else 0."""
+        what = f"{n} fingertip pressing into the table"
+        new = self.pair.clearance_problems({m: (list(q6) + self.q[m][6:] if m == n else self.q[m]) for m in self.arms})
+        if what not in new or new[what] >= 0:
+            return 0.0
+        now = self.pair.clearance_problems(self.q)
+        return 0.0 if what in now and new[what] >= now[what] - 1e-4 else -new[what]
+
     def _keep_clear(self, proposal: dict, reports: dict) -> None:
         """Moves that would bring parts closer than allowed (and closer than now) are not made."""
         now = self.pair.clearance_problems(self.q)

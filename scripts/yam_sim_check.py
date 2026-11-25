@@ -107,8 +107,23 @@ def scenarios(pair, lim: Limits) -> list[tuple[str, bool, str]]:
     r = Run(pair, arms=low, start=down, lim=lim)
     r.go(250, lambda k: {"left": Request(moved(r.start["left"], dz=-0.4))})
     table = [w for p in r.problems for w in p if "table" in w]
-    out.append(("stops above the table when the box allows lower", not table and "too close" in r.notes("left"),
+    out.append(("stops above the table when the box allows lower", not table and {"too close", "sliding along the table"} & r.notes("left"),
                 f"grasp point stopped at z {r.tool('left')[0][2] * 1000:.0f} mm"))
+
+    # The hand goes 10 cm below the table and 10 cm to the side at once: the fingertips come down to the table and the
+    # arm goes on sideways along it (before 2026-11-25 it stood still, sideways too, until the hand came back up).
+    r = Run(pair, arms=low, start=down, lim=lim)
+    n_steps = int(0.35 / (lim.tool_speed * lim.dt)) + 80
+    r.go(n_steps, lambda k: {"left": Request(moved(r.start["left"], dx=0.10 * min(1.0, k / (n_steps - 60)), dz=-0.25 * min(1.0, k / (n_steps - 60))))})
+    table = [w for p in r.problems for w in p if "table" in w]
+    x, z_slide = r.tool("left")[0][0] - r.start["left"][0][0], r.tool("left")[0][2]
+    held = sum(rep["left"].state == "held" for rep in r.reports)
+    up_steps = int(0.25 / (lim.tool_speed * lim.dt)) + 40
+    r.go(up_steps, lambda k: {"left": Request(moved(r.start["left"], dx=0.10, dz=-0.25 * max(0.0, 1.0 - k / (up_steps - 40))))})  # and back up: it follows the hand up
+    back = dist(r.tool("left")[0], moved(r.start["left"], dx=0.10)[0])
+    out.append(("slides along the table when the hand goes below it", not table and abs(x - 0.10) < 0.005 and back < 0.005 and "sliding along the table" in r.notes("left"),
+                f"went {x * 1000:.0f} of 100 mm sideways with the grasp point at z {z_slide * 1000:.0f} mm, held for {held} of {n_steps} steps; "
+                f"back up to {back * 1000:.1f} mm from the hand" + (f"; problems: {table[:2]}" if table else "")))
 
     r = Run(pair, lim=lim)
     r.go(10, lambda k: {"left": Request(moved(r.start["left"], dx=0.01))})

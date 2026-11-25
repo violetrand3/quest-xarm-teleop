@@ -273,6 +273,25 @@ class ControlTests(unittest.TestCase):
         self.assertIn("too close", r["left"].notes[-1])
         self.assertAlmostEqual(p.cmd["right"][1], -0.25)
 
+    def test_the_arm_slides_along_the_table_instead_of_stopping(self):
+        table = 0.25  # in the stand-in, the left fingertips touch the table when the tool is at this height
+        pair = FakePair(problems=lambda q: {"left fingertip pressing into the table": q["left"][2] - table} if q["left"][2] < table else {})
+        c = BimanualControl(pair, ARMS, LIM)
+        c.engage("left")
+        x0, slid = pair.cmd["left"][0], 0
+        for i in range(150):  # the hand goes 10 cm below the table and 6 cm sideways
+            k = min(1.0, i / 100)
+            r = c.tick({"left": Request(pose(x0 + 0.06 * k, 0.3, 0.3 - 0.15 * k))})["left"]
+            self.assertGreaterEqual(pair.cmd["left"][2], table - 1e-9)  # never commanded into the table
+            slid += "sliding along the table" in r.notes
+        self.assertLess(pair.cmd["left"][2], table + 0.004)  # it rests on the table ...
+        self.assertAlmostEqual(pair.cmd["left"][0], x0 + 0.06, delta=0.002)  # ... and went sideways with the hand
+        self.assertGreater(slid, 0)
+        for i in range(60):  # the hand comes back up: the arm follows it up at once
+            c.tick({"left": Request(pose(x0 + 0.06, 0.3, 0.15 + 0.2 * min(1.0, i / 40)))})
+        self.assertAlmostEqual(pair.cmd["left"][2], 0.35, delta=0.002)
+        self.assertIsNone(c.floor["left"])
+
     def test_moving_away_from_an_existing_problem_is_allowed(self):
         near = lambda q: {"left link5 and the table": 0.002 + (q["left"][2] - 0.1)} if q["left"][2] < 0.108 else {}  # noqa: E731
         start = {"left": [0.3, 0.3, 0.1, 0, 0, 0, 1.0], "right": [0.3, -0.3, 0.3, 0, 0, 0, 1.0]}
