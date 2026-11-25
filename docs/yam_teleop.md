@@ -206,6 +206,28 @@ sideways to make the scene smaller and nearer, or life size again.
   the preview shows the scene swinging from side to side. `?side=1`, `?side=2` and `?side=3` show it from the right,
   from above and from behind (2026-11-23: the table lies level in all three).
 
+### Two cameras in the scene (`YAM_STEREO=depth2`)
+
+A trial since 2026-11-25. One camera cannot see what an arm hides from it. With `YAM_STEREO=depth2` the ZED 2i,
+which looks along the table from its left end, is a second colour-and-depth camera (`lab_rgbd.py --zed`, port
+28099, view `rgbd2`; the ZED SDK works the distances out from its two eyes, mode ULTRA). The page draws its surface
+into the same scene, but only where the RealSense could not see: behind what the RealSense measured along the same
+line of sight (hidden by an arm), no further than the background around that place, inside the RealSense's picture
+and from the table top up. Everywhere else the RealSense's own, finer surface is shown, so the two never lie
+doubled. The painted guess stays behind both, for what neither camera sees. `?tint=1` on the page's address shows
+the ZED's part in pink.
+
+- Where the ZED stands as seen from the RealSense is in `scripts/web/depth_camera2.json` (`to_main`, and the
+  table's height `table_y`). It was fitted on 2026-11-25 from the scene itself: both clouds levelled with the
+  cameras' accelerometers, the table top found in each, then turned and shifted until what stands on the table
+  (trays, rack, arms) agreed, to about 1.3 cm. **If either camera is moved, this has to be fitted again** (the
+  script and its check pictures are kept in `data/calib_two_cameras/` on the PC that did it).
+- The ZED is further away and lower, so its part is coarser, and its colours differ from the RealSense's.
+- It adds a third large stream: about 3 Mbit/s more at 15 pictures a second.
+- While this mode is watched, the ZED is held by `lab_rgbd.py`: its plain view (`zed` on port 28097) and the ZED's
+  own tools get no picture.
+- Back to one camera: `YAM_STEREO=depth`.
+
 ### Where the YAM cameras come from
 
 `scripts/lab_usb_cams.py` on the lab host serves the two wrist webcams, the RealSense's colour camera and the ZED
