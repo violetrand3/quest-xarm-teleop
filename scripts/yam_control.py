@@ -7,6 +7,8 @@
     fk(name, q6)                   tool (grasp point) pose in the world frame
     solve(name, pose, q6_init)     (q6, position error m, rotation error rad): the IK, from q6_init
     clearance_problems(q_by_name)  {what: distance m} for every pair of parts closer than allowed
+    approach_direction(q_by_name, name)   optional: the unit vector along which `name` gets further from the other arm
+                                   where the two are too close, or None
     command(name, q7)              6 joints + gripper opening
 Every step every arm is commanded: an arm that is idle or held gets its last command again, so it stays put.
 
@@ -32,6 +34,7 @@ from yam_setup import ArmSetup, Limits
 FLOOR_GAP = 0.001  # m: sliding along the table, the target is kept this far above where the fingertips touch
 FLOOR_MAX_STEP = 0.03  # m: a step that would press in further than this is not raised (it is refused)
 FLOOR_SINK = 0.01  # m/s: how fast the remembered touching height sinks when the fingertips no longer touch
+FLOOR_NEAR = 0.10  # m: the grasp point lower than this above the table: the fingertips may reach it
 FLOOR_FORGET = 0.02  # m: the hand this far above the remembered height: forgotten
 GRIP_KEEP = None  # a request's grip of None keeps the gripper's current command
 
@@ -116,7 +119,9 @@ class BimanualControl:
             # of picking from a tray (2026-11-25). Now the same step is tried with the target raised by what it would
             # press in: the arm slides along the table and follows the hand sideways. _keep_clear still checks what
             # is commanded; if the raised step presses in too, it is refused as before.
-            up = self._into_the_table(n, js.q) if js.q is not None else 0.0
+            # Looked at only with the grasp point within FLOOR_NEAR of the table (the fingertips reach a few cm past
+            # it): the look costs a clearance check, which on every step made the steps half as long again.
+            up = self._into_the_table(n, js.q) if js.q is not None and ts.target[0][2] < FLOOR_NEAR else 0.0
             if 0.0 < up <= FLOOR_MAX_STEP:
                 raised = ((ts.target[0][0], ts.target[0][1], ts.target[0][2] + up + FLOOR_GAP), ts.target[1])
                 js2, e2, gave2 = self._solve(n, raised, q6)
@@ -168,7 +173,14 @@ class BimanualControl:
                 break
             refused = refused or js
         if best is None:
-            return refused, now, 0.0  # refused (another arm posture): it says why
+            # The hand turned to where the wrist cannot follow without another arm posture (one stop of 7 s on
+            # 2026-11-25, the right wrist's joint 5 at its end stop). The gripper keeps the angle it has and the
+            # position still follows; the angle comes back when the hand turns back.
+            q_ik, e_keep, _ = self.pair.solve(n, (target[0], tool[1]), q6)
+            js = joint_step(q6, q_ik, self.pair.joint_ranges(n), self.lim)
+            if js.q is None:
+                return refused, now, 0.0  # refused (another arm posture): it says why
+            best, f = (js, e_keep, max(q_angle(tool[1], target[1]), 1e-6)), 0.0
         if best[1] <= self.lim.reach_tol and not best[2] and f == 1.0:
             return best[0], best[1], 0.0  # the whole pose is reached
         # where the step actually takes the tool (joint_step may have slowed or cut it)
@@ -245,19 +257,63 @@ class BimanualControl:
         now = self.pair.clearance_problems(self.q)
         moving = [n for n in self.arms if proposal[n][:6] != self.q[n][:6]]
 
-        def worse(q_by_name: Mapping[str, Sequence[float]]) -> list[str]:
+        def worse(q_by_name: Mapping[str, Sequence[float]], slack: float = 1e-4) -> list[str]:
             new = self.pair.clearance_problems(q_by_name)
-            return [f"{what} {d * 1000:.0f} mm" for what, d in new.items() if what not in now or d < now[what] - 1e-4]
+            return [f"{what} {d * 1000:.0f} mm" for what, d in new.items() if what not in now or d < now[what] - slack]
 
         for n in moving:  # each arm's own move, against the other arm where it is
             bad = worse({m: (proposal[m] if m == n else self.q[m]) for m in self.arms})
-            if bad:
+            if bad and not self._slide_past(n, proposal, reports, bad, worse):
                 self._hold(n, reports, "too close: " + "; ".join(bad))
         if len([n for n in moving if reports[n].state != "held"]) > 1:
             bad = worse({m: (reports[m].q) for m in self.arms})
-            if bad:  # each move alone is fine, both together are not
-                for n in moving:
-                    self._hold(n, reports, "too close: " + "; ".join(bad))
+            if bad:  # each move alone is fine, both together are not: one arm moves, the other waits this step
+                self._hold(moving[-1], reports, "too close: " + "; ".join(bad))
+
+    def _slide_past(self, n: str, proposal: dict, reports: dict, bad: list[str], worse: Any) -> bool:
+        """A move that brings this arm closer to the other arm than allowed used to be refused whole, so both arms
+        stood still whenever the two grippers worked within 1 cm of each other (13 s of a 5 min session, 2026-11-25).
+        Now the same move is tried without its part TOWARD the other arm (first with the hand's angle, then with
+        the angle the gripper has): the arm goes on along and away, and only the approach is not made. What is
+        commanded is checked like any other move. True: such a move was found and is proposed."""
+        r = reports[n]
+        others = [m for m in self.arms if m != n]
+        if r.state != "following" or r.target is None or len(others) != 1 or not all(others[0] in b for b in bad):
+            return False
+        q6 = self.q[n][:6]
+        tool, there = self.pair.fk(n, q6), self.pair.fk(others[0], self.q[others[0]][:6])
+        # Away from the other arm: the direction between the parts that are too close, where the arm layer can say it
+        # (yam_sim: from its clearance model). The line between the two grasp points is a poor stand-in: sliding
+        # "along" it carried the arm 4 cm sideways past the hand in a test.
+        said = getattr(self.pair, "approach_direction", None)
+        u = said({m: (proposal[m] if m == n else self.q[m]) for m in self.arms}, n) if said else None
+        if u is None:
+            u = [a - b for a, b in zip(tool[0], there[0])]
+        size = math.sqrt(sum(x * x for x in u))
+        if size < 1e-6:
+            return False
+        u = [x / size for x in u]
+        step = [a - b for a, b in zip(r.target[0], tool[0])]
+        toward = min(0.0, sum(a * b for a, b in zip(step, u)))
+        along = [a - toward * b for a, b in zip(step, u)]  # the move without its part toward the other arm
+        # Turning the gripper, and other parts of the two arms, can still bring them closer with the rest of the
+        # move: then it is tried with a small push away from the other
+        # arm (2 mm), and last with the angle the gripper has. Nothing that brings any parts closer than allowed AND
+        # closer than they are is taken (here without the usual 0.1 mm of slack).
+        # One IK solve a try (a step has 20 ms for both arms; five full solves took the slowest steps past 10 ms).
+        for push, q_rot in ((0.0, r.target[1]), (0.002, r.target[1]), (0.002, tool[1])):
+            p = tuple(t + a + push * b for t, a, b in zip(tool[0], along, u))
+            best, js = self._candidates(n, (p, q_rot), q6, give=False)
+            e_pos = best[1] if best else 0.0
+            if best is None or worse({m: (list(js.q) + proposal[n][6:] if m == n else self.q[m]) for m in self.arms}, 1e-6):
+                continue
+            proposal[n][:6] = js.q
+            lim = self.limiter[n]
+            v_in = min(0.0, sum(a * b for a, b in zip(lim.vel, u)))
+            lim.target, lim.vel = (p, q_rot), tuple(v - v_in * b for v, b in zip(lim.vel, u))
+            r.q, r.target, r.reach_err_m, r.notes = proposal[n], (p, q_rot), e_pos, r.notes + ["sliding past the other arm"]
+            return True
+        return False
 
     def _hold(self, n: str, reports: dict, why: str) -> None:
         r = reports[n]

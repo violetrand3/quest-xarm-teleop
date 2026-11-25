@@ -268,28 +268,29 @@ class ControlTests(unittest.TestCase):
         c.engage("left"), c.engage("right")
         for _ in range(40):
             r = c.tick({"left": Request(pose(0.3, 0.2, 0.3)), "right": Request(pose(0.3, -0.25, 0.3))})
-        self.assertGreaterEqual(p.cmd["left"][1], 0.29)
-        self.assertEqual(r["left"].state, "held")
-        self.assertIn("too close", r["left"].notes[-1])
+        self.assertGreaterEqual(p.cmd["left"][1], 0.29)  # it does not go closer (it has nowhere to slide: it stays)
+        self.assertIn("sliding past the other arm", r["left"].notes)
         self.assertAlmostEqual(p.cmd["right"][1], -0.25)
 
     def test_the_arm_slides_along_the_table_instead_of_stopping(self):
-        table = 0.25  # in the stand-in, the left fingertips touch the table when the tool is at this height
-        pair = FakePair(problems=lambda q: {"left fingertip pressing into the table": q["left"][2] - table} if q["left"][2] < table else {})
-        c = BimanualControl(pair, ARMS, LIM)
+        table = 0.06  # in the stand-in, the left fingertips touch the table when the tool is at this height
+        start = {"left": [0.3, 0.3, 0.16, 0, 0, 0, 1.0], "right": [0.3, -0.3, 0.3, 0, 0, 0, 1.0]}
+        low = [dataclasses.replace(a, box=a.box[:4] + (-0.2, a.box[5])) for a in ARMS]
+        pair = FakePair(start=start, problems=lambda q: {"left fingertip pressing into the table": q["left"][2] - table} if q["left"][2] < table else {})
+        c = BimanualControl(pair, low, LIM)
         c.engage("left")
-        x0, slid = pair.cmd["left"][0], 0
-        for i in range(150):  # the hand goes 10 cm below the table and 6 cm sideways
+        slid = 0
+        for i in range(150):  # the hand goes 5 cm below the table and 6 cm sideways
             k = min(1.0, i / 100)
-            r = c.tick({"left": Request(pose(x0 + 0.06 * k, 0.3, 0.3 - 0.15 * k))})["left"]
+            r = c.tick({"left": Request(pose(0.3 + 0.06 * k, 0.3, 0.16 - 0.15 * k))})["left"]
             self.assertGreaterEqual(pair.cmd["left"][2], table - 1e-9)  # never commanded into the table
             slid += "sliding along the table" in r.notes
         self.assertLess(pair.cmd["left"][2], table + 0.004)  # it rests on the table ...
-        self.assertAlmostEqual(pair.cmd["left"][0], x0 + 0.06, delta=0.002)  # ... and went sideways with the hand
+        self.assertAlmostEqual(pair.cmd["left"][0], 0.36, delta=0.002)  # ... and went sideways with the hand
         self.assertGreater(slid, 0)
-        for i in range(60):  # the hand comes back up: the arm follows it up at once
-            c.tick({"left": Request(pose(x0 + 0.06, 0.3, 0.15 + 0.2 * min(1.0, i / 40)))})
-        self.assertAlmostEqual(pair.cmd["left"][2], 0.35, delta=0.002)
+        for i in range(90):  # the hand comes back up: the arm follows it up at once
+            c.tick({"left": Request(pose(0.36, 0.3, 0.01 + 0.15 * min(1.0, i / 60)))})
+        self.assertAlmostEqual(pair.cmd["left"][2], 0.16, delta=0.002)
         self.assertIsNone(c.floor["left"])
 
     def test_moving_away_from_an_existing_problem_is_allowed(self):
@@ -308,8 +309,48 @@ class ControlTests(unittest.TestCase):
         c, p = control(FakePair(problems=both))
         c.engage("left"), c.engage("right")
         r = c.tick({"left": Request(pose(0.3, 0.298, 0.3)), "right": Request(pose(0.3, -0.298, 0.3))})
-        self.assertEqual((r["left"].state, r["right"].state), ("held", "held"))
-        self.assertEqual((p.cmd["left"][1], p.cmd["right"][1]), (0.3, -0.3))
+        self.assertEqual((r["left"].state, r["right"].state), ("following", "held"))  # one moves, the other waits this step
+        self.assertEqual(p.cmd["right"][1], -0.3)
+        self.assertLess(p.cmd["left"][1], 0.3)
+
+    def test_slides_past_the_other_arm_instead_of_stopping(self):
+        gap = 0.10  # in the stand-in, the grippers are too close when the tools are nearer than this in y
+        near = lambda q: {"left tip_left and right tip_left": q["left"][1] - q["right"][1] - gap} if q["left"][1] - q["right"][1] < gap else {}  # noqa: E731
+        start = {"left": [0.3, 0.07, 0.3, 0, 0, 0, 1.0], "right": [0.3, -0.07, 0.3, 0, 0, 0, 1.0]}
+        c, p = control(FakePair(start=start, problems=near))
+        p.approach_direction = lambda q, n: (0.0, 1.0, 0.0) if near(q) else None  # the parts face each other along y
+        c.engage("left")
+        slid = held = 0
+        for i in range(160):  # the left hand goes 8 cm toward the right arm and 6 cm forward
+            k = min(1.0, i / 80)
+            r = c.tick({"left": Request(pose(0.3 + 0.06 * k, 0.07 - 0.08 * k, 0.3))})["left"]
+            self.assertGreaterEqual(p.cmd["left"][1] - p.cmd["right"][1], gap - 1e-4 - 1e-9)  # never commanded closer than allowed
+            slid, held = slid + ("sliding past the other arm" in r.notes), held + (r.state == "held")
+        self.assertLess(held, 16)
+        self.assertAlmostEqual(p.cmd["left"][0], 0.36, delta=0.002)  # forward with the hand ...
+        self.assertLess(p.cmd["left"][1] - p.cmd["right"][1], gap + 0.004)  # ... stopped at the gap
+        self.assertGreater(slid, 0)
+        for i in range(110):  # and away again: follows at once
+            c.tick({"left": Request(pose(0.36, -0.01 + 0.2 * min(1.0, i / 40), 0.3))})
+        self.assertAlmostEqual(p.cmd["left"][1], 0.19, delta=0.002)
+
+    def test_a_turn_the_wrist_cannot_make_keeps_the_angle_and_follows_the_position(self):
+        class Wrist(FakePair):  # every pose turned more than 0.2 rad needs another arm posture: a far jump of a joint
+            def solve(self, n, p, q6_init, orientation_cost=1.0):
+                q = list(p[0]) + list(q_to_rotvec(p[1]))
+                if q_angle(p[1], UP) > 0.2:
+                    q[5] += 2.0
+                return q, 0.0, 0.0
+
+        c, p = control(Wrist())
+        c.engage("left")
+        turned = q_from_rotvec((0.0, 0.0, 0.6))
+        for i in range(150):
+            r = c.tick({"left": Request(pose(0.3 + 0.05 * min(1.0, i / 60), 0.3, 0.3, turned))})["left"]
+            self.assertNotEqual(r.state, "held")
+        self.assertAlmostEqual(p.cmd["left"][0], 0.35, delta=0.002)  # the position followed
+        self.assertLess(abs(p.cmd["left"][5]), 0.21)  # the angle stopped where the wrist can go, no jump
+        self.assertTrue(any("wrist at its limit" in x for x in r.notes))
 
     def test_tracking_fault_stops_both_where_they_are(self):
         c, p = control()

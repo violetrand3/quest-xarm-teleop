@@ -75,12 +75,13 @@ The second word is the arm: `following`, `held` (a limit stopped it; the notes i
 |---|---|
 | `speed limit`, `waiting for the arm` | Nothing: you moved faster than the arm may; it catches up |
 | `sliding along the table` | Your hand is below the table top. The fingertips stay on the table and the arm still follows your hand sideways and in its turning (since 2026-11-25; before, the arm stood still until the hand came back up). Raise your hand and it follows up at once |
+| `sliding past the other arm` | The two arms are as close as they may be (the fingertips 1 cm apart). The part of your move that would bring them closer is not made; the rest still follows (since 2026-11-25; before, both arms stood still until a hand pulled away) |
 | `at the box edge`, `out of reach` | Each arm has a box it may move in; move back inside. The box's floor is the table top: the fingertips may touch the table (to grasp something lying flat) but not press into it |
 | `too close: ...` | The two arms, or an arm and the table, are within 1-3 cm (by speed level; the two grippers' fingertips may come within 1 cm of each other at every level); the arm refuses moves that bring them closer, and follows moves that take them apart |
 | `joint N at its end stop` | That joint is at its limit; turn or move the other way |
 | `wrist at its limit: following the position, the gripper angle N deg short` | Your hand turned further than the wrist can. The gripper still goes where your hand goes; only its angle stops short. Turn your hand back to get the angle back |
 | `would take the gripper away from the hand ...: held` | No pose the arm can reach is closer to your hand than where it is; the arm holds. Turn or move your hand back |
-| `joint N would swing ... at once (another arm posture)` | The pose needs the arm to switch posture (a joint flipping); refused. Turn or move your hand back a little |
+| `joint N would swing ... at once (another arm posture)` | Rare since 2026-11-25: when the wrist cannot make your hand's turn without switching posture, the gripper keeps its angle and the position still follows (`wrist at its limit ... N deg short`); only when that cannot be done either is the move refused. Turn or move your hand back a little |
 | `grip=waiting for the trigger to match ...` | After you grip again, the gripper waits until the trigger matches what it holds, so nothing is dropped. The note says how far to press or release |
 | `... arm joint N is ... rad from its command ...: both arms stopped where they are` | A real joint did not follow (blocked, or it hit something). Look at the arms, then Enter; then grip again |
 

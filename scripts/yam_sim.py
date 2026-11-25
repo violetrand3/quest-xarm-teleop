@@ -155,6 +155,25 @@ class SimYamPair:
                 out[what] = float(c.dist)
         return out
 
+    def approach_direction(self, q_by_name: Mapping[str, Sequence[float]], name: str) -> tuple | None:
+        """With the arms at q_by_name: the direction (unit vector, world frame) in which arm `name` gets further from
+        the OTHER arm at the place where the two are closest and closer than allowed; None if they are not. From
+        the clearance model's contact there (its normal), so it is the real direction between the parts (two
+        fingertips side by side), not the line between the grasp points."""
+        m, d = self.cm, self.cd
+        for n, q in q_by_name.items():
+            d.qpos[self.cm_qadr[n]] = self._q_model(q[:N_ARM], q[N_ARM] if len(q) > N_ARM else 0.0)
+        mujoco.mj_forward(m, d)
+        best = None
+        for c in d.contact[: d.ncon]:
+            a, b = self.cm_part[c.geom1], self.cm_part[c.geom2]
+            if name not in (a[0], b[0]) or "" in (a[0], b[0]) or a[0] == b[0]:
+                continue
+            if self._judge(*((a, b) if a <= b else (b, a)), float(c.dist)) and (best is None or c.dist < best[0]):
+                sign = -1.0 if a[0] == name else 1.0  # the normal points from geom1 to geom2
+                best = (float(c.dist), tuple(sign * float(v) for v in c.frame[:3]))
+        return best[1] if best else None
+
     def rest(self, name: str) -> list[float]:
         """Where the arm is lowered to before it is let go (simulation: folded, every joint at 0)."""
         return [0.0] * N_ARM

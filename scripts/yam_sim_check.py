@@ -99,8 +99,23 @@ def scenarios(pair, lim: Limits) -> list[tuple[str, bool, str]]:
     r.go(150, lambda k: {"left": Request(moved(r.start["left"], dy=-0.62)), "right": Request(moved(r.start["right"], dy=0.62))})
     cross = [w for p in r.problems for w in p if w.startswith("left") and "right" in w and "and the table" not in w]
     gap = dist(r.tool("left")[0], r.tool("right")[0])
-    out.append(("the two arms stop before touching", not cross and "too close" in r.notes("left") | r.notes("right"),
+    out.append(("the two arms stop before touching", not cross and {"too close", "sliding past the other arm"} & (r.notes("left") | r.notes("right")),
                 f"grasp points {gap * 1000:.0f} mm apart when stopped; no part closer than {lim.clearance * 1000:.0f} mm at any step"))
+
+    # Both hands go toward each other, the left one also 8 cm forward: the left arm stops short of the right arm and still
+    # goes forward with the hand (before 2026-11-25 it stood still until the hand pulled away).
+    r = Run(pair, lim=lim)
+    n_steps = int(0.45 / (lim.tool_speed * lim.dt)) + 60
+    ramp = lambda k: min(1.0, k / (n_steps - 50))  # noqa: E731
+    r.go(n_steps, lambda k: {"left": Request(moved(r.start["left"], dx=0.08 * ramp(k), dy=-0.62 * ramp(k))),
+                             "right": Request(moved(r.start["right"], dy=0.62 * min(1.0, 3 * ramp(k))))})  # the right arm comes to the middle first
+    cross = [w for p in r.problems for w in p if w.startswith("left") and "right" in w and "and the table" not in w]
+    x = r.tool("left")[0][0] - r.start["left"][0][0]
+    held = sum(rep["left"].state == "held" for rep in r.reports)
+    first = next((i for i, rep in enumerate(r.reports) if "sliding past the other arm" in rep["left"].notes), n_steps)
+    out.append(("slides past the other arm instead of standing still", not cross and x > 0.06 and first < n_steps,
+                f"went {x * 1000:.0f} of 80 mm forward after meeting the other arm; held for {held} of {n_steps - first} steps since then; "
+                f"no part closer than {lim.clearance * 1000:.0f} mm at any step" + (f"; problems: {cross[:2]}" if cross else "")))
 
     low = [dataclasses.replace(a, box=a.box[:4] + (-0.20, a.box[5])) for a in ARMS]  # box floor below the table
     down = lambda work: ((0.30, work[0][1], 0.15), DOWN)  # noqa: E731  gripper pointing down, 15 cm up (pointing down it reaches ~20 cm at most)
