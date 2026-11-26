@@ -39,5 +39,20 @@ echo "videos made on the lab host in $((SECONDS - t0)) s"; t1=$SECONDS
 mkdir -p "$DEST" && rsync -a -z --partial --exclude='cam_*.mjpeg' --exclude='.view_*.part' -e "$RSH" "$LAB_HOST:$LAB_DIR/episodes/$N" "$DEST/" \
   || { echo "copying the session failed"; exit 2; }
 echo "copied to this PC in $((SECONDS - t1)) s (without the raw camera recordings): $(du -sh "$DEST/$N" | cut -f1)"
+# VIDEO_FAST (settings; e.g. 2): also a speeded-up copy of every view on THIS PC, view_<camera>_x2.mp4, for showing
+# a demo quickly. The view files themselves stay at the true speed (until 2026-11-25 a mistake made them play at
+# double speed; the operator liked those for watching).
+case "${VIDEO_FAST:-}" in ""|1) ;; 2|3|4)
+  if command -v ffmpeg > /dev/null; then
+    for v in "$DEST/$N"/episode_*/view_*.mp4; do
+      case "$v" in *_x[0-9].mp4) continue;; esac
+      [ -s "$v" ] || continue; o=${v%.mp4}_x$VIDEO_FAST.mp4
+      [ -s "$o" ] && [ "$o" -nt "$v" ] && continue
+      ffmpeg -nostdin -loglevel error -y -i "$v" -an -filter:v "setpts=PTS/$VIDEO_FAST" -r 30 -c:v libx264 -crf 20 -pix_fmt yuv420p "$o.part.mp4" && mv -f "$o.part.mp4" "$o" || { rm -f "$o.part.mp4"; echo "$o: not made"; }
+    done
+    echo "speeded-up copies (x$VIDEO_FAST): $DEST/$N/episode_*/view_*_x$VIDEO_FAST.mp4"
+  else echo "VIDEO_FAST is set but ffmpeg is not installed on this PC: no speeded-up copies"; fi;;
+  *) echo "VIDEO_FAST must be 2, 3 or 4 (or empty): no speeded-up copies";;
+esac
 echo "raw camera recordings stay on the lab host: ~/$LAB_DIR/episodes/$N/episode_*/cam_*.mjpeg (scripts/ops/episodes_fetch.sh $N copies them)"
 exit $rc
