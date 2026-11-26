@@ -16,6 +16,9 @@ LINK_PORT=18766; VIEW_PORT=18767                               # this PC; the la
 # cable, and that page reads the controllers in place of the headset app (scripts/quest_web_source.py). app: as before.
 case "${YAM_HEADSET:-app}" in app|web) ;; *) echo "YAM_HEADSET must be app or web (config/teleop_session.conf)"; exit 2;; esac
 WEB=$([ "${YAM_HEADSET:-app}" = web ] && echo 1 || echo 0); WEB_PORT=${YAM_WEB_PORT:-8791}
+# Hand records sent to the lab host a second. The arm program steps 50 times a second; at 30 records some steps had
+# no new hand position and each record was up to 33 ms old. The headset gives about 72.
+CMD_HZ=${YAM_CMD_HZ:-60}; case "$CMD_HZ" in 30|50|60|72|90) ;; *) echo "YAM_CMD_HZ must be 30, 50, 60, 72 or 90 (config/teleop_session.conf)"; exit 2;; esac
 export YAM_SCENE_MEMORY=${YAM_SCENE_MEMORY:-0}   # read by the headset page's server (quest_web_source.py)
 mkdir -p "$D" "$R"
 SSHO=(-n -o BatchMode=yes -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10)
@@ -100,7 +103,7 @@ ssh "${SSHO[@]:1}" -tt -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o S
 echo $! > "$R/yam_tunnel.pid"; for i in $(seq 1 40); do listening $LINK_PORT && break; sleep 0.25; done
 SRC=(--serial "$S"); STATUS="$R/yam_status_$N.txt"; echo "starting" > "$STATUS"
 [ "$WEB" = 1 ] && SRC=(--source web --web-port "$WEB_PORT" --web-cams "http://127.0.0.1:${RELAY_LOCAL_PORT:-18091}" --web-views "${YAM_WEB_VIEWS:-}" --web-big "${YAM_WEB_BIG:-}" --web-stereo "${YAM_WEB_STEREO:-}" --web-depth "${YAM_WEB_DEPTH:-}" --web-status "$STATUS")
-( cd "$P/scripts" && exec python3 -u quest_pose_stream_sender.py "${SRC[@]}" --port $LINK_PORT --max-rate 30 --ack-timeout 8 --source-log "$D/yam_src_$N.jsonl" \
+( cd "$P/scripts" && exec python3 -u quest_pose_stream_sender.py "${SRC[@]}" --port $LINK_PORT --max-rate $CMD_HZ --ack-timeout 8 --source-log "$D/yam_src_$N.jsonl" \
     --summary "$D/yam_tx_$N.summary.json" > "$D/yam_tx_$N.console.txt" 2>&1 ) &
 echo $! > "$R/yam_tx.pid"; sleep 2
 adb -s "$S" shell am force-stop org.questxarm.reader; sleep 1

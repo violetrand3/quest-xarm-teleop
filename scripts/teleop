@@ -70,6 +70,7 @@ export YAM_CAM_URL=$U   # where the lab program takes the cameras it records (ya
 # headset (YAM_HEADSET=web; on the PC's page the two eyes are side by side), the wrist views below.
 # YAM_FPS: pictures a second sent to the operator (the cameras give 15 to 30; each step up costs network traffic).
 case "${YAM_FPS:=15}" in 5|8|10|12|15|20|30) ;; *) die "YAM_FPS must be one of 5, 8, 10, 12, 15, 20, 30 (config/teleop_session.conf)";; esac
+CAM_FPS=15; [ "$YAM_FPS" -le 15 ] || CAM_FPS=30   # what the cameras' own programs on the lab host give (the relay passes on YAM_FPS of them)
 case "${YAM_STEREO:-}" in
   "") YAM_VIEWS=${YAM_VIEWS:-rs_color=$U/rs_color,left_wrist=$U/left_wrist,right_wrist=$U/right_wrist}
       YAM_VIEW_ARGS=${YAM_VIEW_ARGS:---big left_wrist,right_wrist --big-width 640 --fps $YAM_FPS}; export YAM_WEB_STEREO="";;
@@ -307,6 +308,7 @@ PY
 ensure_usb_cams() {   # the YAM cameras' on-demand server on the lab host, with the cameras of YAM_USB_CAMS
   local want="--port $YAM_USB_PORT" c
   for c in $YAM_USB_CAMS; do want="$want --cam $c"; done
+  [ "$CAM_FPS" = 15 ] || want="$want --out-fps $CAM_FPS"   # the webcams give 30; the server passes on at most this many
   lab "pgrep -af '[l]ab_usb_cams.py' | grep -qF -- '$want'" && return 0
   echo "starting the YAM cameras on the lab host (each is opened only while it is watched)"
   lab "pkill -f '[l]ab_usb_cams.py --port $YAM_USB_PORT '; sleep 0.5; true"   # its own call: the next one names the program, and pkill -f must not match its own shell
@@ -320,9 +322,11 @@ ensure_rgbd() {   # YAM_STEREO=depth: the RealSense colour-and-depth server on t
     lab "cd ~/$LAB_DIR && mkdir -p logs && (nohup setsid python3 -u scripts/lab_rgbd.py --zed --port $YAM_ZED_PORT > logs/zed_rgbd_\$(date +%H%M%S).log 2>&1 < /dev/null &); sleep 2; ss -ltn | grep -q '127.0.0.1:$YAM_ZED_PORT '" \
       || die "the ZED's colour and depth did not start on the lab host"
   fi
-  lab "pgrep -af '[l]ab_rgbd.py' | grep -qF -- '--port $YAM_RGBD_PORT'" && return 0
+  local fps; fps=$([ "$CAM_FPS" = 15 ] || echo " --fps $CAM_FPS")   # the RealSense at 15 pictures a second, or at 30
+  lab "pgrep -af '[l]ab_rgbd.py' | grep -F -- '--port $YAM_RGBD_PORT' | grep -v -- '--zed' | grep -q -- '--port $YAM_RGBD_PORT$fps\$'" && return 0
+  lab "pkill -f '[l]ab_rgbd.py --port $YAM_RGBD_PORT'; sleep 1; true"   # one runs at the other rate (its own call, as for the cameras above)
   echo "starting the RealSense colour and depth on the lab host (opened only while it is watched)"
-  lab "cd ~/$LAB_DIR && mkdir -p logs && (nohup setsid python3 -u scripts/lab_rgbd.py --port $YAM_RGBD_PORT > logs/rgbd_\$(date +%H%M%S).log 2>&1 < /dev/null &); sleep 2; ss -ltn | grep -q '127.0.0.1:$YAM_RGBD_PORT '" \
+  lab "cd ~/$LAB_DIR && mkdir -p logs && (nohup setsid python3 -u scripts/lab_rgbd.py --port $YAM_RGBD_PORT$fps > logs/rgbd_\$(date +%H%M%S).log 2>&1 < /dev/null &); sleep 2; ss -ltn | grep -q '127.0.0.1:$YAM_RGBD_PORT '" \
     || die "the RealSense colour and depth did not start on the lab host"
 }
 ensure_cameras() {   # $1 = seconds the view must stay up, $2 = the views (default: CAMERAS, the xArm's), $3 = more relay options
