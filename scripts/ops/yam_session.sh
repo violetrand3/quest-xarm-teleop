@@ -11,6 +11,7 @@ YAM_RECORD_CAMS=${YAM_RECORD_CAMS:-rs_color}   # cameras saved with every demo, 
 if [ -n "$CONF" ]; then KIND="real arms"; ARMS="--arms real --moves-real-arms"; else KIND="simulation, no hardware"; ARMS="--arms sim"; fi
 LAB_PY=${YAM_PYTHON:-/home/dev/yam/i2rt/.venv/bin/python}   # I2RT's environment on the lab host
 LINK_PORT=18766; VIEW_PORT=18767                               # this PC; the lab program listens on 28766 / 28767
+. "$P/scripts/ops/local_mode.sh"; local_ports                  # at the lab host itself: no SSH, no tunnels, the programs' own ports
 # YAM_HEADSET=web: the cameras are shown IN the headset. Its browser opens a VR page served by this PC over the USB
 # cable, and that page reads the controllers in place of the headset app (scripts/quest_web_source.py). app: as before.
 case "${YAM_HEADSET:-app}" in app|web) ;; *) echo "YAM_HEADSET must be app or web (config/teleop_session.conf)"; exit 2;; esac

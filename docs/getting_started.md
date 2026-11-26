@@ -39,6 +39,25 @@ committed. Its SHA-256 starts with `57f2936ccf175626`.
 Nothing else is needed on the headset. `scripts/teleop` starts the app itself at the beginning of each
 session.
 
+## At the lab host itself (no second PC)
+
+Since 2026-11-25 a YAM session can also be run sitting at the lab host, with the headset plugged into it. The
+launcher notices that `LAB_HOST` is the machine it runs on and then uses no SSH and no tunnels (`scripts/ops/local_mode.sh`).
+Tried on 2026-11-25 with the simulated arms up to the point where the headset's Start is pressed; not yet with a
+headset on, and not with the real arms.
+
+1. Work as the lab account, which owns the programs, their files and the arms' lock: `sudo -u dev -i`.
+2. `adb` must be on that account's PATH and able to see the headset (`adb devices` lists it as `device`). On linux2 the
+   adb server runs under the `linux2` account, which has the USB access; `dev` only needs the same `adb` program
+   (for example copied to `/usr/local/bin`) and then talks to that server.
+3. Run from the installed copy: `cd ~/quest-xarm-teleop-dryrun && scripts/teleop yam-sim` (then `yam-try`, `yam-record`).
+   The copy is whatever version an operator's PC installed last with `scripts/teleop sync`; `sync` itself is not run here.
+4. The settings are this copy's own `config/teleop_session.conf` (sync never replaces it): set `YAM_HEADSET`,
+   `YAM_STEREO`, `YAM_SPEED`, `YAM_SCALE` there (see `yam_teleop.md`).
+5. The pages are on the programs' own ports: cameras `http://127.0.0.1:28090/`, the commanded arms `http://127.0.0.1:28767/`.
+
+The xArm sessions (`record`, `try`) are not available this way.
+
 ## On macOS
 
 `scripts/teleop` is written for bash 4 or newer and the GNU tools; macOS ships bash 3.2 and the BSD tools. With

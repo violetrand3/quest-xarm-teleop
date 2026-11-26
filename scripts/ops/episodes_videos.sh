@@ -10,6 +10,7 @@
 set -u
 N=$1; P=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd); . "$P/config/teleop_session.conf" || exit 2; DEST=$P/data/episodes
 SSHO="ssh -o BatchMode=yes -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10"
+. "$P/scripts/ops/local_mode.sh"; FROM="$LAB_HOST:"; [ "$LOCAL" = 0 ] || FROM="$HOME/"   # at the lab host itself: plain copies
 t0=$SECONDS; rc=0
 # shellcheck disable=SC2016
 $SSHO "$LAB_HOST" bash -s -- "$LAB_DIR" "$N" <<'LAB' || { echo "some videos were not made on the lab host (above)"; rc=1; }
@@ -35,7 +36,7 @@ ls episode_[0-9][0-9][0-9][0-9]/cam_*.mjpeg > /dev/null 2>&1 || { echo "no camer
 printf '%s\0' episode_[0-9][0-9][0-9][0-9]/cam_*.mjpeg | xargs -0 -n 1 -P 4 bash -c 'one "$1"' _
 LAB
 echo "videos made on the lab host in $((SECONDS - t0)) s"; t1=$SECONDS
-mkdir -p "$DEST" && rsync -a -z --partial --exclude='cam_*.mjpeg' --exclude='.view_*.part' -e "$SSHO" "$LAB_HOST:$LAB_DIR/episodes/$N" "$DEST/" \
+mkdir -p "$DEST" && rsync -a -z --partial --exclude='cam_*.mjpeg' --exclude='.view_*.part' -e "$SSHO" "$FROM$LAB_DIR/episodes/$N" "$DEST/" \
   || { echo "copying the session failed"; exit 2; }
 echo "copied to this PC in $((SECONDS - t1)) s (without the raw camera recordings): $(du -sh "$DEST/$N" | cut -f1)"
 echo "raw camera recordings stay on the lab host: ~/$LAB_DIR/episodes/$N/episode_*/cam_*.mjpeg (scripts/ops/episodes_fetch.sh $N copies them)"

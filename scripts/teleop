@@ -25,6 +25,7 @@
 set -u
 P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)   # this checkout, wherever it is
 . "$P/config/teleop_session.conf" || exit 2
+. "$P/scripts/ops/local_mode.sh"; local_ports   # at the lab host itself: no SSH, no tunnels
 SSHO=(-o BatchMode=yes -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10)
 D=$P/data/sessions; R=$P/run; L=$LAB_DIR/logs; URL="http://127.0.0.1:$RELAY_LOCAL_PORT/"
 STUDIO_LOCAL_PORT=${STUDIO_LOCAL_PORT:-18333}   # local port of the tunnel to UFactory Studio
@@ -34,7 +35,7 @@ case "$CAMERAS" in ""|*[!a-z0-9_,]*|,*|*,|*,,*) echo "STOP: CAMERAS in the setti
 lab() { ssh -n "${SSHO[@]}" "$LAB_HOST" "$@"; }   # -n: never let ssh swallow what the operator types
 die() { echo "STOP: $*" >&2; exit 2; }
 note() { echo "  - $*"; }
-for t in adb ssh rsync python3; do command -v "$t" > /dev/null || die "'$t' is not installed on this PC (see docs/getting_started.md)"; done
+for t in adb $([ "$LOCAL" = 1 ] || echo ssh) rsync python3; do command -v "$t" > /dev/null || die "'$t' is not installed on this PC (see docs/getting_started.md)"; done
 command -v ss > /dev/null || command -v lsof > /dev/null || die "neither 'ss' nor 'lsof' is on this PC (see docs/getting_started.md)"
 [ "${BASH_VERSINFO[0]}" -ge 4 ] || die "this needs bash 4 or newer, and this is bash $BASH_VERSION (on macOS: brew install bash; see docs/getting_started.md)"
 listening() {   # is something on this PC listening on 127.0.0.1:$1?  (ss on Linux; lsof where there is no ss: macOS)
@@ -189,6 +190,7 @@ lab_check() {   # stops when the lab host would run different programs than this
   esac
 }
 lab_sync() {   # [--overwrite]: also replace a lab copy that is newer than this checkout or not on GitHub
+  [ "$LOCAL" = 0 ] || die "sync installs a checkout on the lab host from an operator's PC; this is the lab host. Run it from a PC, or run the session from ~/$LAB_DIR itself"
   local over=${1:-} v o c
   local LAB_STARTS="$LAB_STARTS $YAM_STARTS"   # sync installs and compares every program the lab host runs
   [ -z "$over" ] || [ "$over" = --overwrite ] || die "usage: scripts/teleop sync [--overwrite]"
@@ -449,7 +451,8 @@ PY
 }
 
 case "${1:-}" in
-  record|try) session "$1" "${2:-}";;
+  record|try) [ "$LOCAL" = 0 ] || die "the xArm sessions run from an operator's PC only (at the lab host itself: the YAM commands)"
+              session "$1" "${2:-}";;
   status) rig_status; show_status status; echo "Headset on USB: $(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"' | wc -l) (need 1)"
           [ "$(adb devices | tr -d '\r' | awk 'NR>1 && $2=="device"' | wc -l)" = 1 ] && echo "Teleop app on the headset: $(adb shell pm list packages org.questxarm.reader | grep -q . && echo yes || echo 'NO (see docs/getting_started.md)')"
           d=$(lab_differs); echo "Lab host's programs: $([ -z "$d" ] && echo 'same as this checkout' || echo "DIFFERENT from this checkout ($(echo "$d" | wc -l) files); see scripts/teleop sync")"
