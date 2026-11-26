@@ -92,7 +92,8 @@ fi
 msg "Arm armed. $(grep -m1 '^workspace' "$D/teleop_$N.console.txt" | cut -c1-200)"
 # Ctrl-C (or a kill) from here on is a clean software stop: sender and tunnel closed, the lab program told to park the arm.
 trap 'trap "" INT TERM; echo; msg "INTERRUPTED: ending the session."; mark "interrupted by the operator"; finish interrupted; videos; exit 130' INT TERM
-ssh "${SSHO[@]:1}" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -L 127.0.0.1:18765:127.0.0.1:28765 "$H" > "$R/tunnel_link.txt" 2>&1 < /dev/null &
+# -tt with "sleep infinity", not -N: ssh then sends each small message at once (see scripts/ops/yam_session.sh; 95 ms a command)
+ssh "${SSHO[@]:1}" -tt -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -L 127.0.0.1:18765:127.0.0.1:28765 "$H" "sleep infinity" > "$R/tunnel_link.txt" 2>&1 < /dev/null &
 echo $! > "$R/tunnel_link.pid"; for i in $(seq 1 40); do ss -ltn | grep -q '127.0.0.1:18765 ' && break; sleep 0.25; done
 ( cd "$P/scripts" && exec python3 -u quest_pose_stream_sender.py --serial "$S" --port 18765 --max-rate 30 --log "$D/tx_$N.jsonl" --source-log "$D/src_$N.jsonl" --summary "$D/tx_$N.summary.json" > "$D/tx_$N.console.txt" 2>&1 ) &
 echo $! > "$R/tx.pid"; sleep 2

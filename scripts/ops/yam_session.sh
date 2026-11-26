@@ -91,8 +91,12 @@ STOP=0; IN_LOOP=0
 end_now() { trap "" INT TERM HUP PIPE; echo; msg "Ending the session." 2> /dev/null; finish 2> /dev/null; exit 130; }
 on_stop() { [ "$BASHPID" = "$$" ] || exit 130; if [ "$IN_LOOP" = 1 ]; then STOP=1; else end_now; fi; }
 trap on_stop INT TERM HUP PIPE
-ssh "${SSHO[@]:1}" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
-  -L 127.0.0.1:$LINK_PORT:127.0.0.1:28766 -L 127.0.0.1:$VIEW_PORT:127.0.0.1:28767 "$H" > "$R/yam_tunnel.txt" 2>&1 < /dev/null &
+# A terminal session (-tt, running "sleep infinity") and not -N: only then does ssh send each small message at once.
+# Over -N it held every hand record back until the one before it was confirmed (TCP's Nagle rule on ssh's own
+# connection): the arms got each command about 95 ms late, on top of the network (measured 2026-11-26: round trip
+# 228 ms over -N, 136 ms over -tt, the network itself 133 ms; in every session since 2026-11-17).
+ssh "${SSHO[@]:1}" -tt -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
+  -L 127.0.0.1:$LINK_PORT:127.0.0.1:28766 -L 127.0.0.1:$VIEW_PORT:127.0.0.1:28767 "$H" "sleep infinity" > "$R/yam_tunnel.txt" 2>&1 < /dev/null &
 echo $! > "$R/yam_tunnel.pid"; for i in $(seq 1 40); do listening $LINK_PORT && break; sleep 0.25; done
 SRC=(--serial "$S"); STATUS="$R/yam_status_$N.txt"; echo "starting" > "$STATUS"
 [ "$WEB" = 1 ] && SRC=(--source web --web-port "$WEB_PORT" --web-cams "http://127.0.0.1:${RELAY_LOCAL_PORT:-18091}" --web-views "${YAM_WEB_VIEWS:-}" --web-big "${YAM_WEB_BIG:-}" --web-stereo "${YAM_WEB_STEREO:-}" --web-depth "${YAM_WEB_DEPTH:-}" --web-status "$STATUS")
