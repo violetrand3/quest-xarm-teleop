@@ -207,16 +207,20 @@ def make_handler(views: dict, fps: float, info: str, big: list | None = None):
                     self.send_header("Cache-Control", "no-cache, private")
                     self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
                     self.end_headers()
-                    seq, period, last = -1, 1.0 / fps, 0.0
+                    # At most `fps` pictures a second, on a schedule that moves on by one period a picture (and never
+                    # lags more than one period): a picture that comes when one is due goes out at once. Until
+                    # 2026-11-26 each picture waited until a full period after the LAST SEND; with a camera that gives
+                    # exactly `fps` (the usual case) that held pictures back by up to a period (measured: 30 ms typical).
+                    seq, period, due = -1, 1.0 / fps, 0.0
                     while True:
                         jpeg, seq, wall = v.next_frame(seq)
                         if jpeg is None:
                             continue
-                        wait = period - (time.monotonic() - last)
-                        if wait > 0:
-                            time.sleep(wait)
+                        now = time.monotonic()
+                        due = max(due + period, now - period)
+                        if due > now:
+                            time.sleep(due - now)
                             jpeg, seq, wall = v.next_frame(-1, timeout=0)  # newest frame after the pause, not the one we held
-                        last = time.monotonic()
                         self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n")
                         self.wfile.write(f"X-Seq: {seq}\r\nX-Lab-Wall-Time: {wall:.3f}\r\nContent-Length: {len(jpeg)}\r\n\r\n".encode())
                         self.wfile.write(jpeg)
