@@ -42,21 +42,31 @@ session.
 ## At the lab host itself (no second PC)
 
 Since 2026-11-25 a YAM session can also be run sitting at the lab host, with the headset plugged into it. The
-launcher notices that `LAB_HOST` is the machine it runs on and then uses no SSH and no tunnels (`scripts/ops/local_mode.sh`).
-Tried on 2026-11-25 with the simulated arms up to the point where the headset's Start is pressed; not yet with a
-headset on, and not with the real arms.
+launcher notices that `LAB_HOST` is the machine it runs on and then uses no SSH and no tunnels
+(`scripts/ops/local_mode.sh`). Tried on 2026-11-25 with the simulated arms up to the point where the headset's Start
+is pressed, with stand-ins for adb and sudo; not yet with a headset on, and not with the real arms.
 
-1. Work as the lab account, which owns the programs, their files and the arms' lock: `sudo -u dev -i`.
-2. `adb` must be on that account's PATH and able to see the headset (`adb devices` lists it as `device`). On linux2 the
-   adb server runs under the `linux2` account, which has the USB access; `dev` only needs the same `adb` program
-   (for example copied to `/usr/local/bin`) and then talks to that server.
-3. Run from the installed copy: `cd ~/quest-xarm-teleop-dryrun && scripts/teleop yam-sim` (then `yam-try`, `yam-record`).
-   The copy is whatever version an operator's PC installed last with `scripts/teleop sync`; `sync` itself is not run here.
-4. The settings are this copy's own `config/teleop_session.conf` (sync never replaces it): set `YAM_HEADSET`,
-   `YAM_STEREO`, `YAM_SPEED`, `YAM_SCALE` there (see `yam_teleop.md`).
-5. The pages are on the programs' own ports: cameras `http://127.0.0.1:28090/`, the commanded arms `http://127.0.0.1:28767/`.
+Everything on the operator's side (the checkout, adb, the headset's page) runs as the account you are logged in
+with. The lab programs (the arms, the cameras) still run as the lab account `dev`, in its `~/quest-xarm-teleop-dryrun`,
+as in every session started from an operator's PC: so their files, the demos and the arms' lock keep one owner, and a
+remote operator can stop or restart what you started. From another account that is done with `sudo -u dev` without a
+password.
 
-The xArm sessions (`record`, `try`) are not available this way.
+1. Once, as an account with sudo (here for the account `linux2`):
+   ```
+   echo 'linux2 ALL=(dev) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/teleop-linux2-as-dev > /dev/null
+   sudo chmod 440 /etc/sudoers.d/teleop-linux2-as-dev && sudo visudo -c
+   ```
+   (`scripts/teleop` prints this line for your account when it is missing.)
+2. `adb devices` must list the headset as `device` for your account.
+3. Clone the repository in your own home, set the YAM settings in its `config/teleop_session.conf` (`yam_teleop.md`),
+   and run `scripts/teleop status`, then `yam-sim`, `yam-try`, `yam-record` as on any operator PC. If it says the
+   lab host runs another version: `git pull`; `scripts/teleop sync` works from here too.
+4. The pages are on the programs' own ports: cameras `http://127.0.0.1:28090/`, the commanded arms
+   `http://127.0.0.1:28767/`.
+
+Logged in as `dev` itself, no sudo is needed: run it from `~/quest-xarm-teleop-dryrun` (its own settings file there has
+a YAM block), or from a clone. The xArm sessions (`record`, `try`) are not available at the lab host.
 
 ## On macOS
 

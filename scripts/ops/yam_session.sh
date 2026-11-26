@@ -75,7 +75,8 @@ if [ "$REC" = 1 ]; then
 fi
 ssh "${SSHO[@]}" "$H" "cd ~/$LAB_DIR && mkdir -p logs && (nohup setsid $LAB_PY -u scripts/yam_live.py $ARMS --speed ${YAM_SPEED:-7.5} --scale ${YAM_SCALE:-0.667} $([ "${YAM_VELOCITY_FF:-1}" = 0 ] && echo --no-velocity-ff) --operator-yaw ${OPERATOR_YAW:-0} --log logs/yam_$N.jsonl > logs/yam_$N.console.txt 2>&1 < /dev/null & echo \$! > logs/yam_pid_$N)"
 : > "$D/yam_$N.console.txt"
-ssh "${SSHO[@]}" "$H" "tail -n +1 -F ~/$L/yam_$N.console.txt 2>/dev/null" > "$D/yam_$N.console.txt" 2>/dev/null &
+# At the lab host itself the follower ends with the YAM program (--pid): there is no SSH connection whose end stops it.
+ssh "${SSHO[@]}" "$H" "tail -n +1 $([ "$LOCAL" = 1 ] && echo "--pid=\$(cat ~/$L/yam_pid_$N 2>/dev/null || echo \$\$)") -F ~/$L/yam_$N.console.txt 2>/dev/null" > "$D/yam_$N.console.txt" 2>/dev/null &
 echo $! > "$R/yam_tail.pid"
 for i in $(seq 1 120); do grep -q "Listening on\|Traceback\|^error" "$D/yam_$N.console.txt" 2>/dev/null && break; sleep 0.25; done
 if ! grep -q "Listening on" "$D/yam_$N.console.txt"; then

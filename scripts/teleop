@@ -190,7 +190,7 @@ lab_check() {   # stops when the lab host would run different programs than this
   esac
 }
 lab_sync() {   # [--overwrite]: also replace a lab copy that is newer than this checkout or not on GitHub
-  [ "$LOCAL" = 0 ] || die "sync installs a checkout on the lab host from an operator's PC; this is the lab host. Run it from a PC, or run the session from ~/$LAB_DIR itself"
+  [ "$LOCAL" = 1 ] && [ "$P" -ef "$LAB_HOME/$LAB_DIR" ] && die "this IS the lab host's installed copy (~/$LAB_DIR): there is nothing to install. sync is run from a checkout (an operator's PC, or another account's clone on this machine)"
   local over=${1:-} v o c
   local LAB_STARTS="$LAB_STARTS $YAM_STARTS"   # sync installs and compares every program the lab host runs
   [ -z "$over" ] || [ "$over" = --overwrite ] || die "usage: scripts/teleop sync [--overwrite]"
@@ -210,7 +210,7 @@ $(echo "$c" | head -8)"
     echo "Replacing the lab host's copy (${v:-not recorded})."
   fi
   lab "pgrep -f '[s]cripts/live_teleop.py|[s]cripts/yam_live.py' > /dev/null" && die "a teleop session is running on the lab host; sync after it ends"
-  (cd "$P" && sync_files | rsync -a --delay-updates --files-from=- -e "ssh ${SSHO[*]}" ./ "$LAB_HOST:$LAB_DIR/") || die "copying to the lab host failed"
+  (cd "$P" && sync_files | rsync -a --delay-updates --files-from=- -e "$([ "$LOCAL" = 1 ] && echo "$P/scripts/ops/local_rsh.sh" || echo "ssh ${SSHO[*]}")" ./ "$LAB_HOST:$LAB_DIR/") || die "copying to the lab host failed"
   lab "mkdir -p ~/$LAB_DIR/logs ~/$LAB_DIR/episodes && echo '$(version_here | tr -d '\n'), installed by $(id -un)@$(hostname -s) on $(date '+%Y-%m-%d %H:%M')' > ~/$LAB_DIR/SYNCED_FROM.txt"
   local stale b; stale=$(lab_stale)
   if [ -n "$stale" ]; then   # kept, not deleted: moved aside with their paths
