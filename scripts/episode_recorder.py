@@ -136,7 +136,10 @@ class EpisodeRecorder:
         if self.error:
             return f"error {tail}"
         if ep is not None:
-            return f"rec#{ep['n']}:{(self.clock() - ep['t0']) / 1e9:.0f}s {tail}"
+            # In its last 30 s the demo says so: it is saved and closed by itself at the time limit, and on 2026-11-25
+            # an operator went on working for 5 minutes without noticing that nothing was recorded any more.
+            left = (self.max_episode_ns - (self.clock() - ep["t0"])) / 1e9
+            return f"rec#{ep['n']}:{(self.clock() - ep['t0']) / 1e9:.0f}s {f'ENDS-IN-{max(0.0, left):.0f}s ' if left <= 30 else ''}{tail}"
         if self._finishing is not None:  # files are still being closed: not idle yet, and not counted as saved yet
             return f"saving#{self._finishing} {tail}"
         return ("idle " if self._cams_problem() is None else "nocam ") + tail

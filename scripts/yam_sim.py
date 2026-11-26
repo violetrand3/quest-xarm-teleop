@@ -33,6 +33,7 @@ from yam_setup import ArmSetup, Limits
 
 SITE = "grasp_site"
 N_ARM = 6
+IK_SETTLED = 5e-6  # rad: an IK iteration that moves every joint less than this has settled
 GRIPPER_PARTS = {"gripper", "tip_left", "tip_right"}
 TIPS = {"tip_left", "tip_right"}
 SELF_OVERLAP = -0.001
@@ -136,6 +137,12 @@ class SimYamPair:
             vel = mink.solve_ik(c, [task], 0.01, "quadprog", damping=1e-4, limits=self.ik_limits)
             c.integrate_inplace(vel, 0.01)
             err = task.compute_error(c)
+            # A pose out of reach (the wrist at an end stop) is never met: the joints settle at the nearest they can
+            # do and the remaining iterations change nothing. They cost the whole step: with the wrist at its limit
+            # (a quarter of the time following) the real arms' 20 ms step took 32-38 ms (2026-11-26). So: stop once
+            # an iteration moves no joint by more than IK_SETTLED.
+            if float(np.max(np.abs(vel))) * 0.01 < IK_SETTLED:
+                break
         return [float(v) for v in c.q[:N_ARM]], float(np.linalg.norm(err[:3])), float(np.linalg.norm(err[3:]))
 
     def clearance_problems(self, q_by_name: Mapping[str, Sequence[float]]) -> dict[str, float]:
