@@ -109,7 +109,17 @@ class WebAcquisition:
         # the first (web/depth_camera2.json: to_main turns a point in its axes into the first camera's, column by column)
         if self.depth and "rgbd2" in self.depth["views"]:
             self.depth["cams"] = {"rgbd2": json.loads((page.parent / "depth_camera2.json").read_text())}
-        self.options = {"memory": os.environ.get("YAM_SCENE_MEMORY", "0") == "1"}  # the page's own switches (settings file)
+        self.options: dict[str, Any] = {"memory": os.environ.get("YAM_SCENE_MEMORY", "0") == "1"}  # the page's own switches (settings file)
+        bright = {}  # YAM_VIEW_BRIGHT="right_wrist=1.6,left_wrist=1.2": views shown brighter in the headset (1 = as the camera gives it)
+        for item in os.environ.get("YAM_VIEW_BRIGHT", "").split(","):
+            k, _, v = item.partition("=")
+            try:
+                if k.strip() and 1.0 <= float(v) <= 4.0:
+                    bright[k.strip()] = float(v)
+            except ValueError:
+                pass
+        if bright:
+            self.options["bright"] = bright
         self.gen = 0
         self._lock = threading.Lock()
         self._client: Any = None  # the handler of the connected page

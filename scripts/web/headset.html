@@ -54,13 +54,15 @@ const prog = (() => {
     in vec2 a; uniform mat4 m; uniform vec2 part; out vec2 uv;
     void main(){ uv = vec2((a.x + 0.5) * part.x + part.y, 0.5 - a.y); gl_Position = m * vec4(a, 0.0, 1.0); }`));
   gl.attachShader(p, mk(gl.FRAGMENT_SHADER, `#version 300 es
-    precision mediump float; in vec2 uv; uniform sampler2D t; uniform float dim; out vec4 c;
-    void main(){ c = vec4(texture(t, uv).rgb * dim, 1.0); }`));
+    precision mediump float; in vec2 uv; uniform sampler2D t; uniform float dim; uniform float lift; out vec4 c;
+    // lift > 1 brightens the dark and middle tones and leaves white white (1 - (1 - x)^lift). Only what is SHOWN here:
+    // the pictures recorded with a demo are the camera's own (YAM_VIEW_BRIGHT in the settings).
+    void main(){ vec3 x = texture(t, uv).rgb; if (lift > 1.001) x = vec3(1.0) - pow(vec3(1.0) - x, vec3(lift)); c = vec4(x * dim, 1.0); }`));
   gl.linkProgram(p);
   if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
   return p;
 })();
-const uM = gl.getUniformLocation(prog, "m"), uDim = gl.getUniformLocation(prog, "dim"), uPart = gl.getUniformLocation(prog, "part");
+const uM = gl.getUniformLocation(prog, "m"), uDim = gl.getUniformLocation(prog, "dim"), uLift = gl.getUniformLocation(prog, "lift"), uPart = gl.getUniformLocation(prog, "part");
 const quad = gl.createVertexArray();
 gl.bindVertexArray(quad);
 gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
@@ -329,7 +331,9 @@ const textCanvas = document.createElement("canvas"); textCanvas.width = 1536; te
 // pushes the whole scene away from you (0 = things far from the camera sit on the panel, nearer things in front of it).
 let depth = 0.03;
 try { const d = Number(localStorage.getItem("stereo_depth")); if (isFinite(d) && d >= 0 && d <= 0.15 && localStorage.getItem("stereo_depth") !== null) depth = d; } catch (e) {}
+let viewBright = {};   // {view: lift} from the settings (YAM_VIEW_BRIGHT), e.g. {right_wrist: 1.6}
 function layout(cfg) {
+  viewBright = (cfg.options || {}).bright || {};
   if ((cfg.options || {}).memory && new URLSearchParams(location.search).get("memory") !== "0") noMemory = false;
   const scene = cfg.depth ? cfg.depth.views.filter((k) => cfg.views.includes(k)) : [];
   if (scene.length) {   // the 3D scene around you; the other pictures in a row above eye height, out of its way
@@ -407,6 +411,7 @@ function drawPanels(viewProj, anchor, eye) {   // eye: "left" or "right" (which 
     const m = place(p.x + dx, p.y, -DIST, -Math.atan2(p.x, DIST), p.w, p.w * p.aspect);   // each panel faces the eyes
     gl.uniformMatrix4fv(uM, false, mul(base, m));
     gl.uniform2f(uPart, p.stereo ? 0.5 : 1.0, p.stereo && right ? 0.5 : 0.0);
+    gl.uniform1f(uLift, p.key && viewBright[p.key] ? viewBright[p.key] : 1.0);
     gl.uniform1f(uDim, p.key && now - p.lastMs > 1500 ? 0.35 : 1.0);                 // a picture that stopped arriving is dimmed
     gl.bindTexture(gl.TEXTURE_2D, p.tex);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);

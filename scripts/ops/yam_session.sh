@@ -19,6 +19,7 @@ WEB=$([ "${YAM_HEADSET:-app}" = web ] && echo 1 || echo 0); WEB_PORT=${YAM_WEB_P
 # Hand records sent to the lab host a second. The arm program steps 50 times a second; at 30 records some steps had
 # no new hand position and each record was up to 33 ms old. The headset gives about 72.
 CMD_HZ=${YAM_CMD_HZ:-60}; case "$CMD_HZ" in 30|50|60|72|90) ;; *) echo "YAM_CMD_HZ must be 30, 50, 60, 72 or 90 (config/teleop_session.conf)"; exit 2;; esac
+export YAM_VIEW_BRIGHT=${YAM_VIEW_BRIGHT:-}
 export YAM_SCENE_MEMORY=${YAM_SCENE_MEMORY:-0}   # read by the headset page's server (quest_web_source.py)
 mkdir -p "$D" "$R"
 SSHO=(-n -o BatchMode=yes -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10)
